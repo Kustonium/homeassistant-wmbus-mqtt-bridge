@@ -1,8 +1,9 @@
 ARG BUILD_FROM
 FROM $BUILD_FROM
 
-# Zainstaluj paho-mqtt
-RUN pip3 install --break-system-packages paho-mqtt
+# Zainstaluj Python i pip, potem paho-mqtt
+RUN apk add --no-cache python3 py3-pip && \
+    pip3 install --break-system-packages paho-mqtt
 
 # Generuj test_mqtt.py
 RUN echo 'import paho.mqtt.client as mqtt' > /test_mqtt.py && \
