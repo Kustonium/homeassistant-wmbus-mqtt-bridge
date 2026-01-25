@@ -1,13 +1,12 @@
 ARG BUILD_FROM
 FROM ${BUILD_FROM}
 
-COPY rootfs /
-
+# Tworzenie service structure podczas buildu
 RUN mkdir -p /etc/services.d/mqtt-bridge && \
     echo '#!/usr/bin/with-contenv bashio' > /etc/services.d/mqtt-bridge/run && \
     echo '' >> /etc/services.d/mqtt-bridge/run && \
     echo 'bashio::log.info "===================================="' >> /etc/services.d/mqtt-bridge/run && \
-    echo 'bashio::log.info " wMBus MQTT Bridge v1.1"' >> /etc/services.d/mqtt-bridge/run && \
+    echo 'bashio::log.info " wMBus MQTT Bridge v2.1"' >> /etc/services.d/mqtt-bridge/run && \
     echo 'bashio::log.info "===================================="' >> /etc/services.d/mqtt-bridge/run && \
     echo '' >> /etc/services.d/mqtt-bridge/run && \
     echo 'MQTT_TOPIC=$(bashio::config "mqtt_topic" "wmbus/raw")' >> /etc/services.d/mqtt-bridge/run && \
