@@ -1,15 +1,15 @@
 name: "wMBus MQTT Bridge"
-version: "2.2"
-slug: wmbus_mqtt_bridge
 description: "Bridge for wMBus to MQTT"
+version: "3.0.0"
+slug: "wmbus_mqtt_bridge"
+init: false
 arch:
   - amd64
-  - armhf
-  - armv7
   - aarch64
+  - armv7
+  - armhf
   - i386
-hassio_api: true
-hassio_role: default
+homeassistant_api: true
 services:
   - mqtt:need
 options:
