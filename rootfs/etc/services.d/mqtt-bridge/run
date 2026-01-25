@@ -1,2 +1,0 @@
-#!/bin/sh
-exec /usr/bin/mqtt_to_stdin.sh
