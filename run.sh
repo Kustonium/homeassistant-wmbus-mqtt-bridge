@@ -6,12 +6,23 @@ echo "===================================="
 
 sleep 5
 
-echo "Nasłuchuję wmbus/#"
+TOKEN=$(printenv SUPERVISOR_TOKEN)
 
-mosquitto_sub -h core-mosquitto -v -t "wmbus/#" | while read -r topic message
-do
-    echo "========================================="
-    echo "TOPIC: $topic"
-    echo "RAW:   $message"
-    echo "========================================="
+echo "Nasłuchuję topic: wmbus_bridge/debug"
+echo "Czekam na dane..."
+
+# Subskrybuj przez HA MQTT API
+while true; do
+    PAYLOAD=$(curl -s -X GET \
+        -H "Authorization: Bearer $TOKEN" \
+        "http://supervisor/core/api/states/sensor.wmbus_bridge_debug" 2>/dev/null)
+    
+    if [ ! -z "$PAYLOAD" ]; then
+        echo "========================================="
+        echo "OTRZYMANO DANE:"
+        echo "$PAYLOAD"
+        echo "========================================="
+    fi
+    
+    sleep 2
 done
