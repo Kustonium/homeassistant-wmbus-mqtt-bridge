@@ -1,21 +1,40 @@
 ARG BUILD_FROM
 FROM $BUILD_FROM
 
-# Generuj run.sh bezpośrednio
+# Zainstaluj paho-mqtt
+RUN pip3 install --break-system-packages paho-mqtt
+
+# Generuj test_mqtt.py
+RUN echo 'import paho.mqtt.client as mqtt' > /test_mqtt.py && \
+    echo 'import time' >> /test_mqtt.py && \
+    echo '' >> /test_mqtt.py && \
+    echo 'def on_connect(client, userdata, flags, rc):' >> /test_mqtt.py && \
+    echo '    print("POŁĄCZONO Z MQTT! Code:", rc)' >> /test_mqtt.py && \
+    echo '    client.subscribe("wmbus_bridge/debug")' >> /test_mqtt.py && \
+    echo '    print("Nasłuchuję: wmbus_bridge/debug")' >> /test_mqtt.py && \
+    echo '' >> /test_mqtt.py && \
+    echo 'def on_message(client, userdata, msg):' >> /test_mqtt.py && \
+    echo '    print("="*40)' >> /test_mqtt.py && \
+    echo '    print(f"OTRZYMANO: {msg.topic}")' >> /test_mqtt.py && \
+    echo '    print(f"DANE: {msg.payload.decode()}")' >> /test_mqtt.py && \
+    echo '    print("="*40)' >> /test_mqtt.py && \
+    echo '' >> /test_mqtt.py && \
+    echo 'client = mqtt.Client()' >> /test_mqtt.py && \
+    echo 'client.on_connect = on_connect' >> /test_mqtt.py && \
+    echo 'client.on_message = on_message' >> /test_mqtt.py && \
+    echo '' >> /test_mqtt.py && \
+    echo 'print("Łączę z core-mosquitto:1883...")' >> /test_mqtt.py && \
+    echo 'client.connect("core-mosquitto", 1883, 60)' >> /test_mqtt.py && \
+    echo 'client.loop_forever()' >> /test_mqtt.py && \
+    chmod +x /test_mqtt.py
+
+# Generuj run.sh
 RUN echo '#!/usr/bin/env bash' > /run.sh && \
     echo 'set -e' >> /run.sh && \
-    echo '' >> /run.sh && \
     echo 'echo "====================================="' >> /run.sh && \
-    echo 'echo " TEST RAW MQTT - NC"' >> /run.sh && \
+    echo 'echo " TEST MQTT - PYTHON CLIENT"' >> /run.sh && \
     echo 'echo "====================================="' >> /run.sh && \
-    echo '' >> /run.sh && \
-    echo 'MQTT_HOST="${MQTT_HOST:-core-mosquitto}"' >> /run.sh && \
-    echo 'MQTT_PORT="${MQTT_PORT:-1883}"' >> /run.sh && \
-    echo '' >> /run.sh && \
-    echo 'echo "Łączę przez nc z $MQTT_HOST:$MQTT_PORT..."' >> /run.sh && \
-    echo 'echo "Czekam na dane MQTT..."' >> /run.sh && \
-    echo '' >> /run.sh && \
-    echo 'nc "$MQTT_HOST" "$MQTT_PORT" | hexdump -C' >> /run.sh && \
+    echo 'python3 /test_mqtt.py' >> /run.sh && \
     chmod +x /run.sh
 
 CMD ["/run.sh"]

@@ -1,5 +1,5 @@
 name: "wMBus MQTT Bridge"
-version: "3.0.7"
+version: "3.0.8"
 slug: "wmbus_mqtt_bridge"
 description: "Bridge for wMBus to MQTT"
 arch:
