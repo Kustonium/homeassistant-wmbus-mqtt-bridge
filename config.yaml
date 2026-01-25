@@ -11,7 +11,7 @@ arch:
 hassio_api: true
 hassio_role: default
 services:
-  - mqtt
+  - mqtt:need
 options:
   mqtt_topic: "wmbus/raw"
 schema:
