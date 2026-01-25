@@ -2,37 +2,19 @@
 set -e
 
 echo "===================================="
-echo " TEST - CZY WIDZĘ RAW Z MQTT?"
+echo " TEST RAW MQTT - NC"
 echo "===================================="
 
-# Home Assistant automatycznie dostarcza te zmienne gdy masz "services: - mqtt:need"
 MQTT_HOST="${MQTT_HOST:-core-mosquitto}"
 MQTT_PORT="${MQTT_PORT:-1883}"
-MQTT_USER="${MQTT_USER:-}"
-MQTT_PASS="${MQTT_PASS:-}"
 
-echo "MQTT Host: $MQTT_HOST:$MQTT_PORT"
-echo "User: $MQTT_USER"
-echo "Nasłuchuję topic: wmbus_bridge/debug"
-echo "Czekam na dane..."
+echo "Łączę przez nc z $MQTT_HOST:$MQTT_PORT..."
+echo "Wysyłam SUBSCRIBE..."
 
-# Jeśli są credentials
-if [ -n "$MQTT_USER" ]; then
-    mosquitto_sub -h "$MQTT_HOST" -p "$MQTT_PORT" \
-        -u "$MQTT_USER" -P "$MQTT_PASS" \
-        -t "wmbus_bridge/debug" -v | while read -r line; do
-        echo "========================================="
-        echo "OTRZYMANO DANE:"
-        echo "$line"
-        echo "========================================="
-    done
-else
-    # Bez auth
-    mosquitto_sub -h "$MQTT_HOST" -p "$MQTT_PORT" \
-        -t "wmbus_bridge/debug" -v | while read -r line; do
-        echo "========================================="
-        echo "OTRZYMANO DANE:"
-        echo "$line"
-        echo "========================================="
-    done
-fi
+# MQTT CONNECT + SUBSCRIBE (raw protocol)
+printf '\x10\x0e\x00\x04MQTT\x04\x02\x00\x3c\x00\x00' | nc "$MQTT_HOST" "$MQTT_PORT" &
+sleep 1
+printf '\x82\x13\x00\x01\x00\x0ewmbus_bridge/debug\x00' | nc "$MQTT_HOST" "$MQTT_PORT"
+
+echo "Nasłuchuję..."
+nc "$MQTT_HOST" "$MQTT_PORT" | hexdump -C
