@@ -2,7 +2,7 @@ cat > rootfs/etc/services.d/mqtt-bridge/run << 'EOF'
 #!/usr/bin/with-contenv bashio
 
 bashio::log.info "==================================="
-bashio::log.info " wMBus MQTT Bridge v1.0.4"
+bashio::log.info " wMBus MQTT Bridge v1.0.7"
 bashio::log.info "==================================="
 
 MQTT_TOPIC=$(bashio::config "mqtt_topic" "wmbus/raw")
@@ -19,3 +19,4 @@ fi
 bashio::log.info "Bridge service RUNNING!"
 
 exec tail -f /dev/null
+EOF

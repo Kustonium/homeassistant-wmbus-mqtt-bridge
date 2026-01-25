@@ -1,6 +1,6 @@
 name: "WMBus MQTT Bridge"
 description: "Bridge for WMBus T1 frames via MQTT"
-version: "1.0.6"
+version: "1.0.7"
 slug: wmbus_mqtt_bridge
 init: false
 arch:
