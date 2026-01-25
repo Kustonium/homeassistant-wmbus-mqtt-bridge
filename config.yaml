@@ -1,7 +1,7 @@
 name: "wMBus MQTT Bridge"
-version: "3.0.8"
-slug: "wmbus_mqtt_bridge"
 description: "Bridge for wMBus to MQTT"
+version: "3.0.9"
+slug: "wmbus_mqtt_bridge"
 arch:
   - amd64
   - armhf
@@ -14,3 +14,12 @@ homeassistant_api: true
 auth_api: true
 services:
   - mqtt:need
+options:
+  mqtt_host: "core-mosquitto"
+  mqtt_port: 1883
+  mqtt_topic: "wmbus_bridge/debug"
+schema:
+  mqtt_host: str
+  mqtt_port: int
+  mqtt_topic: str
+image: "ghcr.io/home-assistant/{arch}-addon-base-python"
