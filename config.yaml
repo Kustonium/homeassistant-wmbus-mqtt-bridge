@@ -1,11 +1,13 @@
-name: "wMBus MQTT Bridge"
-version: "1.0.1"
-slug: "wmbus_mqtt_bridge"
-description: "Feeds RAW wMBus T1 HEX frames from ESP32 (MQTT) into wmbusmeters via stdin"
+name: "WMBus MQTT Bridge"
+description: "Bridge for WMBus T1 frames via MQTT"
+version: "1.0.3"
+slug: wmbus_mqtt_bridge
+init: false
 arch:
   - amd64
+  - armv7
   - aarch64
-startup: services
+startup: application
 boot: auto
 options:
   mqtt_topic: "wmbus/raw"
