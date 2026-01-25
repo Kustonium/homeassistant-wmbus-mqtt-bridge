@@ -1,5 +1,5 @@
 name: "wMBus MQTT Bridge"
-version: "1.0.0"
+version: "1.0.1"
 slug: "wmbus_mqtt_bridge"
 description: "Feeds RAW wMBus T1 HEX frames from ESP32 (MQTT) into wmbusmeters via stdin"
 arch:
