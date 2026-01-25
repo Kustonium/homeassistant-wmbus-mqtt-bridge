@@ -19,4 +19,3 @@ fi
 bashio::log.info "Bridge service RUNNING!"
 
 exec tail -f /dev/null
-EOF
