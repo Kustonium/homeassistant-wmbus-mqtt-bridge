@@ -1,14 +1,17 @@
-name: "WMBus MQTT Bridge"
-description: "Bridge for WMBus T1 frames via MQTT"
-version: "1.0.9"
+name: "wMBus MQTT Bridge"
+version: "1.0.10"
 slug: wmbus_mqtt_bridge
-init: false
+description: "Bridge for wMBus to MQTT"
 arch:
   - amd64
+  - armhf
   - armv7
   - aarch64
-startup: application
-boot: auto
+  - i386
+hassio_api: true
+hassio_role: default
+services:
+  - mqtt
 options:
   mqtt_topic: "wmbus/raw"
 schema:
