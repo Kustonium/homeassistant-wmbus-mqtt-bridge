@@ -2,7 +2,4 @@
 set -e
 
 echo "RUN.SH STARTED"
-while true; do
-  echo "addon alive"
-  sleep 10
-done
+exec /usr/bin/run.sh
