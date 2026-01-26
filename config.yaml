@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
 description: "Bridge for RAW wMBus frames from MQTT (ESP32) to logs / future wmbusmeters stdin"
-version: "3.2.1"
+version: "3.2.2"
 slug: "wmbus_mqtt_bridge"
 
 arch:
