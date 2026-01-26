@@ -1,8 +1,13 @@
-#!/usr/bin/with-contenv sh
+#!/usr/bin/with-contenv bashio
 set -e
 
-echo "RUN.SH STARTED"
-while true; do
-  echo "addon alive"
-  sleep 10
+TOPIC=$(bashio::config 'mqtt_topic')
+
+bashio::log.info "wMBus MQTT Bridge START"
+bashio::log.info "Listening on MQTT topic: $TOPIC"
+
+mosquitto_sub \
+  -h core-mosquitto \
+  -t "$TOPIC" | while read -r line; do
+    bashio::log.info "RX RAW: $line"
 done
