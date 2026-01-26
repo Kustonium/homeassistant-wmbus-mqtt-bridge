@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
 description: "Bridge for wMBus to MQTT"
-version: "3.0.9"
+version: "3.1.0"
 slug: "wmbus_mqtt_bridge"
 arch:
   - amd64
@@ -22,4 +22,4 @@ schema:
   mqtt_host: str
   mqtt_port: int
   mqtt_topic: str
-image: "ghcr.io/home-assistant/{arch}-addon-base-python"
+
