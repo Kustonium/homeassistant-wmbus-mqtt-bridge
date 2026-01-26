@@ -1,6 +1,2 @@
-cat > .gitattributes << 'EOF'
 * text=auto
-*.sh text eol=lf
-run text eol=lf
-EOF
-``*
+
