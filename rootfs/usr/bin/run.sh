@@ -1,19 +1,13 @@
-name: "wMBus MQTT Bridge"
-description: "DEBUG addon – listens for RAW wMBus frames over MQTT"
-version: "0.1.0"
-slug: "wmbus_mqtt_bridge"
-arch:
-  - amd64
-  - armv7
-  - armhf
-  - aarch64
+#!/usr/bin/with-contenv bashio
+set -e
 
-init: false
-services:
-  - mqtt:need
+TOPIC=$(bashio::config 'mqtt_topic')
 
-options:
-  mqtt_topic: "wmbus/raw"
+bashio::log.info "wMBus MQTT Bridge START"
+bashio::log.info "Listening on MQTT topic: $TOPIC"
 
-schema:
-  mqtt_topic: str
+mosquitto_sub \
+  -h core-mosquitto \
+  -t "$TOPIC" | while read -r line; do
+    bashio::log.info "RX RAW: $line"
+done
