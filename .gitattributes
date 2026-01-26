@@ -1,2 +1,7 @@
 * text=auto
+# s6 run scripts MUST be LF
+rootfs/etc/services.d/*/run text eol=lf
+
+# shell scripts
+*.sh text eol=lf
 
