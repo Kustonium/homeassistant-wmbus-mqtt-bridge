@@ -1,4 +1,4 @@
-# wMBus MQTT Bridge
+# wMBus MQTT Bridge ( NOT WORKED !!!!! )
 
 Home Assistant add-on that feeds RAW wM-Bus T1 HEX frames from **ESP32** (via MQTT)
 directly into **wmbusmeters** using `stdin:hex:t1`.
