@@ -1,5 +1,6 @@
 ARG BUILD_FROM
 FROM ${BUILD_FROM}
 
-COPY rootfs /
+RUN apk add --no-cache mosquitto-clients
 
+COPY rootfs /
