@@ -3,7 +3,6 @@ set -euo pipefail
 
 bashio::log.info "RUN.SH: bashio OK"
 
-# Bashio czyta opcje z /data/options.json
 export CONFIG_PATH=/data/options.json
 
 # --- MQTT z HA service "mqtt:need" ---
@@ -16,7 +15,7 @@ bashio::log.info "MQTT broker: ${MQTT_HOST}:${MQTT_PORT}"
 
 # --- opcje addona ---
 RAW_TOPIC="$(bashio::config 'raw_topic')"
-METERS_JSON="$(bashio::config 'meters')"   # to jest JSON (lista)
+METERS_JSON="$(bashio::config 'meters')"
 
 bashio::log.info "Subscribing to: ${RAW_TOPIC}"
 
@@ -42,13 +41,11 @@ mkdir -p "${CONF_DIR}"
   ' 2>/dev/null || true
 } > "${CONF_FILE}"
 
-
 bashio::log.info "Generated ${CONF_FILE}:"
 sed -n '1,200p' "${CONF_FILE}" | while IFS= read -r line; do bashio::log.info "${line}"; done
 
 # --- SUB -> STDIN wmbusmeters ---
-# bierz payload z MQTT i karm wmbusmeters (stdin:hex)
-# zakładam że payload to sam HEX (bez "RAW DATA:"), u Ciebie wygląda OK.
+# UWAGA: wmbusmeters --useconfig oczekuje KATALOGU, nie pliku.
 mosquitto_sub \
   -h "${MQTT_HOST}" -p "${MQTT_PORT}" \
   ${MQTT_USER:+-u "${MQTT_USER}"} \
@@ -56,4 +53,4 @@ mosquitto_sub \
   -t "${RAW_TOPIC}" -v \
 | awk '{print $NF}' \
 | tee /tmp/wmbus_raw.log \
-| wmbusmeters --useconfig="${CONF_FILE}" --verbose
+| wmbusmeters --useconfig="${CONF_DIR}" --verbose
