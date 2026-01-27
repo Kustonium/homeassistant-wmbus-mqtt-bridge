@@ -9,8 +9,7 @@ RUN apk add --no-cache \
 WORKDIR /src
 RUN git clone https://github.com/wmbusmeters/wmbusmeters.git .
 RUN set -eux; make V=1
-RUN install -m 0755 ./wmbusmeters /out/wmbusmeters
-
+RUN install -d /out && install -m 0755 build/wmbusmeters /out/wmbusmeters
 
 
 # --- runtime (HA add-on base) ---
