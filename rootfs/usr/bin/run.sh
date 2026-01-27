@@ -36,7 +36,20 @@ bashio::log.info "Registering meters ..."
 rm -f "${METER_DIR}/meter-"* 2>/dev/null || true
 
 i=0
-while IFS= read -r meter_json; do
+OPTIONS_JSON="/data/options.json"
+
+# DEBUG: pokaż co HA faktycznie daje addonowi
+bashio::log.info "options.json:"
+jq -c '.' "${OPTIONS_JSON}" | while read -r line; do bashio::log.info "${line}"; done
+
+# Czy są w ogóle meters?
+if ! jq -e '.meters and (.meters|length>0)' "${OPTIONS_JSON}" >/dev/null; then
+  bashio::log.error "Brak meters w /data/options.json (albo pusta lista)."
+  exit 1
+fi
+
+i=0
+jq -c '.meters[]' "${OPTIONS_JSON}" | while IFS= read -r meter_json; do
   i=$((i+1))
   file="$(printf '%s/meter-%04d' "${METER_DIR}" "${i}")"
 
@@ -44,16 +57,16 @@ while IFS= read -r meter_json; do
   driver="$(echo "${meter_json}" | jq -r '.type')"
   mid="$(echo "${meter_json}" | jq -r '.meter_id')"
 
-  # key: jak nie masz - daj NOKEY
   cat > "${file}" <<EOF
 name=${name}
-driver=${driver}
 id=${mid}
 key=NOKEY
+driver=${driver}
 EOF
 
   bashio::log.info "Added ${file} (name=${name}, driver=${driver}, id=${mid})"
-done < <(bashio::config 'meters' | jq -c '.[]')
+done
+
 
 bashio::log.info "Generated ${CONF_FILE}:"
 sed 's/^/[CONF] /' "${CONF_FILE}" | while read -r line; do bashio::log.info "${line#[CONF] }"; done
