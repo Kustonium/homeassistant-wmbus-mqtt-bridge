@@ -5,7 +5,6 @@ slug: "Wmbus_mqtt_bridge_adding_Wmbusmeters"
 
 arch:
   - amd64
-  - armv7
   - aarch64
 
 init: false
