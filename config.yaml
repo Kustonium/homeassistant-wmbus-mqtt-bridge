@@ -1,4 +1,4 @@
-name: "wMBus MQTT Bridge"
+name: "wMBus MQTT Bridge to STDIN Wmbusmeters"
 description: "Bridge for RAW wMBus frames from MQTT (ESP32) to logs / future wmbusmeters stdin"
 version: "1.0.1"
 slug: "Wmbus_mqtt_bridge adding Wmbusmeters"
