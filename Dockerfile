@@ -1,14 +1,13 @@
-# --- build wmbusmeters ---
 FROM alpine:3.20 AS builder
 
 RUN apk add --no-cache \
-  git build-base make linux-headers \
+  bash git build-base make linux-headers \
   openssl-dev zlib-dev \
   libusb-dev librtlsdr-dev \
   libxml2-dev
 
 WORKDIR /src
-RUN git clone --depth 1 https://github.com/wmbusmeters/wmbusmeters.git .
+RUN git clone https://github.com/wmbusmeters/wmbusmeters.git .
 RUN set -eux; make V=1
 RUN install -m 0755 ./wmbusmeters /out/wmbusmeters
 
