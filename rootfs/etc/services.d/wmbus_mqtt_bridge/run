@@ -1,5 +1,5 @@
-#!/usr/bin/with-contenv sh
+#!/usr/bin/with-contenv bashio
 set -e
 
-echo "RUN.SH STARTED"
+# twardo uruchamiaj nasz skrypt w bashio środowisku
 exec /usr/bin/run.sh

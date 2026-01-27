@@ -1,5 +1,7 @@
 #!/usr/bin/with-contenv bashio
+
 set -euo pipefail
+bashio::log.info "RUN.SH: bashio OK"
 
 FIFO="/tmp/wmbus.hex"
 CONF="/tmp/wmbusmeters.conf"

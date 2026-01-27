@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
 description: "MQTT RAW -> wmbusmeters stdin:hex"
-version: "1.0.2"
+version: "1.0.3"
 slug: "wmbus_mqtt_bridge"
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
 
