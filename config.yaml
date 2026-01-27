@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
 description: "MQTT RAW -> wmbusmeters stdin:hex"
-version: "1.0.8"
+version: "1.0.9"
 slug: "wmbus_mqtt_bridge"
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
 
@@ -16,11 +16,11 @@ options:
   raw_topic: "wmbus_bridge/sensor/wm-bus_raw_data/#"
   meters:
     - id: cold_water
-      meter_id: "0x03528221"
+      meter_id: "55701281"
       type: hydrodigit
       mode: T1
     - id: hot_water
-      meter_id: "0x03534159"
+      meter_id: "55701849"
       type: hydrodigit
       mode: T1
 
