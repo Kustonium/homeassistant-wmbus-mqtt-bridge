@@ -13,11 +13,10 @@ bashio::log.info "Subscribing to: ${TOPIC}  and  ${TOPIC}/#"
 
 ARGS="-h ${MQTT_HOST} -p ${MQTT_PORT} -v -t ${TOPIC} -t ${TOPIC}/#"
 
-# auth only if provided
 if [ -n "${MQTT_USER:-}" ] && [ -n "${MQTT_PASS:-}" ]; then
   ARGS="${ARGS} -u ${MQTT_USER} -P ${MQTT_PASS}"
 fi
 
-# mosquitto_sub prints lines; we prepend with bashio log prefix
-# (keep container alive and show everything)
-exec sh -c "mosquitto_sub ${ARGS} | while IFS= read -r line; do bashio::log.info \"RAW: \$line\"; done"
+exec mosquitto_sub ${ARGS} | while IFS= read -r line; do
+  echo "RAW: $line"
+done
