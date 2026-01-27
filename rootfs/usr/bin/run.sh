@@ -1,76 +1,49 @@
 #!/usr/bin/with-contenv bashio
-
 set -euo pipefail
+
 bashio::log.info "RUN.SH: bashio OK"
 
-FIFO="/tmp/wmbus.hex"
-CONF="/tmp/wmbusmeters.conf"
+# Bashio czyta opcje z /data/options.json
+export CONFIG_PATH=/data/options.json
 
-RAW_TOPIC="$(bashio::config.get raw_topic)"
+# --- MQTT z HA service "mqtt:need" ---
+MQTT_HOST="$(bashio::services mqtt "host")"
+MQTT_PORT="$(bashio::services mqtt "port")"
+MQTT_USER="$(bashio::services mqtt "username")"
+MQTT_PASS="$(bashio::services mqtt "password")"
 
-MQTT_HOST="$(bashio::services mqtt host)"
-MQTT_PORT="$(bashio::services mqtt port)"
-MQTT_USER="$(bashio::services mqtt username || true)"
-MQTT_PASS="$(bashio::services mqtt password || true)"
+bashio::log.info "MQTT broker: ${MQTT_HOST}:${MQTT_PORT}"
 
-bashio::log.info "MQTT broker (HA service): ${MQTT_HOST}:${MQTT_PORT}"
-bashio::log.info "Subscribing RAW: ${RAW_TOPIC}"
-bashio::log.info "Generating wmbusmeters config: ${CONF}"
+# --- opcje addona ---
+RAW_TOPIC="$(bashio::config 'raw_topic')"
+METERS_JSON="$(bashio::config 'meters')"   # to jest JSON (lista)
 
-# --- generate wmbusmeters.conf ---
+bashio::log.info "Subscribing to: ${RAW_TOPIC}"
+
+# --- generuj config dla wmbusmeters (stdin:hex) ---
+CONF_DIR="/data"
+CONF_FILE="${CONF_DIR}/wmbusmeters.conf"
+mkdir -p "${CONF_DIR}"
+
 {
   echo "device=stdin:hex"
   echo "loglevel=normal"
-  echo
-  # publish decoded values back to MQTT
-  echo "mqtt_host=${MQTT_HOST}"
-  echo "mqtt_port=${MQTT_PORT}"
-  echo "mqtt_topic=wmbusmeters"
-  echo
-} > "${CONF}"
+  echo ""
+  echo "# generated from addon options"
+  echo "${METERS_JSON}" | jq -r '.[] | "meter=\(.type)\nid=\(.meter_id)\nname=\(.id)\nmode=\(.mode)\n"' 2>/dev/null || true
+} > "${CONF_FILE}"
 
-meters_len="$(bashio::config.get meters | bashio::jq '. | length')"
-i=0
-while [ "$i" -lt "$meters_len" ]; do
-  mid="$(bashio::config.get meters | bashio::jq -r ".[$i].meter_id")"
-  mtype="$(bashio::config.get meters | bashio::jq -r ".[$i].type")"
-  mmode="$(bashio::config.get meters | bashio::jq -r ".[$i].mode")"
-  mid_lc="$(echo "$mid" | tr '[:upper:]' '[:lower:]')"
-  mid_clean="${mid_lc#0x}"
+bashio::log.info "Generated ${CONF_FILE}:"
+sed -n '1,200p' "${CONF_FILE}" | while IFS= read -r line; do bashio::log.info "${line}"; done
 
-  {
-    echo "meter=${mtype}"
-    echo "id=${mid_clean}"
-    echo "mode=${mmode}"
-    echo
-  } >> "${CONF}"
-
-  i=$((i+1))
-done
-
-# --- FIFO + start wmbusmeters ---
-rm -f "${FIFO}"
-mkfifo "${FIFO}"
-
-bashio::log.info "Starting wmbusmeters (publishing to mqtt_topic=wmbusmeters)..."
-/usr/bin/wmbusmeters --useconfig="${CONF}" < "${FIFO}" &
-WMBUS_PID=$!
-
-# --- mosquitto_sub args (raw frames in) ---
-ARGS="-h ${MQTT_HOST} -p ${MQTT_PORT} -v -t ${RAW_TOPIC}"
-if [ -n "${MQTT_USER:-}" ] && [ -n "${MQTT_PASS:-}" ]; then
-  ARGS="${ARGS} -u ${MQTT_USER} -P ${MQTT_PASS}"
-fi
-
-bashio::log.info "Starting MQTT subscriber for RAW frames..."
-mosquitto_sub ${ARGS} | while IFS= read -r line; do
-  # "<topic> <payload>"
-  hex="${line##* }"
-  if echo "$hex" | grep -qiE '^[0-9a-f]+$' && [ "${#hex}" -ge 16 ]; then
-    echo "${hex}" > "${FIFO}"
-  fi
-done &
-SUB_PID=$!
-
-trap 'kill ${SUB_PID} ${WMBUS_PID} 2>/dev/null || true' INT TERM
-wait -n ${SUB_PID} ${WMBUS_PID}
+# --- SUB -> STDIN wmbusmeters ---
+# bierz payload z MQTT i karm wmbusmeters (stdin:hex)
+# zakładam że payload to sam HEX (bez "RAW DATA:"), u Ciebie wygląda OK.
+mosquitto_sub \
+  -h "${MQTT_HOST}" -p "${MQTT_PORT}" \
+  ${MQTT_USER:+-u "${MQTT_USER}"} \
+  ${MQTT_PASS:+-P "${MQTT_PASS}"} \
+  -t "${RAW_TOPIC}" -v \
+| awk '{print $NF}' \
+| tee /tmp/wmbus_raw.log \
+| wmbusmeters --useconfig="${CONF_FILE}" --verbose
