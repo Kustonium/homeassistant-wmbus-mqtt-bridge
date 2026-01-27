@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge to STDIN Wmbusmeters"
 description: "Bridge for RAW wMBus frames from MQTT (ESP32) to logs / future wmbusmeters stdin"
-version: "1.0.3"
+version: "1.0.1"
 slug: "wmbus_mqtt_bridge"
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
 
