@@ -28,10 +28,20 @@ mkdir -p "${CONF_DIR}"
 {
   echo "device=stdin:hex"
   echo "loglevel=normal"
+  echo "mqtt_host=${MQTT_HOST}"
+  echo "mqtt_port=${MQTT_PORT}"
+  echo "mqtt_topic=wmbusmeters"
   echo ""
   echo "# generated from addon options"
-  echo "${METERS_JSON}" | jq -r '.[] | "meter=\(.type)\nid=\(.meter_id)\nname=\(.id)\nmode=\(.mode)\n"' 2>/dev/null || true
+  echo "${METERS_JSON}" | jq -r '
+    .[] |
+    "meter=\(.type)\n" +
+    "id=\(.meter_id|ascii_downcase|ltrimstr("0x"))\n" +
+    "name=\(.id)\n" +
+    "mode=\(.mode)\n"
+  ' 2>/dev/null || true
 } > "${CONF_FILE}"
+
 
 bashio::log.info "Generated ${CONF_FILE}:"
 sed -n '1,200p' "${CONF_FILE}" | while IFS= read -r line; do bashio::log.info "${line}"; done

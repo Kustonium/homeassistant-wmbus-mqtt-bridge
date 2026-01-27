@@ -5,6 +5,9 @@ RUN apk add --no-cache \
   openssl-dev zlib-dev \
   libusb-dev librtlsdr-dev \
   libxml2-dev
+  mosquitto-clients jq \
+  libstdc++ zlib libxml2 \
+  libusb librtlsdr
 
 WORKDIR /src
 RUN git clone https://github.com/wmbusmeters/wmbusmeters.git .
