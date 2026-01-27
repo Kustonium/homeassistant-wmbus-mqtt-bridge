@@ -32,6 +32,8 @@ jobs:
           file: Dockerfile
           push: true
           platforms: linux/amd64
+          build-args: |
+            BUILD_FROM=ghcr.io/home-assistant/amd64-base:latest          
           tags: |
             ghcr.io/${{ env.OWNER_LC }}/amd64-addon-wmbus_mqtt_bridge:latest
             ghcr.io/${{ env.OWNER_LC }}/amd64-addon-wmbus_mqtt_bridge:1.0.1
