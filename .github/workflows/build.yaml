@@ -26,14 +26,11 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          push: true
-          platforms: linux/amd64
-          build-args: |
-            BUILD_FROM=ghcr.io/home-assistant/amd64-base:latest          
-          tags: |
-            ghcr.io/${{ env.OWNER_LC }}/amd64-addon-wmbus_mqtt_bridge:latest
-            ghcr.io/${{ env.OWNER_LC }}/amd64-addon-wmbus_mqtt_bridge:1.0.1
+      - name: Build (debug, full logs)
+        run: |
+          docker buildx build \
+            --progress=plain \
+            --no-cache \
+            --platform linux/amd64 \
+            -f Dockerfile \
+            .
