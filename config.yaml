@@ -1,29 +1,32 @@
-name: "wMBus MQTT Bridge to STDIN Wmbusmeters"
-description: "Bridge for RAW wMBus frames from MQTT (ESP32) to logs / future wmbusmeters stdin"
+name: "wMBus MQTT Bridge"
+description: "MQTT RAW -> wmbusmeters stdin:hex"
 version: "1.0.1"
 slug: "wmbus_mqtt_bridge"
-image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
 
 arch:
   - amd64
-  - aarch64
 
 init: false
-
-hassio_api: true
-hassio_role: default
-homeassistant_api: true
-auth_api: true
 
 services:
   - mqtt:need
 
 options:
-  mqtt_host: "core-mosquitto"
-  mqtt_port: 1883
-  mqtt_topic: "wmbus/raw"
+  raw_topic: "wmbus_bridge/sensor/wm-bus_raw_data/#"
+  meters:
+    - id: cold_water
+      meter_id: "0x03528221"
+      type: hydrodigit
+      mode: T1
+    - id: hot_water
+      meter_id: "0x03534159"
+      type: hydrodigit
+      mode: T1
 
 schema:
-  mqtt_host: str
-  mqtt_port: int
-  mqtt_topic: str
+  raw_topic: str
+  meters:
+    - id: str
+      meter_id: str
+      type: str
+      mode: str
