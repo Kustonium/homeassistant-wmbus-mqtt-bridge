@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
-description: "ESP (HEX telegram) -> wmbusmeters stdin:hex -> MQTT Discovery dla Home Assistant"
-version: "1.2.1"
+description: "MQTT RAW (HEX) -> wmbusmeters (stdin:hex) + MQTT Discovery"
+version: "1.2.2"
 slug: "wmbus_mqtt_bridge"
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
 
@@ -8,44 +8,34 @@ arch:
   - amd64
 
 init: false
-
 services:
   - mqtt:need
 
 options:
   raw_topic: "wmbus_bridge/telegram"
-
-  # wmbusmeters loglevel: normal | verbose | debug
-  loglevel: "normal"
-
-  # filtr: przepuszczaj tylko czysty HEX (bez spacji, bez 0x, bez śmieci)
+  loglevel: "normal"          # normal | verbose | debug (zależnie od wmbusmeters)
   filter_hex_only: true
-
-  # co ile ramek pokazać skrót w logu (0 = wyłączone)
   debug_every_n: 0
 
-  # MQTT Discovery do HA
-  mqtt_discovery: true
+  discovery_enabled: true
   discovery_prefix: "homeassistant"
+  discovery_retain: true
 
-  # gdzie publikować stany (JSON z wmbusmeters)
-  state_topic_prefix: "wmbusmeters"
+  state_prefix: "wmbusmeters"
 
-  # retain dla stanów (żeby HA widział ostatnią wartość po restarcie)
-  retain_state: true
-
-  # lista liczników (może być pusta -> LISTEN MODE)
-  meters: []
 
 schema:
   raw_topic: str
-  loglevel: list(normal|verbose|debug)
+  loglevel: str
   filter_hex_only: bool
-  debug_every_n: int(0,)
-  mqtt_discovery: bool
+  debug_every_n: int
+
+  discovery_enabled: bool
   discovery_prefix: str
-  state_topic_prefix: str
-  retain_state: bool
+  discovery_retain: bool
+
+  state_prefix: str
+
   meters:
     - id: str
       meter_id: str
