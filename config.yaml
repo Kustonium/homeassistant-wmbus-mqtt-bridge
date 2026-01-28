@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
 description: "MQTT RAW -> wmbusmeters stdin:hex"
-version: "1.1.1"
+version: "1.1.2"
 slug: "wmbus_mqtt_bridge"
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
 
@@ -14,20 +14,19 @@ services:
 
 options:
   raw_topic: "wmbus_bridge/sensor/wm-bus/raw"
-  meters:
-    - id: cold_water
-      meter_id: "55701281"
-      type: hydrodigit
-      mode: T1
-    - id: hot_water
-      meter_id: "55701849"
-      type: hydrodigit
-      mode: T1
+  loglevel: "debug"          # w trybie nasłuchu debug ma sens
+  filter_hex_only: true
+  debug_every_n: 10          # co 10-ty telegram pokaże prefix w logu
+  meters: []                 # DOMYŚLNIE PUSTE = tryb nasłuchu
 
 schema:
   raw_topic: str
+  loglevel: str?
+  filter_hex_only: bool?
+  debug_every_n: int?
   meters:
     - id: str
       meter_id: str
       type: str
       mode: str
+      key: str?
