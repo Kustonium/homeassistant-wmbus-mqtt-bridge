@@ -1,6 +1,20 @@
 #!/usr/bin/with-contenv bashio
 set -euo pipefail
 
+# ============================================================
+# wMBus MQTT Bridge
+# - Subskrybuje RAW HEX z MQTT (payload-only)
+# - Karmi wmbusmeters przez stdin:hex
+# - Odbiera JSON z wmbusmeters i publikuje:
+#     * state topic:   <state_prefix>/<id>/state
+#     * MQTT Discovery: <discovery_prefix>/sensor/<uniq>/total_m3/config
+#
+# Tryb diagnostyczny:
+# - Jeśli meters[] jest puste, wmbusmeters przechodzi w LISTEN MODE
+#   i wypisuje "Received telegram from: XXXXXXXX" + sugerowany driver.
+#   Add-on wypisze też gotowy snippet do wklejenia w opcjach.
+# ============================================================
+
 # =========================
 # MQTT (z serwisu HA)
 # =========================
@@ -32,6 +46,9 @@ DISCOVERY_RETAIN="$(bashio::config 'discovery_retain')"
 STATE_PREFIX="$(bashio::config 'state_prefix')"
 [[ -z "${STATE_PREFIX}" || "${STATE_PREFIX}" == "null" ]] && STATE_PREFIX="wmbusmeters"
 
+STATE_RETAIN="$(bashio::config 'state_retain')"
+[[ -z "${STATE_RETAIN}" || "${STATE_RETAIN}" == "null" ]] && STATE_RETAIN="false"
+
 BASE="/data"
 ETC_DIR="${BASE}/etc"
 METER_DIR="${ETC_DIR}/wmbusmeters.d"
@@ -46,15 +63,22 @@ bashio::log.info "wmbusmeters loglevel: ${LOGLEVEL}"
 bashio::log.info "filter_hex_only: ${FILTER_HEX_ONLY}"
 bashio::log.info "debug_every_n: ${DEBUG_EVERY_N}"
 bashio::log.info "discovery_enabled: ${DISCOVERY_ENABLED} (prefix=${DISCOVERY_PREFIX}, retain=${DISCOVERY_RETAIN})"
-bashio::log.info "state_prefix: ${STATE_PREFIX}"
+bashio::log.info "state_prefix: ${STATE_PREFIX} (retain=${STATE_RETAIN})"
 
 # =========================
 # MQTT args
 # =========================
 PUB_ARGS=( -h "${MQTT_HOST}" -p "${MQTT_PORT}" )
 SUB_ARGS=( -h "${MQTT_HOST}" -p "${MQTT_PORT}" )
-[[ -n "${MQTT_USER}" && "${MQTT_USER}" != "null" ]] && PUB_ARGS+=( -u "${MQTT_USER}" ) && SUB_ARGS+=( -u "${MQTT_USER}" )
-[[ -n "${MQTT_PASS}" && "${MQTT_PASS}" != "null" ]] && PUB_ARGS+=( -P "${MQTT_PASS}" ) && SUB_ARGS+=( -P "${MQTT_PASS}" )
+
+if [[ -n "${MQTT_USER}" && "${MQTT_USER}" != "null" ]]; then
+  PUB_ARGS+=( -u "${MQTT_USER}" )
+  SUB_ARGS+=( -u "${MQTT_USER}" )
+fi
+if [[ -n "${MQTT_PASS}" && "${MQTT_PASS}" != "null" ]]; then
+  PUB_ARGS+=( -P "${MQTT_PASS}" )
+  SUB_ARGS+=( -P "${MQTT_PASS}" )
+fi
 
 mqtt_pub() {
   local topic="$1"
@@ -64,7 +88,6 @@ mqtt_pub() {
   local retain_flag=()
   [[ "${retain}" == "true" ]] && retain_flag=( -r )
 
-  # Nie połykaj błędów po cichu – masz to widzieć w logu
   if ! /usr/bin/mosquitto_pub "${PUB_ARGS[@]}" -t "${topic}" "${retain_flag[@]}" -m "${payload}"; then
     bashio::log.error "mosquitto_pub FAILED topic='${topic}'"
     return 1
@@ -74,6 +97,7 @@ mqtt_pub() {
 
 # =========================
 # wmbusmeters.conf
+# (bez mqtt_host/mqtt_port — w niektórych buildach to wywala 'No such key')
 # =========================
 cat > "${CONF_FILE}" <<EOF
 loglevel=${LOGLEVEL}
@@ -87,8 +111,13 @@ jq -c '.' "${OPTIONS_JSON}" | while read -r line; do bashio::log.info "${line}";
 
 # =========================
 # Normalizacja meter_id
-# - akceptuje: "03528221", "3528221", "0x03528221"
-# - NIE robi HEX->DEC (to był błąd)
+# Akceptuje:
+# - "3528221"      -> "03528221"
+# - "03528221"     -> "03528221"
+# - "0x03528221"   -> "03528221"   (traktujemy jako zapis ID, NIE hex->dec)
+#
+# Uwaga: nie używamy printf %d, bo wartości z wiodącym zerem
+# + cyframi 8/9 potrafią być interpretowane jako ósemkowe -> "invalid octal".
 # =========================
 normalize_meter_id() {
   local mid_raw="$1"
@@ -98,15 +127,22 @@ normalize_meter_id() {
   mid_raw="${mid_raw#0x}"
   mid_raw="${mid_raw#0X}"
 
+  # tylko cyfry
   [[ "${mid_raw}" =~ ^[0-9]+$ ]] || { echo ""; return 0; }
 
-  # dopaduj do 8 cyfr (bo DLL-ID często ma wiodące zera)
-  printf "%08d" "${mid_raw}"
+  # dopaduj do 8 cyfr (DLL-ID zwykle ma 8 znaków)
+  if [[ "${#mid_raw}" -lt 8 ]]; then
+    printf "%8s" "${mid_raw}" | tr ' ' '0'
+  else
+    echo "${mid_raw}"
+  fi
 }
 
 # =========================
 # Generowanie /data/etc/wmbusmeters.d/meter-XXXX
-# UWAGA: NIE MA "mode" – wmbusmeters tego nie obsługuje w meter-file
+# WAŻNE:
+# - W meter-file NIE MA 'mode' (to nie jest klucz wmbusmeters)
+# - driver jest potrzebny, ale w LISTEN MODE wmbusmeters sam go zasugeruje.
 # =========================
 bashio::log.info "Registering meters ..."
 rm -f "${METER_DIR}/meter-"* 2>/dev/null || true
@@ -156,17 +192,20 @@ ls -la "${METER_DIR}" | while read -r line; do bashio::log.info "${line}"; done
 
 # =========================
 # MQTT Discovery
-# - publikujemy config dla "total_m3"
-# - reszta idzie jako json_attributes (czyli wszystko co w JSON)
+# - Minimalny sensor: total_m3 (m³)
+# - Pozostałe pola w JSON lądują jako attributes (json_attributes_topic)
 # =========================
 declare -A DISCOVERY_SENT
+
 emit_discovery() {
   local id="$1"
   local name="$2"
+  local meter="$3"
 
   [[ "${DISCOVERY_ENABLED}" == "true" ]] || return 0
   [[ -n "${id}" ]] || return 0
 
+  # nie wysyłaj tego samego configu w kółko
   if [[ -n "${DISCOVERY_SENT[${id}]+x}" ]]; then
     return 0
   fi
@@ -176,14 +215,21 @@ emit_discovery() {
   local state_topic="${STATE_PREFIX}/${id}/state"
   local cfg_topic="${DISCOVERY_PREFIX}/sensor/${uniq}/total_m3/config"
 
-  # Sensor: total_m3 (m3)
-  # + json_attributes_topic -> całość JSON jako atrybuty
-  # (w HA wchodzisz w encję i widzisz wszystkie pola)
+  # device group (żeby encje ładnie siedziały pod jednym urządzeniem)
+  # identifiers: stały identyfikator urządzenia w HA
+  local dev_name="wMBus ${id}"
+  local dev_mdl="${meter:-wmbusmeter}"
+  local dev_mfr="wmbusmeters"
+
   local payload
   payload="$(jq -c -n \
     --arg name "${name} total" \
     --arg uniq "${uniq}_total_m3" \
     --arg st "${state_topic}" \
+    --arg did "${uniq}" \
+    --arg dname "${dev_name}" \
+    --arg dmdl "${dev_mdl}" \
+    --arg dmfr "${dev_mfr}" \
     '{
       name: $name,
       unique_id: $uniq,
@@ -193,18 +239,21 @@ emit_discovery() {
       state_class: "total_increasing",
       value_template: "{{ value_json.total_m3 }}",
       json_attributes_topic: $st,
-      icon: "mdi:water"
+      icon: "mdi:water",
+      device: {
+        identifiers: [$did],
+        name: $dname,
+        model: $dmdl,
+        manufacturer: $dmfr
+      }
     }')"
 
   mqtt_pub "${cfg_topic}" "${payload}" "${DISCOVERY_RETAIN}" || true
-
-  # Device grouping (opcjonalne – HA samo to łyka)
-  # Nie komplikuję tu, bo ważniejsze żeby działało od razu.
   bashio::log.info "MQTT discovery published for id=${id} (topic=${cfg_topic})"
 }
 
 # =========================
-# Listen-mode: wypisuj snippet gdy pojawi się nowy licznik
+# Listen-mode: snippet gdy pojawi się nowy licznik
 # =========================
 SNIPPET_STATE="/data/seen_ids.txt"
 touch "${SNIPPET_STATE}"
@@ -235,10 +284,13 @@ emit_snippet_if_new() {
 # =========================
 bashio::log.info "Starting wmbusmeters..."
 
-# 1) sub payload-only
-# 2) opcjonalny filtr: tylko czysty HEX (usun spacje, 0x)
-# 3) wmbusmeters czyta stdin:hex i wypluwa JSON
-# 4) JSON publikujemy per-ID na state topic + discovery
+# Wejście:
+# - mosquitto_sub -F '%p' => tylko payload (bez topic)
+# - opcjonalny filtr: zostaw tylko czysty HEX (usuń spacje / 0x / śmieci)
+#
+# Wyjście:
+# - wmbusmeters loguje tekst + linie JSON
+# - JSON publikujemy do state_topic, a discovery generujemy raz na ID
 if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
   /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "${RAW_TOPIC}" -F '%p' \
     | awk -v dbg_n="${DEBUG_EVERY_N}" '
@@ -259,16 +311,14 @@ if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
       ' \
     | /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
     | while IFS= read -r line; do
-        # Logi wmbusmeters zostaw w logu addona:
+        # 1) loguj wszystko (przydaje się do debug)
         echo "${line}"
 
-        # Listen-mode: wyciągaj ID + driver z tekstu
+        # 2) Listen-mode: wyciągaj ID + driver z tekstu wmbusmeters
         if [[ "${METERS_COUNT}" == "0" ]]; then
-          # Received telegram from: 03528221
           if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9]{8}) ]]; then
             last_id="${BASH_REMATCH[1]}"
           fi
-          # driver: hydrodigit
           if [[ "${line}" =~ ^[[:space:]]*driver:\ ([a-zA-Z0-9_]+) ]]; then
             last_driver="${BASH_REMATCH[1]}"
           fi
@@ -279,14 +329,16 @@ if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
           fi
         fi
 
-        # JSON telegram -> publish state + discovery
+        # 3) JSON telegram -> publish state + discovery
         if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
           id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
           name="$(echo "${line}" | jq -r '.name // .id // "wmbus"' 2>/dev/null || true)"
+          meter="$(echo "${line}" | jq -r '.meter // empty' 2>/dev/null || true)"
+
           if [[ -n "${id}" ]]; then
             state_topic="${STATE_PREFIX}/${id}/state"
-            mqtt_pub "${state_topic}" "${line}" "false" || true
-            emit_discovery "${id}" "${name}"
+            mqtt_pub "${state_topic}" "${line}" "${STATE_RETAIN}" || true
+            emit_discovery "${id}" "${name}" "${meter}"
           fi
         fi
       done
@@ -298,10 +350,11 @@ else
         if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
           id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
           name="$(echo "${line}" | jq -r '.name // .id // "wmbus"' 2>/dev/null || true)"
+          meter="$(echo "${line}" | jq -r '.meter // empty' 2>/dev/null || true)"
           if [[ -n "${id}" ]]; then
             state_topic="${STATE_PREFIX}/${id}/state"
-            mqtt_pub "${state_topic}" "${line}" "false" || true
-            emit_discovery "${id}" "${name}"
+            mqtt_pub "${state_topic}" "${line}" "${STATE_RETAIN}" || true
+            emit_discovery "${id}" "${name}" "${meter}"
           fi
         fi
       done

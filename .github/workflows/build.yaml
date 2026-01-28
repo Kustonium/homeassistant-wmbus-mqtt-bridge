@@ -33,6 +33,6 @@ jobs:
             --platform linux/amd64 \
             --push \
             -t ghcr.io/${{ env.OWNER_LC }}/amd64-addon-wmbus_mqtt_bridge:latest \
-            -t ghcr.io/${{ env.OWNER_LC }}/amd64-addon-wmbus_mqtt_bridge:1.2.3 \
+            -t ghcr.io/${{ env.OWNER_LC }}/amd64-addon-wmbus_mqtt_bridge:1.2.4 \
             -f Dockerfile \
             .

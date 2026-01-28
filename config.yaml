@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
-description: "MQTT RAW HEX -> wmbusmeters (stdin:hex) -> MQTT Discovery -> HA"
-version: "1.2.3"
+description: "MQTT RAW HEX -> wmbusmeters (stdin:hex) -> MQTT + Home Assistant Discovery"
+version: "1.2.4"
 slug: "wmbus_mqtt_bridge"
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
 
@@ -13,40 +13,49 @@ services:
   - mqtt:need
 
 options:
-  # ESP publikuje tutaj surowe telegramy jako HEX (payload only)
+  # ESP publishes RAW wM-Bus telegrams as HEX (payload only) to this topic
   raw_topic: "wmbus_bridge/telegram"
 
-  # wmbusmeters loglevel: normal / verbose / debug (zależy od wersji)
+  # wmbusmeters global loglevel
   loglevel: "normal"
 
-  # filtruj tylko czysty HEX (usuwa spacje, usuwa prefix 0x, wycina śmieci)
+  # sanitize incoming MQTT payload (strip spaces, strip 0x, allow only [0-9a-f])
   filter_hex_only: true
 
-  # co N-ty telegram wypisz krótki debug z wejścia (0=off)
+  # every Nth telegram -> print short debug line "[MQTT HEX] #N ...." to add-on log
   debug_every_n: 0
 
-  # MQTT Discovery (Home Assistant)
+  # publish MQTT Discovery sensors to Home Assistant (MQTT integration required)
   discovery_enabled: true
   discovery_prefix: "homeassistant"
   discovery_retain: true
 
-  # gdzie publikujemy stan JSON (per meter id)
+  # where JSON telegram state is published
   state_prefix: "wmbusmeters"
+  state_retain: false
 
-  # jak puste -> listen mode (addon sam wypisze "Received telegram from: XXXXXXXX")
-  meters: []
+  # meters list:
+  # - If empty => LISTEN MODE (wmbusmeters will show "Received telegram from:" + suggested driver)
+  meters:
+    - id: "Zimna Woda"
+      meter_id: "03528221"
+      type: "hydrodigit"
+      key: "NOKEY"
+    - id: "Ciepła woda"
+      meter_id: "03534159"
+      type: "hydrodigit"
+      key: "NOKEY"
 
 schema:
   raw_topic: str
   loglevel: str
   filter_hex_only: bool
   debug_every_n: int
-
   discovery_enabled: bool
   discovery_prefix: str
   discovery_retain: bool
   state_prefix: str
-
+  state_retain: bool
   meters:
     - id: str
       meter_id: str
