@@ -12,7 +12,7 @@ services:
   - mqtt:need
 
 options:
-  raw_topic: "wmbus_bridge/t1"          # tu wysyła ESP gotowy T1 (HEX)
+  raw_topic: "wmbus_bridge/telegram"          # tu wysyła ESP gotowy T1 (HEX)
   loglevel: "normal"                   # normal|verbose|debug (wmbusmeters)
   filter_hex_only: true                # odfiltruj śmieci z MQTT (zostaje tylko HEX)
   debug_every_n: 0                     # 0=off, np 50 => co 50-ty telegram pokaż prefix
