@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
-description: "MQTT RAW (HEX) -> wmbusmeters (stdin:hex) + MQTT Discovery"
-version: "1.2.2"
+description: "MQTT RAW HEX -> wmbusmeters (stdin:hex) -> MQTT Discovery -> HA"
+version: "1.2.3"
 slug: "wmbus_mqtt_bridge"
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
 
@@ -8,21 +8,33 @@ arch:
   - amd64
 
 init: false
+
 services:
   - mqtt:need
 
 options:
+  # ESP publikuje tutaj surowe telegramy jako HEX (payload only)
   raw_topic: "wmbus_bridge/telegram"
-  loglevel: "normal"          # normal | verbose | debug (zależnie od wmbusmeters)
+
+  # wmbusmeters loglevel: normal / verbose / debug (zależy od wersji)
+  loglevel: "normal"
+
+  # filtruj tylko czysty HEX (usuwa spacje, usuwa prefix 0x, wycina śmieci)
   filter_hex_only: true
+
+  # co N-ty telegram wypisz krótki debug z wejścia (0=off)
   debug_every_n: 0
 
+  # MQTT Discovery (Home Assistant)
   discovery_enabled: true
   discovery_prefix: "homeassistant"
   discovery_retain: true
 
+  # gdzie publikujemy stan JSON (per meter id)
   state_prefix: "wmbusmeters"
 
+  # jak puste -> listen mode (addon sam wypisze "Received telegram from: XXXXXXXX")
+  meters: []
 
 schema:
   raw_topic: str
@@ -33,12 +45,10 @@ schema:
   discovery_enabled: bool
   discovery_prefix: str
   discovery_retain: bool
-
   state_prefix: str
 
   meters:
     - id: str
       meter_id: str
       type: str
-      mode: str
       key: str?
