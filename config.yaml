@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
-description: "MQTT RAW -> wmbusmeters stdin:hex"
-version: "1.1.2"
+description: "MQTT HEX -> wmbusmeters (stdin:hex)"
+version: "1.2.0"
 slug: "wmbus_mqtt_bridge"
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
 
@@ -8,16 +8,15 @@ arch:
   - amd64
 
 init: false
-
 services:
   - mqtt:need
 
 options:
-  raw_topic: "wmbus_bridge/sensor/wm-bus/raw"
-  loglevel: "debug"          # w trybie nasłuchu debug ma sens
-  filter_hex_only: true
-  debug_every_n: 10          # co 10-ty telegram pokaże prefix w logu
-  meters: []                 # DOMYŚLNIE PUSTE = tryb nasłuchu
+  raw_topic: "wmbus_bridge/t1"          # tu wysyła ESP gotowy T1 (HEX)
+  loglevel: "normal"                   # normal|verbose|debug (wmbusmeters)
+  filter_hex_only: true                # odfiltruj śmieci z MQTT (zostaje tylko HEX)
+  debug_every_n: 0                     # 0=off, np 50 => co 50-ty telegram pokaż prefix
+  meters: []                           # pusta lista => TRYB NASŁUCHU (wypisuje wykryte ID)
 
 schema:
   raw_topic: str
@@ -26,7 +25,7 @@ schema:
   debug_every_n: int?
   meters:
     - id: str
-      meter_id: str
-      type: str
-      mode: str
-      key: str?
+      meter_id: str                    # może być "03528221" albo "0x03528221"
+      type: str                        # driver, np hydrodigit
+      key: str?                        # brak => NOKEY
+      mode: str?                       # na razie informacyjne (T1/C1), nie blokujemy
