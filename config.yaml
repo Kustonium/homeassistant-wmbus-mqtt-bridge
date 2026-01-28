@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
-description: "MQTT HEX -> wmbusmeters (stdin:hex)"
-version: "1.2.0"
+description: "ESP (HEX telegram) -> wmbusmeters stdin:hex -> MQTT Discovery dla Home Assistant"
+version: "1.2.1"
 slug: "wmbus_mqtt_bridge"
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
 
@@ -8,24 +8,47 @@ arch:
   - amd64
 
 init: false
+
 services:
   - mqtt:need
 
 options:
-  raw_topic: "wmbus_bridge/telegram"          # tu wysyła ESP gotowy T1 (HEX)
-  loglevel: "normal"                   # normal|verbose|debug (wmbusmeters)
-  filter_hex_only: true                # odfiltruj śmieci z MQTT (zostaje tylko HEX)
-  debug_every_n: 0                     # 0=off, np 50 => co 50-ty telegram pokaż prefix
-  meters: []                           # pusta lista => TRYB NASŁUCHU (wypisuje wykryte ID)
+  raw_topic: "wmbus_bridge/telegram"
+
+  # wmbusmeters loglevel: normal | verbose | debug
+  loglevel: "normal"
+
+  # filtr: przepuszczaj tylko czysty HEX (bez spacji, bez 0x, bez śmieci)
+  filter_hex_only: true
+
+  # co ile ramek pokazać skrót w logu (0 = wyłączone)
+  debug_every_n: 0
+
+  # MQTT Discovery do HA
+  mqtt_discovery: true
+  discovery_prefix: "homeassistant"
+
+  # gdzie publikować stany (JSON z wmbusmeters)
+  state_topic_prefix: "wmbusmeters"
+
+  # retain dla stanów (żeby HA widział ostatnią wartość po restarcie)
+  retain_state: true
+
+  # lista liczników (może być pusta -> LISTEN MODE)
+  meters: []
 
 schema:
   raw_topic: str
-  loglevel: str?
-  filter_hex_only: bool?
-  debug_every_n: int?
+  loglevel: list(normal|verbose|debug)
+  filter_hex_only: bool
+  debug_every_n: int(0,)
+  mqtt_discovery: bool
+  discovery_prefix: str
+  state_topic_prefix: str
+  retain_state: bool
   meters:
     - id: str
-      meter_id: str                    # może być "03528221" albo "0x03528221"
-      type: str                        # driver, np hydrodigit
-      key: str?                        # brak => NOKEY
-      mode: str?                       # na razie informacyjne (T1/C1), nie blokujemy
+      meter_id: str
+      type: str
+      mode: str
+      key: str?
