@@ -217,7 +217,7 @@ emit_discovery() {
 
   # device group (żeby encje ładnie siedziały pod jednym urządzeniem)
   # identifiers: stały identyfikator urządzenia w HA
-  local dev_name="wMBus ${id}"
+  local dev_name="${name} (${id})"
   local dev_mdl="${meter:-wmbusmeter}"
   local dev_mfr="wmbusmeters"
 
