@@ -33,10 +33,10 @@ a silnikiem dekodującym wmbusmeters.
 
 Architektura przepływu danych
 ESP32 / Gateway / Bridge
-→ MQTT (surowy telegram wM-Bus w formacie HEX)
-→ wmbusmeters (stdin:hex)
-→ MQTT (JSON)
-→ Home Assistant (MQTT Discovery)
+�?MQTT (surowy telegram wM-Bus w formacie HEX)
+�?wmbusmeters (stdin:hex)
+�?MQTT (JSON)
+�?Home Assistant (MQTT Discovery)
 
 Kluczowe cechy
 
@@ -47,7 +47,7 @@ Surowe telegramy wM-Bus (HEX) są odbierane z wybranego tematu MQTT.
 Telegramy są przekazywane do wmbusmeters przez stdin:hex, czego oryginalny add-on nie obsługuje.
 
 🧠 Pełne dekodowanie przez wmbusmeters
-Projekt nie zastępuje wmbusmeters – wykorzystuje go w całości (dekodowanie, logika, formaty).
+Projekt nie zastępuje wmbusmeters �?wykorzystuje go w całości (dekodowanie, logika, formaty).
 
 🏠 MQTT + Home Assistant Discovery
 Dane są publikowane w MQTT oraz automatycznie rejestrowane w Home Assistant.
@@ -71,6 +71,15 @@ chcesz używać wmbusmeters bez dongla USB,
 
 posiadasz własny pipeline radiowy i potrzebujesz tylko dekodera + integracji z HA.
 
+????
+
+Nie instaluj oficjalnego add-onu wmbusmeters r��wnolegle.
+Ten add-on zawiera w?asn? instancj? wmbusmeters i zast?puje go w tym scenariuszu.
+
+????
+
+Do not install the official wmbusmeters add-on in parallel.
+This add-on bundles its own wmbusmeters instance and replaces it for this use case.
 Projekty bazowe (upstream)
 
 Ten projekt bazuje na następujących repozytoriach:
@@ -126,10 +135,10 @@ and the wmbusmeters decoding engine.
 
 Data flow architecture
 ESP32 / Gateway / Bridge
-→ MQTT (RAW wM-Bus HEX telegram)
-→ wmbusmeters (stdin:hex)
-→ MQTT (JSON)
-→ Home Assistant (MQTT Discovery)
+�?MQTT (RAW wM-Bus HEX telegram)
+�?wmbusmeters (stdin:hex)
+�?MQTT (JSON)
+�?Home Assistant (MQTT Discovery)
 
 Key features
 
