@@ -1,182 +1,76 @@
-Home Assistant Add-on: wMBus MQTT Bridge
-🇵🇱 Opis (PL)
+# wMBus MQTT Bridge (ESP32 → MQTT → wmbusmeters → Home Assistant)
 
-Ten dodatek Home Assistant jest rozszerzeniem oraz forkiem oficjalnego projektu
-wmbusmeters-ha-addon, który sam w sobie bazuje na narzędziu wmbusmeters.
+Home Assistant add-on that feeds **RAW wM-Bus telegrams as HEX** from an ESP32 (via MQTT) directly into **wmbusmeters** using `stdin:hex`, and then publishes parsed JSON + **MQTT Discovery** so encje pojawiają się same (bez ręcznego dopisywania).
 
-Celem projektu jest umożliwienie dekodowania telegramów Wireless M-Bus (C1 / T1 / S1) w Home Assistant bez użycia fizycznego dongla radiowego, poprzez wykorzystanie zewnętrznych odbiorników i MQTT jako kanału wejściowego.
+**Bez USB dongla. Bez RTL-SDR.**
 
-Problem, który rozwiązuje ten add-on
+## Jak to działa
 
-Oryginalny add-on wmbusmeters-ha-addon:
+ESP32 (radio) → MQTT (HEX telegram) → ten add-on → `wmbusmeters` → MQTT (JSON + Discovery) → Home Assistant encje
 
-zakłada, że odbiór radiowy odbywa się lokalnie (USB / serial / RTL-SDR),
+## Wymagania
 
-nie przewiduje możliwości podania telegramów z zewnętrznego źródła,
+- Home Assistant z działającym MQTT brokerem (np. core-mosquitto)
+- Włączona integracja **MQTT** w HA (to ona odbiera Discovery)
+- ESP32 wysyła **surowy telegram jako HEX** w payload (bez JSONa, bez dodatkowego tekstu)
+- Jeśli licznik jest szyfrowany → musisz podać `key` dla tego licznika (AES)
 
-nie obsługuje wejścia STDIN jako źródła danych.
+## MQTT (wejście)
 
-W praktyce oznacza to, że:
+Domyślny topic wejściowy: `wmbus_bridge/telegram`
 
-ESP32, gatewaye, bridge’e radiowe czy własne odbiorniki wM-Bus
-nie mogą być użyte bezpośrednio jako źródło danych dla wmbusmeters.
+Payload przykład (HEX):
+```
+4c44b4092182520317067a120000000c1387490100046d24285c310f8f00000000000000000000000000000000002f0000b40000530100b60100100200b50200400300be03006f040031050000
+```
 
-Rozwiązanie zastosowane w tym projekcie
+Add-on sanitizuje payload (usuwa spacje, usuwa `0x`, przepuszcza tylko znaki hex), o ile `filter_hex_only: true`.
 
-Ten fork wprowadza alternatywną ścieżkę wejściową opartą o MQTT.
+## Konfiguracja add-on
 
-Add-on działa jako most (bridge) pomiędzy:
+### 1) Tryb normalny (masz swoje liczniki)
+W `options` ustawiasz listę `meters`:
+- `id` – nazwa w HA
+- `meter_id` – **DLL-ID** z logu `Received telegram from: XXXXXXXX` (zwykle 8 cyfr, może mieć wiodące zera)
+- `type` – driver (np. `hydrodigit`)
+- `key` – `NOKEY` jeśli nieszyfrowane, albo klucz AES jeśli szyfrowane
 
-źródłem telegramów wM-Bus,
+### 2) Tryb diagnostyczny (LISTEN MODE)
+Jeśli **zostawisz `meters: []`**, wmbusmeters wypisze:
+- `Received telegram from: XXXXXXXX`
+- `driver: ...`
 
-a silnikiem dekodującym wmbusmeters.
+A add-on dodatkowo wypluje snippet do wklejenia w opcjach.
 
-Architektura przepływu danych
-ESP32 / Gateway / Bridge
-�?MQTT (surowy telegram wM-Bus w formacie HEX)
-�?wmbusmeters (stdin:hex)
-�?MQTT (JSON)
-�?Home Assistant (MQTT Discovery)
+## MQTT (wyjście)
 
-Kluczowe cechy
+Add-on publikuje:
+- **state**: `wmbusmeters/<id>/state` (JSON z wmbusmeters)
+- **discovery config**: `homeassistant/sensor/wmbus_<id>/total_m3/config` (retained)
 
-📡 MQTT jako wejście danych
-Surowe telegramy wM-Bus (HEX) są odbierane z wybranego tematu MQTT.
+W HA pojawi się sensor `total_m3`, a cała reszta pól będzie w atrybutach encji (json_attributes).
 
-🔌 Wejście STDIN dla wmbusmeters
-Telegramy są przekazywane do wmbusmeters przez stdin:hex, czego oryginalny add-on nie obsługuje.
+## ESPHome – przykład publikacji RAW HEX
 
-🧠 Pełne dekodowanie przez wmbusmeters
-Projekt nie zastępuje wmbusmeters �?wykorzystuje go w całości (dekodowanie, logika, formaty).
+Jeśli używasz `wmbus_radio` i chcesz wysłać HEX (bez dekodowania w ESP), to w `on_frame`:
 
-🏠 MQTT + Home Assistant Discovery
-Dane są publikowane w MQTT oraz automatycznie rejestrowane w Home Assistant.
+```yaml
+on_frame:
+  then:
+    - mqtt.publish:
+        topic: "wmbus_bridge/telegram"
+        payload: !lambda |-
+          auto s = frame->as_hex();
+          if (s.size() < 30) return std::string("");  // odfiltruj krótkie śmieci
+          return s;
+```
 
-👂 Tryb LISTEN (nasłuch)
-Gdy lista meters jest pusta:
+To jest dokładnie podejście, które odciąża ESP: zero ładowania driverów / dekodowania w mikrokontrolerze.
 
-add-on działa w trybie pasywnym,
+## Uwaga o powstaniu kodu
 
-w logach wypisywane są wykryte meter_id oraz sugerowany driver,
+Kod add-on i konfiguracje zostały przygotowane w oparciu o narzędzia AI.
+Autor repozytorium pełnił rolę integratora/testera i dostarczał kontekst oraz logi do iteracji.
 
-ułatwia to identyfikację i konfigurację nowych liczników.
-
-Przeznaczenie
-
-Ten add-on jest szczególnie przydatny, gdy:
-
-odbiór radiowy realizowany jest poza Home Assistant (ESP32, SBC, bridge),
-
-chcesz używać wmbusmeters bez dongla USB,
-
-posiadasz własny pipeline radiowy i potrzebujesz tylko dekodera + integracji z HA.
-
-????
-
-Nie instaluj oficjalnego add-onu wmbusmeters r��wnolegle.
-Ten add-on zawiera w?asn? instancj? wmbusmeters i zast?puje go w tym scenariuszu.
-
-????
-
-Do not install the official wmbusmeters add-on in parallel.
-This add-on bundles its own wmbusmeters instance and replaces it for this use case.
-Projekty bazowe (upstream)
-
-Ten projekt bazuje na następujących repozytoriach:
-
-wmbusmeters
-https://github.com/wmbusmeters/wmbusmeters
-
-Licencja: GPL-3.0
-
-wmbusmeters-ha-addon
-https://github.com/wmbusmeters/wmbusmeters-ha-addon
-
-Licencja: GPL-3.0
-
-Licencja
-
-Repozytorium zawiera i modyfikuje kod pochodzący z projektu
-wmbusmeters-ha-addon, który jest objęty licencją GPL-3.0.
-
-W związku z tym cały projekt jest dystrybuowany na licencji:
-
-GNU General Public License v3.0 (GPL-3.0)
-
-🇬🇧 Description (EN)
-
-This Home Assistant add-on is a fork and extension of the official
-wmbusmeters-ha-addon, which itself is based on the wmbusmeters project.
-
-The purpose of this add-on is to enable Wireless M-Bus (C1 / T1 / S1) telegram decoding in Home Assistant without a local radio dongle, by using external receivers and MQTT as the input transport.
-
-The problem it solves
-
-The original wmbusmeters-ha-addon:
-
-assumes local radio reception (USB / serial / RTL-SDR),
-
-does not support external telegram sources,
-
-does not accept input via STDIN.
-
-As a result, ESP32-based receivers, gateways or custom wM-Bus bridges
-cannot be used directly as data sources.
-
-Solution implemented in this fork
-
-This project introduces an MQTT-based input path for wmbusmeters.
-
-The add-on acts as a bridge between:
-
-an external wM-Bus telegram source,
-
-and the wmbusmeters decoding engine.
-
-Data flow architecture
-ESP32 / Gateway / Bridge
-�?MQTT (RAW wM-Bus HEX telegram)
-�?wmbusmeters (stdin:hex)
-�?MQTT (JSON)
-�?Home Assistant (MQTT Discovery)
-
-Key features
-
-📡 MQTT input for raw wM-Bus telegrams
-
-🔌 STDIN support for wmbusmeters
-
-🧠 Full decoding handled by upstream wmbusmeters
-
-🏠 MQTT output with Home Assistant Discovery
-
-👂 LISTEN mode for detecting meter IDs and drivers before configuration
-
-Intended use cases
-
-This add-on is useful when:
-
-radio reception is handled externally,
-
-no USB radio dongle is available or desired,
-
-wmbusmeters is used purely as a decoder and HA integration layer.
-
-Upstream projects
-
-wmbusmeters
-https://github.com/wmbusmeters/wmbusmeters
-
-License: GPL-3.0
-
-wmbusmeters-ha-addon
-https://github.com/wmbusmeters/wmbusmeters-ha-addon
-
-License: GPL-3.0
-
-License
-
-Because this repository contains and modifies code derived from
-wmbusmeters-ha-addon, the entire project is distributed under:
-
-GNU General Public License v3.0 (GPL-3.0)
+## License
+MIT
