@@ -1,7 +1,8 @@
 Home Assistant Add-on: wMBus MQTT Bridge
-???? Opis (PL)
+🇵🇱 Opis (PL)
 
 Ten dodatek Home Assistant jest rozszerzeniem oraz forkiem oficjalnego projektu
+<<<<<<< HEAD
 wmbusmeters-ha-addon, kt�ry sam w sobie bazuje na narz�dziu wmbusmeters.
 
 Celem projektu jest umo�liwienie dekodowania telegram�w Wireless M-Bus (C1 / T1 / S1)
@@ -19,11 +20,31 @@ nie przewiduje mo�liwo�ci podania telegram�w z zewn�trznego �r�d�a,
 nie obs�uguje wej�cia STDIN jako �r�d�a danych.
 
 W praktyce oznacza to, �e:
+=======
+wmbusmeters-ha-addon, który sam w sobie bazuje na narzędziu wmbusmeters.
+
+Celem projektu jest umożliwienie dekodowania telegramów Wireless M-Bus (C1 / T1 / S1)
+w Home Assistant bez użycia fizycznego dongla radiowego, poprzez wykorzystanie
+zewnętrznych odbiorników oraz MQTT jako kanału wejściowego.
+
+Problem, który rozwiązuje ten add-on
+
+Oryginalny add-on wmbusmeters-ha-addon:
+
+zakłada, że odbiór radiowy odbywa się lokalnie (USB / serial / RTL-SDR),
+
+nie przewiduje możliwości podania telegramów z zewnętrznego źródła,
+
+nie obsługuje wejścia STDIN jako źródła danych.
+
+W praktyce oznacza to, że:
+>>>>>>> 5217cdd411ec4eb4adc96306792fb39477c6572e
 
 ESP32,
 
 gatewaye,
 
+<<<<<<< HEAD
 bridge�e radiowe,
 
 w�asne odbiorniki wM-Bus
@@ -79,11 +100,69 @@ Wymagania (WA�NE)
 Wymagany jest Mosquitto Broker zainstalowany jako add-on w Home Assistant.
 
 Zewn�trzne brokery MQTT (LXC / VM / Docker) nie s� obs�ugiwane.
+=======
+bridge’e radiowe,
+
+własne odbiorniki wM-Bus
+
+nie mogą być użyte bezpośrednio jako źródło danych dla wmbusmeters.
+
+Rozwiązanie zastosowane w tym projekcie
+
+Ten fork wprowadza alternatywną ścieżkę wejściową opartą o MQTT.
+
+Add-on działa jako most (bridge) pomiędzy:
+
+źródłem telegramów wM-Bus,
+
+a silnikiem dekodującym wmbusmeters.
+
+Architektura przepływu danych
+ESP32 / Gateway / Bridge
+→ MQTT (surowy telegram wM-Bus w formacie HEX)
+→ wmbusmeters (stdin:hex)
+→ MQTT (JSON)
+→ Home Assistant (MQTT Discovery)
+
+Kluczowe cechy
+
+📡 MQTT jako wejście danych
+Surowe telegramy wM-Bus (HEX) są odbierane z wybranego tematu MQTT.
+
+🔌 Wejście STDIN dla wmbusmeters
+Telegramy są przekazywane do wmbusmeters przez stdin:hex,
+czego oryginalny add-on nie obsługuje.
+
+🧠 Pełne dekodowanie przez wmbusmeters
+Projekt nie zastępuje wmbusmeters — wykorzystuje go w całości
+(dekodowanie, logika, formaty).
+
+🏠 MQTT + Home Assistant Discovery
+Dane są publikowane w MQTT oraz automatycznie rejestrowane w Home Assistant.
+
+👂 Tryb LISTEN (nasłuch)
+Gdy lista meters jest pusta:
+
+add-on działa w trybie pasywnym,
+
+w logach wypisywane są wykryte meter_id oraz sugerowany driver,
+
+ułatwia to identyfikację i konfigurację nowych liczników.
+
+Wymagania (WAŻNE)
+
+⚠️ Ten add-on korzysta WYŁĄCZNIE z wewnętrznego brokera MQTT dostarczanego przez Home Assistant (Mosquitto add-on).
+
+Wymagany jest Mosquitto Broker zainstalowany jako add-on w Home Assistant.
+
+Zewnętrzne brokery MQTT (LXC / VM / Docker) nie są obsługiwane.
+>>>>>>> 5217cdd411ec4eb4adc96306792fb39477c6572e
 
 Add-on wymaga Home Assistant OS / Supervised (Supervisor API).
 
 Przeznaczenie
 
+<<<<<<< HEAD
 Ten add-on jest szczeg�lnie przydatny, gdy:
 
 odbi�r radiowy realizowany jest poza Home Assistant (ESP32, SBC, bridge),
@@ -96,6 +175,20 @@ posiadasz w�asny pipeline radiowy i potrzebujesz tylko dekodera + integracji z H
 
 Nie instaluj oficjalnego add-onu wmbusmeters r�wnolegle.
 Ten add-on zawiera w�asn� instancj� wmbusmeters i zast�puje go w tym scenariuszu.
+=======
+Ten add-on jest szczególnie przydatny, gdy:
+
+odbiór radiowy realizowany jest poza Home Assistant (ESP32, SBC, bridge),
+
+chcesz używać wmbusmeters bez dongla USB,
+
+posiadasz własny pipeline radiowy i potrzebujesz tylko dekodera + integracji z HA.
+
+⚠️ Ważna informacja
+
+Nie instaluj oficjalnego add-onu wmbusmeters równolegle.
+Ten add-on zawiera własną instancję wmbusmeters i zastępuje go w tym scenariuszu.
+>>>>>>> 5217cdd411ec4eb4adc96306792fb39477c6572e
 
 Projekty bazowe (upstream)
 
@@ -111,14 +204,21 @@ Licencja: GPL-3.0
 
 Licencja
 
+<<<<<<< HEAD
 Repozytorium zawiera i modyfikuje kod pochodz�cy z projektu
 wmbusmeters-ha-addon, kt�ry jest obj�ty licencj� GPL-3.0.
 
 W zwi�zku z tym ca�y projekt jest dystrybuowany na licencji:
+=======
+Repozytorium zawiera i modyfikuje kod pochodzący z projektu
+wmbusmeters-ha-addon, który jest objęty licencją GPL-3.0.
+
+W związku z tym cały projekt jest dystrybuowany na licencji:
+>>>>>>> 5217cdd411ec4eb4adc96306792fb39477c6572e
 
 GNU General Public License v3.0 (GPL-3.0)
 
-???? Description (EN)
+🇬🇧 Description (EN)
 
 This Home Assistant add-on is a fork and extension of the official
 wmbusmeters-ha-addon, which itself is based on the wmbusmeters project.
@@ -152,26 +252,33 @@ and the wmbusmeters decoding engine.
 
 Data flow architecture
 ESP32 / Gateway / Bridge
+<<<<<<< HEAD
 ? MQTT (RAW wM-Bus HEX telegram)
 ? wmbusmeters (stdin:hex)
 ? MQTT (JSON)
 ? Home Assistant (MQTT Discovery)
+=======
+→ MQTT (RAW wM-Bus HEX telegram)
+→ wmbusmeters (stdin:hex)
+→ MQTT (JSON)
+→ Home Assistant (MQTT Discovery)
+>>>>>>> 5217cdd411ec4eb4adc96306792fb39477c6572e
 
 Key features
 
-?? MQTT input for raw wM-Bus telegrams
+📡 MQTT input for raw wM-Bus telegrams
 
-?? STDIN support for wmbusmeters
+🔌 STDIN support for wmbusmeters
 
-?? Full decoding handled by upstream wmbusmeters
+🧠 Full decoding handled by upstream wmbusmeters
 
-?? MQTT output with Home Assistant Discovery
+🏠 MQTT output with Home Assistant Discovery
 
-?? LISTEN mode for detecting meter IDs and drivers before configuration
+👂 LISTEN mode for detecting meter IDs and drivers before configuration
 
 Requirements (IMPORTANT)
 
-?? This add-on uses ONLY the internal MQTT broker provided by Home Assistant (Mosquitto add-on).
+⚠️ This add-on uses ONLY the internal MQTT broker provided by Home Assistant (Mosquitto add-on).
 
 The Mosquitto Broker add-on must be installed and running.
 
@@ -189,7 +296,7 @@ no USB radio dongle is available or desired,
 
 wmbusmeters is used purely as a decoder and HA integration layer.
 
-?? Important note
+⚠️ Important note
 
 Do not install the official wmbusmeters add-on in parallel.
 This add-on bundles its own wmbusmeters instance and replaces it for this use case.
