@@ -154,12 +154,3 @@ Do not install the official **wmbusmeters** add-on in parallel. This add-on bund
 Because this repository contains and modifies code derived from **wmbusmeters-ha-addon**, the entire project is distributed under:
 
 **GNU General Public License v3.0 (GPL-3.0)**
-
----
-
-## Kodowanie (żeby nie było krzaków)
-
-Zapisuj plik jako **UTF-8**.
-
-- VS Code: kliknij w prawym dolnym rogu „UTF-8” → **Save with Encoding** → **UTF-8**  
-- Notepad++: **Kodowanie** → **Koduj w UTF-8 (bez BOM)**  
