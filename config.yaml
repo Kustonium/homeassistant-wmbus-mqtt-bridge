@@ -1,83 +1,46 @@
-diff --git a/config.yaml b/config.yaml
-index 2bcb5d1..c1b0d9a 100644
---- a/config.yaml
-+++ b/config.yaml
-@@ -1,7 +1,7 @@
- name: "wMBus MQTT Bridge"
- description: "MQTT RAW HEX -> wmbusmeters (stdin:hex) -> MQTT + Home Assistant Discovery"
--version: "1.2.5"
-+version: "1.2.6"
- slug: "wmbus_mqtt_bridge"
- image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
+name: "wMBus MQTT Bridge"
+description: "MQTT RAW HEX -> wmbusmeters (stdin:hex) -> MQTT + Home Assistant Discovery"
+version: "1.2.6"
+slug: "wmbus_mqtt_bridge"
+image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
 
-@@ -35,18 +35,17 @@ options:
-   # where JSON telegram state is published
-   state_prefix: "wmbusmeters"
-   state_retain: false
+arch:
+  - amd64
 
--  # meters list:
--  # - If empty => LISTEN MODE (wmbusmeters will show "Received telegram from:" + suggested driver)
--  meters:
--    - id: "Zimna Woda"
--      meter_id: "03528221"
--      type: "hydrodigit"
--      key: "NOKEY"
--    - id: "Ciepła woda"
--      meter_id: "03534159"
--      type: "hydrodigit"
--      key: "NOKEY"
-+  # meters list:
-+  # - If empty => LISTEN MODE (wmbusmeters will show "Received telegram from:" + suggested driver)
-+  meters: []
-+  # Example:
-+  # meters:
-+  #   - id: "My meter"
-+  #     meter_id: "XXXXXXXX"
-+  #     type: auto
-+  #     type_other: ""
-+  #     key: "NOKEY"
+init: false
 
- schema:
-   raw_topic: str
--  loglevel: str
-+  loglevel: list(normal|verbose|debug)
-   filter_hex_only: bool
-   debug_every_n: int
-   discovery_enabled: bool
-@@ -56,7 +55,14 @@ schema:
-   state_retain: bool
-   meters:
-     - id: str
-       meter_id: str
--      type: str
-+      # Dropdown w UI add-on:
-+      # - auto: wmbusmeters sam dobiera driver
-+      # - other: wpisujesz własny driver w type_other
-+      type: list(auto|amiplus|hydrodigit|hydrocalm3|hydrus|multical21|multical403|multical602|multical803|izar|apator|other)
-+      type_other: str?
-       key: str?
-diff --git a/rootfs/usr/bin/run.sh b/rootfs/usr/bin/run.sh
-index 9e0d8e7..4d8f12a 100755
---- a/rootfs/usr/bin/run.sh
-+++ b/rootfs/usr/bin/run.sh
-@@ -163,7 +163,18 @@ else
-     file="$(printf '%s/meter-%04d' "${METER_DIR}" "${i}")"
+services:
+  - mqtt:need
 
-     name="$(echo "${meter_json}" | jq -r '.id')"
-     driver="$(echo "${meter_json}" | jq -r '.type')"
-+    driver_other="$(echo "${meter_json}" | jq -r '.type_other // empty')"
-     mid_raw="$(echo "${meter_json}" | jq -r '.meter_id')"
-     key="$(echo "${meter_json}" | jq -r '.key // "NOKEY"')"
-+
-+    # UI dropdown: type=other -> real driver name in type_other
-+    if [[ "${driver}" == "other" ]]; then
-+      if [[ -z "${driver_other}" || "${driver_other}" == "null" ]]; then
-+        bashio::log.error "type=other but type_other is empty for '${name}' -> pomijam."
-+        continue
-+      fi
-+      driver="${driver_other}"
-+    fi
+options:
+  raw_topic: "wmbus_bridge/telegram"
+  loglevel: "normal"
+  filter_hex_only: true
+  debug_every_n: 0
 
-     mid="$(normalize_meter_id "${mid_raw}")"
-     if [[ -z "${mid}" ]]; then
-       bashio::log.error "Niepoprawny meter_id dla '${name}' -> pomijam (dostałem: '${mid_raw}')."
+  discovery_enabled: true
+  discovery_prefix: "homeassistant"
+  discovery_retain: true
+
+  state_prefix: "wmbusmeters"
+  state_retain: false
+
+  # If empty => LISTEN MODE
+  meters: []
+
+schema:
+  raw_topic: str
+  loglevel: list(normal|verbose|debug)
+  filter_hex_only: bool
+  debug_every_n: int
+  discovery_enabled: bool
+  discovery_prefix: str
+  discovery_retain: bool
+  state_prefix: str
+  state_retain: bool
+  meters:
+    - id: str
+      meter_id: str
+      type: list(auto|abbb23|amiplus|apator162|apatoreitn|dme_07|fhkvdataiii|flowiq2200|hcae2|hydrocalm3|hydrocalm4|hydrodigit|hydrus|iperl|itron|itronheat|iwmtx5|izar|kamheat|lse_07_17|mkradio3|mkradio3a|mkradio4|multical21|pollucomf|qcaloric|qheat|qwater|rfmamb|sensostar|sharky774|topaseskr|tsd2|unismart|vario451|waterstarm|other)
+      type_other: str?
+      key: str?
