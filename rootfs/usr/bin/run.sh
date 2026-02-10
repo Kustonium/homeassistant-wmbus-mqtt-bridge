@@ -1,3 +1,4 @@
+bashio::log.info "run.sh: autodiscovery generic v1.2.6"
 #!/usr/bin/with-contenv bashio
 set -euo pipefail
 
