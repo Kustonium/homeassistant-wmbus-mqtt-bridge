@@ -356,25 +356,25 @@ SNIPPET_STATE="/data/seen_ids.txt"
 touch "${SNIPPET_STATE}"
 
 emit_snippet_if_new() {
-  local id="$1"
-  local driver="$2"
-
-  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
-  if ! grep -qx "${id}" "${SNIPPET_STATE}"; then
-    echo "${id}" >> "${SNIPPET_STATE}"
-
-    bashio::log.warning "=== NEW METER CANDIDATE DETECTED ==="
-    bashio::log.warning "Received telegram from: ${id}"
-    [[ -n "${driver}" ]] && bashio::log.warning "Suggested driver: ${driver}"
-    bashio::log.warning "Paste into add-on options:"
-    bashio::log.warning "meters:"
-    bashio::log.warning "  - id: meter_${id}"
-    bashio::log.warning "    meter_id: \"${id}\""
-    bashio::log.warning "    type: ${driver:-<set_driver_here>}"
-    bashio::log.warning "    key: NOKEY"
-    bashio::log.warning "=================================="
-  fi
-}
+   local id="$1"
+   local driver="$2"
+ 
+   [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+   if ! grep -qx "${id}" "${SNIPPET_STATE}"; then
+emit_snippet_if_new() {
+     bashio::log.warning "Paste into add-on options:"
+     bashio::log.warning "meters:"
+     bashio::log.warning "  - id: meter_${id}"
+     bashio::log.warning "    meter_id: \"${id}\""
+-    bashio::log.warning "    type: ${driver:-<set_driver_here>}"
++    bashio::log.warning "    type: auto"
++    if [[ -n "${driver}" ]]; then
++      bashio::log.warning "    # suggested_driver: ${driver}"
++    fi
+     bashio::log.warning "    key: NOKEY"
+     bashio::log.warning "=================================="
+   fi
+ }
 
 # =========================
 # Pipeline: MQTT -> stdin -> wmbusmeters -> JSON -> MQTT (state + discovery)
