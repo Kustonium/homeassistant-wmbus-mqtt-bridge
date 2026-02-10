@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
 description: "MQTT RAW HEX -> wmbusmeters (stdin:hex) -> MQTT + Home Assistant Discovery"
-version: "1.2.5"
+version: "1.2.6"
 slug: "wmbus_mqtt_bridge"
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
 
@@ -37,14 +37,6 @@ options:
   # meters list:
   # - If empty => LISTEN MODE (wmbusmeters will show "Received telegram from:" + suggested driver)
   meters:
-    - id: "Zimna Woda"
-      meter_id: "03528221"
-      type: "hydrodigit"
-      key: "NOKEY"
-    - id: "Ciepła woda"
-      meter_id: "03534159"
-      type: "hydrodigit"
-      key: "NOKEY"
 
 schema:
   raw_topic: str

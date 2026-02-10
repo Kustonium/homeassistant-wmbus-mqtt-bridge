@@ -7,7 +7,7 @@ set -euo pipefail
 # - Karmi wmbusmeters przez stdin:hex
 # - Odbiera JSON z wmbusmeters i publikuje:
 #     * state topic:   <state_prefix>/<id>/state
-#     * MQTT Discovery: <discovery_prefix>/sensor/<uniq>/total_m3/config
+#     * MQTT Discovery: <discovery_prefix>/sensor/<uniq>/<field>/config
 #
 # Tryb diagnostyczny:
 # - Jeśli meters[] jest puste, wmbusmeters przechodzi w LISTEN MODE
@@ -111,13 +111,6 @@ jq -c '.' "${OPTIONS_JSON}" | while read -r line; do bashio::log.info "${line}";
 
 # =========================
 # Normalizacja meter_id
-# Akceptuje:
-# - "3528221"      -> "03528221"
-# - "03528221"     -> "03528221"
-# - "0x03528221"   -> "03528221"   (traktujemy jako zapis ID, NIE hex->dec)
-#
-# Uwaga: nie używamy printf %d, bo wartości z wiodącym zerem
-# + cyframi 8/9 potrafią być interpretowane jako ósemkowe -> "invalid octal".
 # =========================
 normalize_meter_id() {
   local mid_raw="$1"
@@ -127,10 +120,8 @@ normalize_meter_id() {
   mid_raw="${mid_raw#0x}"
   mid_raw="${mid_raw#0X}"
 
-  # tylko cyfry
   [[ "${mid_raw}" =~ ^[0-9]+$ ]] || { echo ""; return 0; }
 
-  # dopaduj do 8 cyfr (DLL-ID zwykle ma 8 znaków)
   if [[ "${#mid_raw}" -lt 8 ]]; then
     printf "%8s" "${mid_raw}" | tr ' ' '0'
   else
@@ -140,9 +131,6 @@ normalize_meter_id() {
 
 # =========================
 # Generowanie /data/etc/wmbusmeters.d/meter-XXXX
-# WAŻNE:
-# - W meter-file NIE MA 'mode' (to nie jest klucz wmbusmeters)
-# - driver jest potrzebny, ale w LISTEN MODE wmbusmeters sam go zasugeruje.
 # =========================
 bashio::log.info "Registering meters ..."
 rm -f "${METER_DIR}/meter-"* 2>/dev/null || true
@@ -191,65 +179,173 @@ bashio::log.info "Meters directory: ${METER_DIR}"
 ls -la "${METER_DIR}" | while read -r line; do bashio::log.info "${line}"; done
 
 # =========================
-# MQTT Discovery
-# - Minimalny sensor: total_m3 (m³)
-# - Pozostałe pola w JSON lądują jako attributes (json_attributes_topic)
+# MQTT Discovery (GENERIC)
+# - Encja dla każdego pola numerycznego w JSON (driver-agnostic)
+# - Config jest retained -> HA po restarcie sam odtwarza encje
 # =========================
-declare -A DISCOVERY_SENT
+declare -A DISCOVERY_SENT_FIELD
+declare -A DISCOVERY_CLEANED_TOTALM3
 
-emit_discovery() {
-  local id="$1"
-  local name="$2"
-  local meter="$3"
+sanitize_obj_id() {
+  echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_]+/_/g; s/^_+//; s/_+$//; s/__+/_/g'
+}
 
+guess_unit() {
+  local key="$1"
+  local sfx="${key##*_}"
+  sfx="$(echo "${sfx}" | tr '[:upper:]' '[:lower:]')"
+  case "${sfx}" in
+    kwh) echo "kWh" ;;
+    wh)  echo "Wh" ;;
+    mwh) echo "MWh" ;;
+    w)   echo "W" ;;
+    kw)  echo "kW" ;;
+    v)   echo "V" ;;
+    a)   echo "A" ;;
+    hz)  echo "Hz" ;;
+    c|degc) echo "°C" ;;
+    m3)  echo "m³" ;;
+    l)   echo "L" ;;
+    bar) echo "bar" ;;
+    hpa) echo "hPa" ;;
+    pa)  echo "Pa" ;;
+    ppm) echo "ppm" ;;
+    dbm) echo "dBm" ;;
+    percent|pct) echo "%" ;;
+    *)   echo "" ;;
+  esac
+}
+
+guess_device_class() {
+  local key_lc="$1"
+  local unit="$2"
+
+  if [[ "${key_lc}" == *battery* ]]; then echo "battery"; return 0; fi
+  if [[ "${key_lc}" == *humidity* ]]; then echo "humidity"; return 0; fi
+  if [[ "${key_lc}" == *temperature* ]]; then echo "temperature"; return 0; fi
+
+  case "${unit}" in
+    "kWh"|"Wh"|"MWh") echo "energy" ;;
+    "W"|"kW")         echo "power" ;;
+    "V")              echo "voltage" ;;
+    "A")              echo "current" ;;
+    "Hz")             echo "frequency" ;;
+    "°C")             echo "temperature" ;;
+    "m³"|"L")         echo "volume" ;;
+    "bar"|"hPa"|"Pa") echo "pressure" ;;
+    "dBm")            echo "signal_strength" ;;
+    "%")              echo "battery" ;;
+    *)                echo "" ;;
+  esac
+}
+
+guess_state_class() {
+  local key_lc="$1"
+  local device_class="$2"
+
+  if [[ "${device_class}" =~ ^(energy|volume)$ ]]; then
+    if [[ "${key_lc}" == *total* || "${key_lc}" == *consumption* || "${key_lc}" == *meter* ]]; then
+      echo "total_increasing"
+      return 0
+    fi
+  fi
+
+  [[ -n "${device_class}" ]] && echo "measurement" || echo ""
+}
+
+emit_discovery_from_json() {
+  local json_line="$1"
   [[ "${DISCOVERY_ENABLED}" == "true" ]] || return 0
+
+  local id name meter
+  id="$(echo "${json_line}" | jq -r '.id // empty' 2>/dev/null || true)"
   [[ -n "${id}" ]] || return 0
 
-  # nie wysyłaj tego samego configu w kółko
-  if [[ -n "${DISCOVERY_SENT[${id}]+x}" ]]; then
-    return 0
-  fi
-  DISCOVERY_SENT["${id}"]=1
+  name="$(echo "${json_line}" | jq -r '.name // .id // "wmbus"' 2>/dev/null || true)"
+  meter="$(echo "${json_line}" | jq -r '.meter // empty' 2>/dev/null || true)"
 
   local uniq="wmbus_${id}"
   local state_topic="${STATE_PREFIX}/${id}/state"
-  local cfg_topic="${DISCOVERY_PREFIX}/sensor/${uniq}/total_m3/config"
-
-  # device group (żeby encje ładnie siedziały pod jednym urządzeniem)
-  # identifiers: stały identyfikator urządzenia w HA
   local dev_name="${name} (${id})"
   local dev_mdl="${meter:-wmbusmeter}"
   local dev_mfr="wmbusmeters"
 
-  local payload
-  payload="$(jq -c -n \
-    --arg name "${name} total" \
-    --arg uniq "${uniq}_total_m3" \
-    --arg st "${state_topic}" \
-    --arg did "${uniq}" \
-    --arg dname "${dev_name}" \
-    --arg dmdl "${dev_mdl}" \
-    --arg dmfr "${dev_mfr}" \
-    '{
-      name: $name,
-      unique_id: $uniq,
-      state_topic: $st,
-      unit_of_measurement: "m³",
-      device_class: "water",
-      state_class: "total_increasing",
-      value_template: "{{ value_json.total_m3 }}",
-      json_attributes_topic: $st,
-      icon: "mdi:water",
-      device: {
-        identifiers: [$did],
-        name: $dname,
-        model: $dmdl,
-        manufacturer: $dmfr
-      }
-    }')"
+  # posprzątaj stary, sztywny discovery "total_m3" jeśli to NIE jest wodomierz
+  if [[ -z "${DISCOVERY_CLEANED_TOTALM3[${id}]+x}" ]]; then
+    if ! echo "${json_line}" | jq -e '.total_m3 and ((.total_m3|type)=="number")' >/dev/null 2>&1; then
+      mqtt_pub "${DISCOVERY_PREFIX}/sensor/${uniq}/total_m3/config" "" "true" || true
+    fi
+    DISCOVERY_CLEANED_TOTALM3["${id}"]=1
+  fi
 
-  mqtt_pub "${cfg_topic}" "${payload}" "${DISCOVERY_RETAIN}" || true
-  bashio::log.info "MQTT discovery published for id=${id} (topic=${cfg_topic})"
+  echo "${json_line}" \
+    | jq -r '
+        to_entries[]
+        | select(.key as $k
+          | ($k != "_")
+          and ($k != "id")
+          and ($k != "name")
+          and ($k != "meter")
+          and ($k != "media")
+          and ($k != "timestamp")
+          and ($k != "device_date_time")
+          and ($k != "rssi")
+          and ($k != "lqi")
+        )
+        | select((.value|type)=="number")
+        | .key
+      ' 2>/dev/null \
+    | while IFS= read -r key; do
+        [[ -n "${key}" ]] || continue
+
+        obj="$(sanitize_obj_id "${key}")"
+        [[ -n "${obj}" ]] || continue
+
+        cache_key="${id}|${obj}"
+        [[ -n "${DISCOVERY_SENT_FIELD[${cache_key}]+x}" ]] && continue
+        DISCOVERY_SENT_FIELD["${cache_key}"]=1
+
+        key_lc="$(echo "${key}" | tr '[:upper:]' '[:lower:]')"
+        unit="$(guess_unit "${key}")"
+        device_class="$(guess_device_class "${key_lc}" "${unit}")"
+        state_class="$(guess_state_class "${key_lc}" "${device_class}")"
+
+        cfg_topic="${DISCOVERY_PREFIX}/sensor/${uniq}/${obj}/config"
+        unique_id="${uniq}_${obj}"
+        sensor_name="${name} ${key}"
+
+        payload="$(jq -c -n \
+          --arg name "${sensor_name}" \
+          --arg uniq "${unique_id}" \
+          --arg st "${state_topic}" \
+          --arg key "${key}" \
+          --arg did "${uniq}" \
+          --arg dname "${dev_name}" \
+          --arg dmdl "${dev_mdl}" \
+          --arg dmfr "${dev_mfr}" \
+          --arg unit "${unit}" \
+          --arg dc "${device_class}" \
+          --arg sc "${state_class}" \
+          '{
+            name: $name,
+            unique_id: $uniq,
+            state_topic: $st,
+            value_template: "{{ value_json[\"" + $key + "\"] }}",
+            json_attributes_topic: $st,
+            device: {
+              identifiers: [$did],
+              name: $dname,
+              model: $dmdl,
+              manufacturer: $dmfr
+            }
+          }
+          + ( ($unit|length)>0 ? {unit_of_measurement:$unit} : {} )
+          + ( ($dc|length)>0 ? {device_class:$dc} : {} )
+          + ( ($sc|length)>0 ? {state_class:$sc} : {} )
+          ')"
+
+        mqtt_pub "${cfg_topic}" "${payload}" "${DISCOVERY_RETAIN}" || true
+      done
 }
 
 # =========================
@@ -284,13 +380,6 @@ emit_snippet_if_new() {
 # =========================
 bashio::log.info "Starting wmbusmeters..."
 
-# Wejście:
-# - mosquitto_sub -F '%p' => tylko payload (bez topic)
-# - opcjonalny filtr: zostaw tylko czysty HEX (usuń spacje / 0x / śmieci)
-#
-# Wyjście:
-# - wmbusmeters loguje tekst + linie JSON
-# - JSON publikujemy do state_topic, a discovery generujemy raz na ID
 if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
   /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "${RAW_TOPIC}" -F '%p' \
     | awk -v dbg_n="${DEBUG_EVERY_N}" '
@@ -311,10 +400,8 @@ if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
       ' \
     | /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
     | while IFS= read -r line; do
-        # 1) loguj wszystko (przydaje się do debug)
         echo "${line}"
 
-        # 2) Listen-mode: wyciągaj ID + driver z tekstu wmbusmeters
         if [[ "${METERS_COUNT}" == "0" ]]; then
           if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9]{8}) ]]; then
             last_id="${BASH_REMATCH[1]}"
@@ -329,16 +416,12 @@ if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
           fi
         fi
 
-        # 3) JSON telegram -> publish state + discovery
         if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
           id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
-          name="$(echo "${line}" | jq -r '.name // .id // "wmbus"' 2>/dev/null || true)"
-          meter="$(echo "${line}" | jq -r '.meter // empty' 2>/dev/null || true)"
-
           if [[ -n "${id}" ]]; then
             state_topic="${STATE_PREFIX}/${id}/state"
             mqtt_pub "${state_topic}" "${line}" "${STATE_RETAIN}" || true
-            emit_discovery "${id}" "${name}" "${meter}"
+            emit_discovery_from_json "${line}"
           fi
         fi
       done
@@ -349,12 +432,10 @@ else
         echo "${line}"
         if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
           id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
-          name="$(echo "${line}" | jq -r '.name // .id // "wmbus"' 2>/dev/null || true)"
-          meter="$(echo "${line}" | jq -r '.meter // empty' 2>/dev/null || true)"
           if [[ -n "${id}" ]]; then
             state_topic="${STATE_PREFIX}/${id}/state"
             mqtt_pub "${state_topic}" "${line}" "${STATE_RETAIN}" || true
-            emit_discovery "${id}" "${name}" "${meter}"
+            emit_discovery_from_json "${line}"
           fi
         fi
       done
