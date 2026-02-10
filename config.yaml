@@ -1,8 +1,4 @@
-diff --git a/config.yaml b/config.yaml
-index 2bcb5d1..c1b0d9a 100644
---- a/config.yaml
-+++ b/config.yaml
-@@ -1,7 +1,7 @@
+
  name: "wMBus MQTT Bridge"
  description: "MQTT RAW HEX -> wmbusmeters (stdin:hex) -> MQTT + Home Assistant Discovery"
 -version: "1.2.5"
