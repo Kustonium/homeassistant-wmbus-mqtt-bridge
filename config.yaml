@@ -36,7 +36,7 @@ options:
 
   # meters list:
   # - If empty => LISTEN MODE (wmbusmeters will show "Received telegram from:" + suggested driver)
-  meters:
+  meters: []
 
 schema:
   raw_topic: str
