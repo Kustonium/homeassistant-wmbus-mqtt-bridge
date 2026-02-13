@@ -1,4 +1,8 @@
-# --- build wmbusmeters ---
+# syntax=docker/dockerfile:1
+
+# --------------------------
+# build wmbusmeters
+# --------------------------
 FROM alpine:3.20 AS builder
 
 RUN apk add --no-cache \
@@ -8,13 +12,23 @@ RUN apk add --no-cache \
   libxml2-dev
 
 WORKDIR /src
-RUN git clone https://github.com/wmbusmeters/wmbusmeters.git .
-RUN make
-RUN install -d /out && install -m 0755 build/wmbusmeters /out/wmbusmeters
+
+# Uwaga: to buduje "latest z mastera" — powtarzalność ogarniesz pinem w ARG niżej (opcjonalnie)
+ARG WMBUSMETERS_REF=master
+RUN git clone https://github.com/wmbusmeters/wmbusmeters.git . \
+  && git checkout "${WMBUSMETERS_REF}" \
+  && make \
+  && install -d /out \
+  && install -m 0755 build/wmbusmeters /out/wmbusmeters
 
 
-# --- runtime (HA add-on base) ---
-FROM ghcr.io/home-assistant/amd64-base:latest
+# --------------------------
+# runtime (Home Assistant add-on base)
+# --------------------------
+# HA w czasie builda add-onów wstrzykuje BUILD_FROM (właściwy base dla arch).
+# Poza HA możesz nadpisać BUILD_FROM ręcznie, a default jest przypięty (nie latest).
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20
+FROM ${BUILD_FROM}
 
 RUN apk add --no-cache \
   mosquitto-clients jq \
