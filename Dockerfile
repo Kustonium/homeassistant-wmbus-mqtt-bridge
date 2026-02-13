@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1
 
+# ARG używany w FROM musi być przed pierwszym FROM, albo przed tym konkretnym FROM
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20
+
 # --------------------------
 # build wmbusmeters
 # --------------------------
@@ -13,7 +16,6 @@ RUN apk add --no-cache \
 
 WORKDIR /src
 
-# Uwaga: to buduje "latest z mastera" — powtarzalność ogarniesz pinem w ARG niżej (opcjonalnie)
 ARG WMBUSMETERS_REF=master
 RUN git clone https://github.com/wmbusmeters/wmbusmeters.git . \
   && git checkout "${WMBUSMETERS_REF}" \
@@ -23,11 +25,8 @@ RUN git clone https://github.com/wmbusmeters/wmbusmeters.git . \
 
 
 # --------------------------
-# runtime (Home Assistant add-on base)
+# runtime (HA add-on base)
 # --------------------------
-# HA w czasie builda add-onów wstrzykuje BUILD_FROM (właściwy base dla arch).
-# Poza HA możesz nadpisać BUILD_FROM ręcznie, a default jest przypięty (nie latest).
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20
 FROM ${BUILD_FROM}
 
 RUN apk add --no-cache \
