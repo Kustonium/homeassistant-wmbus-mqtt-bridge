@@ -12,10 +12,56 @@ set -euo pipefail
 # - add-on loguje snippet do wklejenia (type: auto)
 # ============================================================
 
-MQTT_HOST="$(bashio::services mqtt "host")"
-MQTT_PORT="$(bashio::services mqtt "port")"
-MQTT_USER="$(bashio::services mqtt "username")"
-MQTT_PASS="$(bashio::services mqtt "password")"
+MQTT_MODE="$(bashio::config 'mqtt_mode')"
+[[ -z "${MQTT_MODE}" || "${MQTT_MODE}" == "null" ]] && MQTT_MODE="auto"
+
+EXT_MQTT_HOST="$(bashio::config 'external_mqtt_host')"
+EXT_MQTT_PORT="$(bashio::config 'external_mqtt_port')"
+EXT_MQTT_USER="$(bashio::config 'external_mqtt_username')"
+EXT_MQTT_PASS="$(bashio::config 'external_mqtt_password')"
+
+[[ -z "${EXT_MQTT_PORT}" || "${EXT_MQTT_PORT}" == "null" ]] && EXT_MQTT_PORT="1883"
+
+use_ha_mqtt() {
+  bashio::services.available "mqtt" >/dev/null 2>&1
+}
+
+if [[ "${MQTT_MODE}" == "ha" ]]; then
+  if ! use_ha_mqtt; then
+    bashio::log.fatal "mqtt_mode=ha, ale w Home Assistant nie wykryto usługi MQTT. Zainstaluj/uruchom Mosquitto Broker add-on albo przełącz na mqtt_mode=external."
+    exit 1
+  fi
+  MQTT_HOST="$(bashio::services mqtt "host")"
+  MQTT_PORT="$(bashio::services mqtt "port")"
+  MQTT_USER="$(bashio::services mqtt "username")"
+  MQTT_PASS="$(bashio::services mqtt "password")"
+elif [[ "${MQTT_MODE}" == "external" ]]; then
+  if [[ -z "${EXT_MQTT_HOST}" || "${EXT_MQTT_HOST}" == "null" ]]; then
+    bashio::log.fatal "mqtt_mode=external wymaga external_mqtt_host."
+    exit 1
+  fi
+  MQTT_HOST="${EXT_MQTT_HOST}"
+  MQTT_PORT="${EXT_MQTT_PORT}"
+  MQTT_USER="${EXT_MQTT_USER}"
+  MQTT_PASS="${EXT_MQTT_PASS}"
+else
+  # auto
+  if use_ha_mqtt; then
+    MQTT_HOST="$(bashio::services mqtt "host")"
+    MQTT_PORT="$(bashio::services mqtt "port")"
+    MQTT_USER="$(bashio::services mqtt "username")"
+    MQTT_PASS="$(bashio::services mqtt "password")"
+  else
+    if [[ -z "${EXT_MQTT_HOST}" || "${EXT_MQTT_HOST}" == "null" ]]; then
+      bashio::log.fatal "Nie wykryto usługi MQTT w HA (Mosquitto) i external_mqtt_host jest puste. Ustaw mqtt_mode=external oraz podaj external_mqtt_host, albo zainstaluj Mosquitto Broker add-on."
+      exit 1
+    fi
+    MQTT_HOST="${EXT_MQTT_HOST}"
+    MQTT_PORT="${EXT_MQTT_PORT}"
+    MQTT_USER="${EXT_MQTT_USER}"
+    MQTT_PASS="${EXT_MQTT_PASS}"
+  fi
+fi
 
 RAW_TOPIC="$(bashio::config 'raw_topic')"
 
@@ -51,7 +97,7 @@ OPTIONS_JSON="${BASE}/options.json"
 
 mkdir -p "${METER_DIR}" "${ETC_DIR}"
 
-bashio::log.info "run.sh: v1.2.6 (generic discovery)"
+bashio::log.info "run.sh: v1.2.7 (generic discovery)"
 bashio::log.info "MQTT broker: ${MQTT_HOST}:${MQTT_PORT}"
 bashio::log.info "Subscribing to: ${RAW_TOPIC}"
 bashio::log.info "wmbusmeters loglevel: ${LOGLEVEL}"

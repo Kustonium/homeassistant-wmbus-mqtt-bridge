@@ -59,11 +59,12 @@ ESP32 / Gateway / Bridge
 
 ### Wymagania (WAŻNE)
 
-⚠️ Ten add-on korzysta **wyłącznie** z wewnętrznego brokera MQTT dostarczanego przez Home Assistant (**Mosquitto add-on**).
+Add-on domyślnie korzysta z wewnętrznego brokera MQTT z Home Assistant (Mosquitto add-on), ale może też pracować z brokerem zewnętrznym (np. osobny LXC/Docker).
 
-- Wymagany jest **Mosquitto Broker** zainstalowany i uruchomiony jako add-on w Home Assistant.
-- Zewnętrzne brokery MQTT (LXC / VM / Docker) nie są wspierane.
-- Add-on wymaga **Home Assistant OS / Supervised** (Supervisor API).
+**Tryby brokera (mqtt_mode):**
+- `auto` (domyślnie): używa brokera HA jeśli dostępny, w przeciwnym razie używa ustawień zewnętrznych
+- `ha`: wymusza broker HA (Mosquitto add-on)
+- `external`: zawsze używa ustawień zewnętrznych (`external_mqtt_host`, itd.)
 
 ### Przeznaczenie
 
@@ -135,11 +136,12 @@ ESP32 / Gateway / Bridge
 
 ### Requirements (IMPORTANT)
 
-⚠️ This add-on uses **only** the internal MQTT broker provided by Home Assistant (Mosquitto add-on).
+By default, this add-on uses Home Assistant's internal MQTT service (Mosquitto add-on), but it can also connect to an external broker (e.g., separate LXC/Docker).
 
-- Mosquitto Broker add-on must be installed and running.
-- External MQTT brokers are not supported.
-- Requires Home Assistant OS / Supervised (Supervisor API).
+**Broker modes (mqtt_mode):**
+- `auto` (default): use HA broker if available, otherwise use external settings
+- `ha`: force HA broker (Mosquitto add-on)
+- `external`: always use external settings (`external_mqtt_host`, etc.)
 
 ⚠️ **Important note**  
 Do not install the official **wmbusmeters** add-on in parallel. This add-on bundles its own wmbusmeters instance and replaces it for this use case.
