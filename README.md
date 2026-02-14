@@ -80,6 +80,88 @@ Minimalny start:
 
 Przykładowy `docker-compose.yml` znajdziesz w `docker/examples/`.
 
+#### Szybki start (Docker Compose – DietPi/Ubuntu)
+
+1) Pobierz repozytorium i wejdź do katalogu:
+
+```bash
+git clone https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge.git
+cd homeassistant-wmbus-mqtt-bridge
+```
+
+2) Skopiuj przykład do osobnego katalogu roboczego (żeby nie mieszać w repo):
+
+```bash
+mkdir -p /home/wmbus-test
+cp -a docker/examples/* /home/wmbus-test/
+cd /home/wmbus-test
+```
+
+3) Uruchom:
+
+```bash
+docker compose up -d --build
+```
+
+4) Zobacz logi bridge (pierwszy start utworzy pliki w `./config/`):
+
+```bash
+docker compose logs -f wmbus
+```
+
+Jeśli zobaczysz komunikat typu:
+- `Created default /config/options.json`
+- `No meters configured -> LISTEN-like mode`
+
+…to znaczy, że kontener działa i czeka na telegramy.
+
+#### Konfiguracja
+
+- **Najważniejszy plik**: `./config/options.json` (w kontenerze: `/config/options.json`).
+- Pliki `./config/etc/wmbusmeters.conf` i `./config/etc/wmbusmeters.d/*.conf` są **generowane** na starcie (nie edytuj ich ręcznie – nadpiszą się).
+
+Przykład wpisu licznika (uzupełnij `type` i `key`):
+
+```json
+{
+  "meters": [
+    {
+      "id": "12345678",
+      "name": "Energia",
+      "type": "amiplus",
+      "key": "00112233445566778899AABBCCDDEEFF"
+    }
+  ]
+}
+```
+
+Po zmianach zrestartuj tylko bridge:
+
+```bash
+docker compose restart wmbus
+```
+
+#### Skąd mają przychodzić telegramy
+
+Ten kontener **nie odbiera radia**. On tylko:
+- subskrybuje `raw_topic` (domyślnie `wmbusmeters/raw/#`),
+- bierze payload (HEX),
+- wrzuca to na `stdin` do `wmbusmeters`,
+- publikuje JSON do `state_prefix` (domyślnie `wmbusmeters/<id>/state`),
+- opcjonalnie publikuje MQTT Discovery do `homeassistant/...` (w Dockerze ustaw `publish_discovery: true`).
+
+Minimalny test MQTT (musisz mieć prawdziwy telegram z odbiornika):
+
+```bash
+mosquitto_pub -h localhost -p 1883 -t 'wmbusmeters/raw/test' -m '<HEX_TELEGRAM>'
+mosquitto_sub -h localhost -p 1883 -t 'wmbusmeters/#' -v
+```
+
+#### Ważne
+
+- Katalog `./config` **musi być zapisywalny** (nie montuj jako `:ro`), bo bridge tworzy tam `options.json` i konfigurację wmbusmeters.
+- Jeśli `meters` jest puste, uruchamia się tryb LISTEN (pomocny do wykrycia ID/drivera), ale bez kluczy nie będzie pełnego dekodowania.
+
 ### Przeznaczenie
 
 Ten add-on jest szczególnie przydatny, gdy:
@@ -170,6 +252,82 @@ Minimal start:
 2. After first start, edit `/config/options.json` (broker, `raw_topic`, `meters`) and restart.
 
 See `docker/examples/` for a compose example.
+
+#### Quick start (Docker Compose – DietPi/Ubuntu)
+
+1) Clone the repo:
+
+```bash
+git clone https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge.git
+cd homeassistant-wmbus-mqtt-bridge
+```
+
+2) Copy the example into a separate working directory:
+
+```bash
+mkdir -p /home/wmbus-test
+cp -a docker/examples/* /home/wmbus-test/
+cd /home/wmbus-test
+```
+
+3) Start:
+
+```bash
+docker compose up -d --build
+```
+
+4) Follow logs (first start creates files in `./config/`):
+
+```bash
+docker compose logs -f wmbus
+```
+
+#### Configuration
+
+- Main file: `./config/options.json` (inside container: `/config/options.json`).
+- `./config/etc/wmbusmeters.conf` and `./config/etc/wmbusmeters.d/*.conf` are **generated on startup** (don’t edit manually).
+
+Example meter entry:
+
+```json
+{
+  "meters": [
+    {
+      "id": "12345678",
+      "name": "Energy",
+      "type": "amiplus",
+      "key": "00112233445566778899AABBCCDDEEFF"
+    }
+  ]
+}
+```
+
+Restart after changes:
+
+```bash
+docker compose restart wmbus
+```
+
+#### Where raw telegrams come from
+
+This container **does not do radio reception**. It only:
+- subscribes to `raw_topic` (default `wmbusmeters/raw/#`),
+- takes payload (HEX),
+- feeds it to `wmbusmeters` via stdin,
+- publishes decoded JSON to `state_prefix`,
+- optionally publishes HA MQTT Discovery (set `publish_discovery: true` in Docker).
+
+Minimal MQTT test (you need a real telegram):
+
+```bash
+mosquitto_pub -h localhost -p 1883 -t 'wmbusmeters/raw/test' -m '<HEX_TELEGRAM>'
+mosquitto_sub -h localhost -p 1883 -t 'wmbusmeters/#' -v
+```
+
+#### Notes
+
+- `./config` must be **writable** (don’t mount as `:ro`), because the bridge creates `options.json` and wmbusmeters config there.
+- If `meters` is empty, LISTEN mode is enabled (useful to discover meter IDs/drivers), but you won’t get full decoding without keys.
 
 ⚠️ **Important note**  
 Do not install the official **wmbusmeters** add-on in parallel. This add-on bundles its own wmbusmeters instance and replaces it for this use case.
