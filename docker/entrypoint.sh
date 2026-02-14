@@ -1,12 +1,13 @@
 #!/bin/sh
 set -eu
 
-CONF="${WMBUS_CONF:-/config/wmbusmeters.conf}"
+BASE="${WMBUS_BASE:-/config}"
 
-if [ ! -f "$CONF" ]; then
-  echo "[ERROR] Brak pliku config: $CONF"
+if [ ! -f "$BASE/etc/wmbusmeters.conf" ]; then
+  echo "[ERROR] Brak $BASE/etc/wmbusmeters.conf"
   exit 2
 fi
 
-echo "[INFO] Starting wmbusmeters with config: $CONF"
-exec /usr/bin/wmbusmeters -c "$CONF"
+echo "[INFO] Starting wmbusmeters with --useconfig=$BASE"
+exec /usr/bin/wmbusmeters --useconfig="$BASE"
+
