@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1
 
+# ARG używany w FROM musi być zadeklarowany globalnie (przed pierwszym FROM)
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20
+
 # --- build wmbusmeters ---
 FROM alpine:3.20 AS builder
 
@@ -34,7 +37,6 @@ ENTRYPOINT ["/entrypoint.sh"]
 
 
 # --- runtime: HA add-on (zostawiasz jak było, tylko bez :latest) ---
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20
 FROM ${BUILD_FROM} AS addon
 
 RUN apk add --no-cache \
