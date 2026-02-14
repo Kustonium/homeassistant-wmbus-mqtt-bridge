@@ -66,6 +66,20 @@ Add-on domyślnie korzysta z wewnętrznego brokera MQTT z Home Assistant (Mosqui
 - `ha`: wymusza broker HA (Mosquitto add-on)
 - `external`: zawsze używa ustawień zewnętrznych (`external_mqtt_host`, itd.)
 
+
+### Docker standalone (bez Home Assistant)
+
+Jeśli chcesz uruchomić bridge jako zwykły kontener (np. DietPi/Ubuntu), to obraz w trybie `docker`:
+- **sam utworzy** plik `/config/options.json` (jeśli go nie ma),
+- wygeneruje `/config/etc/wmbusmeters.conf` oraz katalog `/config/etc/wmbusmeters.d`,
+- będzie subskrybował `raw_topic` z MQTT i publikował stany do `state_prefix`.
+
+Minimalny start:
+1. Uruchom kontener z podmontowanym katalogiem `./config` jako `/config`.
+2. Po pierwszym starcie edytuj `./config/options.json` (np. `raw_topic`, dane brokera, lista `meters`) i zrestartuj kontener.
+
+Przykładowy `docker-compose.yml` znajdziesz w `docker/examples/`.
+
 ### Przeznaczenie
 
 Ten add-on jest szczególnie przydatny, gdy:
@@ -142,6 +156,20 @@ By default, this add-on uses Home Assistant's internal MQTT service (Mosquitto a
 - `auto` (default): use HA broker if available, otherwise use external settings
 - `ha`: force HA broker (Mosquitto add-on)
 - `external`: always use external settings (`external_mqtt_host`, etc.)
+
+
+### Docker standalone (without Home Assistant)
+
+If you want to run the bridge as a plain Docker container:
+- the `docker` image entrypoint **creates** `/config/options.json` on first start,
+- generates `/config/etc/wmbusmeters.conf` and `/config/etc/wmbusmeters.d`,
+- subscribes to `raw_topic` and publishes state to `state_prefix` (and optional HA discovery).
+
+Minimal start:
+1. Run the container with a host directory mounted to `/config`.
+2. After first start, edit `/config/options.json` (broker, `raw_topic`, `meters`) and restart.
+
+See `docker/examples/` for a compose example.
 
 ⚠️ **Important note**  
 Do not install the official **wmbusmeters** add-on in parallel. This add-on bundles its own wmbusmeters instance and replaces it for this use case.
