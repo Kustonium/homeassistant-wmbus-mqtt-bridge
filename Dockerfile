@@ -32,7 +32,7 @@ RUN apk add --no-cache \
 
 COPY --from=builder /out/wmbusmeters /usr/bin/wmbusmeters
 COPY docker/entrypoint.sh /entrypoint.sh
-
+RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 
 
