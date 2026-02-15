@@ -54,3 +54,5 @@ RUN apk add --no-cache \
 
 COPY --from=builder /out/wmbusmeters /usr/bin/wmbusmeters
 COPY rootfs /
+RUN sed -i 's/\r$//' /usr/bin/run.sh /usr/bin/bridge.sh \
+  && chmod a+x /usr/bin/run.sh /usr/bin/bridge.sh
