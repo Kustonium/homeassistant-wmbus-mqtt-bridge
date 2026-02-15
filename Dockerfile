@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 
-ARG BUILD_FROM=ghcr.io/home-assistant/base:3.20
+# UWAGA: to musi istnieć, inaczej build padnie nawet przy target=docker
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20
 
 # --- build wmbusmeters ---
 FROM alpine:3.20 AS builder
@@ -24,12 +25,15 @@ RUN git clone https://github.com/wmbusmeters/wmbusmeters.git . \
 FROM alpine:3.20 AS docker
 
 RUN apk add --no-cache \
-  bash ca-certificates \
+  bash \
+  ca-certificates \
   mosquitto-clients jq \
   libstdc++ zlib libxml2 \
   libusb librtlsdr
 
 COPY --from=builder /out/wmbusmeters /usr/bin/wmbusmeters
+
+# jeśli robisz refaktor core+wrapper:
 COPY rootfs/usr/bin/bridge.sh /usr/bin/bridge.sh
 COPY docker/entrypoint.sh /entrypoint.sh
 
