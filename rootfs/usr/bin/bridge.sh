@@ -3,11 +3,9 @@ set -euo pipefail
 
 # ============================================================
 # wMBus MQTT Bridge (core)
-# - MQTT RAW HEX (payload) -> wmbusmeters stdin:hex
+# - MQTT RAW HEX (payload-only) -> wmbusmeters stdin:hex
 # - wmbusmeters JSON telegram -> MQTT state: <state_prefix>/<id>/state
-# - Home Assistant MQTT Discovery (generic): one sensor per numeric field
-#
-# HA/Docker agnostic. Wrapper MUST provide MQTT_* env vars.
+# - Home Assistant MQTT Discovery (generic): sensor per numeric JSON field
 # ============================================================
 
 log()  { echo "[wmbus-bridge] $*"; }
@@ -22,6 +20,9 @@ need_bin jq
 need_bin mosquitto_sub
 need_bin mosquitto_pub
 need_bin wmbusmeters
+need_bin awk
+need_bin sed
+need_bin tr
 
 BASE="${WMBUS_BASE:-/data}"
 OPTIONS_JSON="${BASE}/options.json"
@@ -32,9 +33,8 @@ CONF_FILE="${ETC_DIR}/wmbusmeters.conf"
 mkdir -p "${ETC_DIR}" "${METER_DIR}"
 
 json_get() {
-  # json_get <jq_expr> <default>
-  local expr="$1"; shift
-  local def="$1"; shift || true
+  local expr="$1"
+  local def="${2:-}"
   if [[ -f "${OPTIONS_JSON}" ]]; then
     local v
     v="$(jq -r "${expr} // empty" "${OPTIONS_JSON}" 2>/dev/null || true)"
@@ -47,9 +47,8 @@ json_get() {
 }
 
 json_get_bool() {
-  # json_get_bool <jq_expr> <default:true|false>
-  local expr="$1"; shift
-  local def="$1"; shift || true
+  local expr="$1"
+  local def="${2:-true}"
   local v
   v="$(json_get "${expr}" "")"
   if [[ "${v}" == "true" || "${v}" == "false" ]]; then
@@ -60,9 +59,8 @@ json_get_bool() {
 }
 
 json_get_int() {
-  # json_get_int <jq_expr> <default>
-  local expr="$1"; shift
-  local def="$1"; shift || true
+  local expr="$1"
+  local def="${2:-0}"
   local v
   v="$(json_get "${expr}" "")"
   if [[ "${v}" =~ ^-?[0-9]+$ ]]; then
@@ -73,7 +71,7 @@ json_get_int() {
 }
 
 # ------------------------------------------------------------
-# Config (env overrides json)
+# Config (ENV overrides JSON)
 # ------------------------------------------------------------
 RAW_TOPIC="${RAW_TOPIC:-$(json_get '.raw_topic' 'wmbus_bridge/telegram')}"
 LOGLEVEL="${LOGLEVEL:-$(json_get '.loglevel' 'normal')}"
@@ -83,21 +81,24 @@ DEBUG_EVERY_N="${DEBUG_EVERY_N:-$(json_get_int '.debug_every_n' '0')}"
 STATE_PREFIX="${STATE_PREFIX:-$(json_get '.state_prefix' 'wmbusmeters')}"
 STATE_RETAIN="${STATE_RETAIN:-$(json_get_bool '.state_retain' 'false')}"
 
-# Backward compat:
-# - HA add-on uses: discovery_enabled
-# - Docker default uses: discovery
-DISCOVERY_ENABLED="${DISCOVERY_ENABLED:-}"
-if [[ -z "${DISCOVERY_ENABLED}" ]]; then
+# Backward compat keys:
+# - discovery_enabled (new)
+# - enable_mqtt_discovery (old)
+# - discovery (docker)
+if [[ -z "${DISCOVERY_ENABLED:-}" ]]; then
   if [[ -f "${OPTIONS_JSON}" ]] && jq -e '.discovery_enabled' "${OPTIONS_JSON}" >/dev/null 2>&1; then
     DISCOVERY_ENABLED="$(json_get_bool '.discovery_enabled' 'true')"
+  elif [[ -f "${OPTIONS_JSON}" ]] && jq -e '.enable_mqtt_discovery' "${OPTIONS_JSON}" >/dev/null 2>&1; then
+    DISCOVERY_ENABLED="$(json_get_bool '.enable_mqtt_discovery' 'true')"
   else
     DISCOVERY_ENABLED="$(json_get_bool '.discovery' 'true')"
   fi
 fi
+
 DISCOVERY_PREFIX="${DISCOVERY_PREFIX:-$(json_get '.discovery_prefix' 'homeassistant')}"
 DISCOVERY_RETAIN="${DISCOVERY_RETAIN:-$(json_get_bool '.discovery_retain' 'true')}"
 
-# MQTT connection must be provided by wrapper
+# MQTT must be provided by wrapper (HA run.sh or docker entrypoint)
 : "${MQTT_HOST:?MQTT_HOST is required}"
 MQTT_PORT="${MQTT_PORT:-1883}"
 MQTT_USER="${MQTT_USER:-}"
@@ -132,8 +133,7 @@ mqtt_pub() {
   local retain_flag=()
   [[ "${retain}" == "true" ]] && retain_flag=( -r )
 
-  /usr/bin/mosquitto_pub "${PUB_ARGS[@]}" -t "${topic}" "${retain_flag[@]}" -m "${payload}" >/dev/null 2>&1 || \
-    /usr/bin/mosquitto_pub "${PUB_ARGS[@]}" -t "${topic}" "${retain_flag[@]}" -m "${payload}" || true
+  /usr/bin/mosquitto_pub "${PUB_ARGS[@]}" -t "${topic}" "${retain_flag[@]}" -m "${payload}" || true
 }
 
 # ------------------------------------------------------------
@@ -175,7 +175,6 @@ sanitize_obj_id() {
 guess_unit() {
   local k
   k="$(echo "$1" | tr '[:upper:]' '[:lower:]')"
-
   case "${k}" in
     *_kw) echo "kW";;
     *_w) echo "W";;
@@ -193,7 +192,8 @@ guess_unit() {
 }
 
 guess_device_class() {
-  local key_lc="$1"; local unit="$2"
+  local key_lc="$1"
+  local unit="$2"
   case "${unit}" in
     "°C") echo "temperature";;
     "%") echo "humidity";;
@@ -212,7 +212,8 @@ guess_device_class() {
 }
 
 guess_state_class() {
-  local key_lc="$1"; local device_class="$2"
+  local key_lc="$1"
+  local device_class="$2"
 
   if [[ "${key_lc}" == total_* || "${key_lc}" == *_total* || "${key_lc}" == *total_* ]]; then
     if [[ "${device_class}" == "energy" || "${device_class}" == "water" || "${device_class}" == "gas" ]]; then
@@ -243,7 +244,7 @@ else
   i=0
   while IFS= read -r meter_json; do
     i=$((i+1))
-    local_file="$(printf '%s/meter-%04d' "${METER_DIR}" "${i}")"
+    file="$(printf '%s/meter-%04d' "${METER_DIR}" "${i}")"
 
     friendly_name="$(echo "${meter_json}" | jq -r '.id // "meter"')"
     driver="$(echo "${meter_json}" | jq -r '.type // "auto"')"
@@ -271,11 +272,10 @@ else
       echo "name=${friendly_name}"
       echo "id=${mid}"
       echo "key=${key}"
-      # wmbusmeters may not accept driver=auto; omit in that case
       if [[ "${driver}" != "auto" ]]; then
         echo "driver=${driver}"
       fi
-    } > "${local_file}"
+    } > "${file}"
 
     log "meter: ${friendly_name} id=${mid} driver=${driver}"
   done < <(jq -c '.meters[]' "${OPTIONS_JSON}" 2>/dev/null || true)
@@ -291,10 +291,7 @@ clean_legacy_totalm3() {
   local id="$1"
   [[ "${DISCOVERY_ENABLED}" == "true" ]] || return 0
   [[ -n "${id}" ]] || return 0
-
   if [[ -z "${DISCOVERY_CLEANED_LEGACY[${id}]+x}" ]]; then
-    # Previous buggy topic:
-    # homeassistant/sensor/wmbus_<id>/total_m3/config
     mqtt_pub "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/total_m3/config" "" "true" || true
     DISCOVERY_CLEANED_LEGACY["${id}"]=1
   fi
@@ -340,37 +337,37 @@ emit_discovery_from_json() {
     unique_id="${uniq}_${obj}"
     sensor_name="${name} ${key}"
 
-payload="$(jq -c -n \
-  --arg name "${sensor_name}" \
-  --arg uniq "${unique_id}" \
-  --arg st "${state_topic}" \
-  --arg key "${key}" \
-  --arg did "${uniq}" \
-  --arg dname "${dev_name}" \
-  --arg dmdl "${dev_mdl}" \
-  --arg dmfr "${dev_mfr}" \
-  --arg unit "${unit}" \
-  --arg dc "${device_class}" \
-  --arg sc "${state_class}" \
-  '(
-    {
-      name: $name,
-      unique_id: $uniq,
-      state_topic: $st,
-      value_template: "{{ value_json['\($key)'] }}",
-      device: {
-        identifiers: [$did],
-        name: $dname,
-        model: $dmdl,
-        manufacturer: $dmfr
-      }
-    }
-    + (if ($unit|length)>0 then {unit_of_measurement:$unit} else {} end)
-    + (if ($dc|length)>0 then {device_class:$dc} else {} end)
-    + (if ($sc|length)>0 then {state_class:$sc} else {} end)
-  )'
-)"
-
+    payload="$(jq -c -n \
+      --arg name "${sensor_name}" \
+      --arg uniq "${unique_id}" \
+      --arg st "${state_topic}" \
+      --arg key "${key}" \
+      --arg did "${uniq}" \
+      --arg dname "${dev_name}" \
+      --arg dmdl "${dev_mdl}" \
+      --arg dmfr "${dev_mfr}" \
+      --arg unit "${unit}" \
+      --arg dc "${device_class}" \
+      --arg sc "${state_class}" \
+      '(
+        {
+          name: $name,
+          unique_id: $uniq,
+          state_topic: $st,
+          value_template: "{{ value_json['\''\($key)'\'' ] }}",
+          json_attributes_topic: $st,
+          device: {
+            identifiers: [$did],
+            name: $dname,
+            model: $dmdl,
+            manufacturer: $dmfr
+          }
+        }
+        + (if ($unit|length)>0 then {unit_of_measurement:$unit} else {} end)
+        + (if ($dc|length)>0 then {device_class:$dc} else {} end)
+        + (if ($sc|length)>0 then {state_class:$sc} else {} end)
+      )'
+    )"
 
     mqtt_pub "${cfg_topic}" "${payload}" "${DISCOVERY_RETAIN}" || true
   done < <(
@@ -400,7 +397,8 @@ SNIPPET_STATE="${BASE}/seen_ids.txt"
 touch "${SNIPPET_STATE}"
 
 emit_snippet_if_new() {
-  local id="$1"; local driver="$2"
+  local id="$1"
+  local driver="$2"
   [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
 
   if ! grep -qx "${id}" "${SNIPPET_STATE}" 2>/dev/null; then
@@ -409,7 +407,7 @@ emit_snippet_if_new() {
     warn "Received telegram from: ${id}"
     [[ -n "${driver}" ]] && warn "Suggested driver: ${driver}"
     warn "Add to options.json meters[] (example):"
-    warn "  {\"id\":\"meter_${id}\",\"meter_id\":\"${id}\",\"type\":\"${driver:-other}\",\"key\":\"NOKEY\"}"
+    warn "  {\"id\":\"meter_${id}\",\"meter_id\":\"${id}\",\"type\":\"auto\",\"type_other\":\"\",\"key\":\"NOKEY\"}"
     warn "=================================="
   fi
 }
@@ -453,7 +451,8 @@ if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
           fi
           if [[ -n "${last_id}" && -n "${last_driver}" ]]; then
             emit_snippet_if_new "${last_id}" "${last_driver}"
-            last_id=""; last_driver=""
+            last_id=""
+            last_driver=""
           fi
         fi
 
