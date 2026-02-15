@@ -340,36 +340,37 @@ emit_discovery_from_json() {
     unique_id="${uniq}_${obj}"
     sensor_name="${name} ${key}"
 
-    payload="$(jq -c -n \
-      --arg name "${sensor_name}" \
-      --arg uniq "${unique_id}" \
-      --arg st "${state_topic}" \
-      --arg key "${key}" \
-      --arg did "${uniq}" \
-      --arg dname "${dev_name}" \
-      --arg dmdl "${dev_mdl}" \
-      --arg dmfr "${dev_mfr}" \
-      --arg unit "${unit}" \
-      --arg dc "${device_class}" \
-      --arg sc "${state_class}" \
-      '(
-        {
-          name: $name,
-          unique_id: $uniq,
-          state_topic: $st,
-          value_template: "{{ value_json[\"" + $key + "\"] }}",
-          device: {
-            identifiers: [$did],
-            name: $dname,
-            model: $dmdl,
-            manufacturer: $dmfr
-          }
-        }
-        + (if ($unit|length)>0 then {unit_of_measurement:$unit} else {} end)
-        + (if ($dc|length)>0 then {device_class:$dc} else {} end)
-        + (if ($sc|length)>0 then {state_class:$sc} else {} end)
-      )'
-    )"
+payload="$(jq -c -n \
+  --arg name "${sensor_name}" \
+  --arg uniq "${unique_id}" \
+  --arg st "${state_topic}" \
+  --arg key "${key}" \
+  --arg did "${uniq}" \
+  --arg dname "${dev_name}" \
+  --arg dmdl "${dev_mdl}" \
+  --arg dmfr "${dev_mfr}" \
+  --arg unit "${unit}" \
+  --arg dc "${device_class}" \
+  --arg sc "${state_class}" \
+  '(
+    {
+      name: $name,
+      unique_id: $uniq,
+      state_topic: $st,
+      value_template: "{{ value_json['\($key)'] }}",
+      device: {
+        identifiers: [$did],
+        name: $dname,
+        model: $dmdl,
+        manufacturer: $dmfr
+      }
+    }
+    + (if ($unit|length)>0 then {unit_of_measurement:$unit} else {} end)
+    + (if ($dc|length)>0 then {device_class:$dc} else {} end)
+    + (if ($sc|length)>0 then {state_class:$sc} else {} end)
+  )'
+)"
+
 
     mqtt_pub "${cfg_topic}" "${payload}" "${DISCOVERY_RETAIN}" || true
   done < <(
