@@ -1,7 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# ARG używany w FROM musi być zadeklarowany globalnie (przed pierwszym FROM)
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20
+ARG BUILD_FROM=ghcr.io/home-assistant/base:3.20
 
 # --- build wmbusmeters ---
 FROM alpine:3.20 AS builder
@@ -21,25 +20,30 @@ RUN git clone https://github.com/wmbusmeters/wmbusmeters.git . \
   && install -m 0755 build/wmbusmeters /out/wmbusmeters
 
 
-# --- runtime: docker standalone (DietPi) ---
+# --- runtime: docker standalone (DietPi / generic Docker) ---
 FROM alpine:3.20 AS docker
 
 RUN apk add --no-cache \
-  ca-certificates \
+  bash ca-certificates \
   mosquitto-clients jq \
   libstdc++ zlib libxml2 \
   libusb librtlsdr
 
 COPY --from=builder /out/wmbusmeters /usr/bin/wmbusmeters
+COPY rootfs/usr/bin/bridge.sh /usr/bin/bridge.sh
 COPY docker/entrypoint.sh /entrypoint.sh
-RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
-ENTRYPOINT ["/bin/sh", "/entrypoint.sh"]
+
+RUN sed -i 's/\r$//' /entrypoint.sh /usr/bin/bridge.sh \
+  && chmod +x /entrypoint.sh /usr/bin/bridge.sh
+
+ENTRYPOINT ["/bin/bash", "/entrypoint.sh"]
 
 
-# --- runtime: HA add-on (zostawiasz jak było, tylko bez :latest) ---
+# --- runtime: HA add-on ---
 FROM ${BUILD_FROM} AS addon
 
 RUN apk add --no-cache \
+  bash \
   mosquitto-clients jq \
   libstdc++ zlib libxml2 \
   libusb librtlsdr

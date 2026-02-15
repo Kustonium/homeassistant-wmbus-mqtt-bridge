@@ -1,16 +1,19 @@
 name: "wMBus MQTT Bridge"
 description: "MQTT RAW HEX -> wmbusmeters (stdin:hex) -> MQTT + Home Assistant Discovery"
-version: "1.2.9"
+version: "1.3.0"
 slug: "wmbus_mqtt_bridge"
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
 
 arch:
   - amd64
+  - aarch64
+  - armv7
+  - armhf
+  - i386
 
 init: false
 
 services:
-  # Prefer HA's internal MQTT service when available, but allow external brokers.
   - mqtt:want
 
 options:
@@ -26,17 +29,12 @@ options:
   state_prefix: "wmbusmeters"
   state_retain: false
 
-  # MQTT broker selection
-  # - auto: use HA internal MQTT if available, otherwise use external_* settings
-  # - ha:   force HA internal MQTT (Mosquitto add-on)
-  # - external: always use external_* settings
   mqtt_mode: "auto"
   external_mqtt_host: ""
   external_mqtt_port: 1883
   external_mqtt_username: ""
   external_mqtt_password: ""
 
-  # If empty => LISTEN MODE
   meters: []
 
 schema:
