@@ -309,9 +309,13 @@ clean_legacy_totalm3() {
   local id="$1"
   [[ "${DISCOVERY_ENABLED}" == "true" ]] || return 0
   [[ -n "${id}" ]] || return 0
+
   if [[ -z "${DISCOVERY_CLEANED_LEGACY[${id}]+x}" ]]; then
-    mqtt_pub "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/total_m3/config" "" "true" || true
-    DISCOVERY_CLEANED_LEGACY["${id}"]=1
+    if mqtt_pub "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/total_m3/config" "" "true"; then
+      DISCOVERY_CLEANED_LEGACY["${id}"]=1
+    else
+      warn "discovery: failed to clear legacy total_m3 for id=${id} (will retry later)"
+    fi
   fi
 }
 
@@ -344,7 +348,6 @@ emit_discovery_from_json() {
 
     cache_key="${id}|${obj}"
     [[ -n "${DISCOVERY_SENT_FIELD[${cache_key}]+x}" ]] && continue
-    DISCOVERY_SENT_FIELD["${cache_key}"]=1
 
     key_lc="$(echo "${key}" | tr '[:upper:]' '[:lower:]')"
     unit="$(guess_unit "${key}")"
@@ -387,7 +390,11 @@ emit_discovery_from_json() {
       )'
     )"
 
-    mqtt_pub "${cfg_topic}" "${payload}" "${DISCOVERY_RETAIN}" || true
+    if mqtt_pub "${cfg_topic}" "${payload}" "${DISCOVERY_RETAIN}"; then
+      DISCOVERY_SENT_FIELD["${cache_key}"]=1
+    else
+      warn "discovery: failed to publish config for id=${id} field=${key} (will retry on next telegram)"
+    fi
   done < <(
     jq -r '
       to_entries[]
