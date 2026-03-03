@@ -78,6 +78,11 @@ LOGLEVEL="${LOGLEVEL:-$(json_get '.loglevel' 'normal')}"
 FILTER_HEX_ONLY="${FILTER_HEX_ONLY:-$(json_get_bool '.filter_hex_only' 'true')}"
 DEBUG_EVERY_N="${DEBUG_EVERY_N:-$(json_get_int '.debug_every_n' '0')}"
 
+# Robustness toggles
+IGNORE_RETAINED="${IGNORE_RETAINED:-$(json_get_bool '.ignore_retained' 'true')}"
+REQUIRE_TIMESTAMP="${REQUIRE_TIMESTAMP:-$(json_get_bool '.require_timestamp' 'false')}"
+RESTART_ON_EXIT="${RESTART_ON_EXIT:-$(json_get_bool '.restart_on_exit' 'true')}"
+
 STATE_PREFIX="${STATE_PREFIX:-$(json_get '.state_prefix' 'wmbusmeters')}"
 STATE_RETAIN="${STATE_RETAIN:-$(json_get_bool '.state_retain' 'false')}"
 
@@ -109,6 +114,7 @@ log "MQTT: ${MQTT_HOST}:${MQTT_PORT} topic=${RAW_TOPIC}"
 log "state: prefix=${STATE_PREFIX} retain=${STATE_RETAIN}"
 log "discovery: enabled=${DISCOVERY_ENABLED} prefix=${DISCOVERY_PREFIX} retain=${DISCOVERY_RETAIN}"
 log "wmbusmeters: loglevel=${LOGLEVEL} filter_hex_only=${FILTER_HEX_ONLY} debug_every_n=${DEBUG_EVERY_N}"
+log "robust: ignore_retained=${IGNORE_RETAINED} require_timestamp=${REQUIRE_TIMESTAMP} restart_on_exit=${RESTART_ON_EXIT}"
 
 # ------------------------------------------------------------
 # MQTT args
@@ -123,6 +129,18 @@ fi
 if [[ -n "${MQTT_PASS}" && "${MQTT_PASS}" != "null" ]]; then
   PUB_ARGS+=( -P "${MQTT_PASS}" )
   SUB_ARGS+=( -P "${MQTT_PASS}" )
+fi
+
+# mosquitto_sub robustness flags
+SUB_EXTRA=()
+if [[ "${IGNORE_RETAINED}" == "true" ]]; then
+  SUB_EXTRA+=( -R )
+fi
+
+# line-buffer output if stdbuf exists
+STDBUF_BIN=""
+if command -v stdbuf >/dev/null 2>&1; then
+  STDBUF_BIN="stdbuf -oL -eL"
 fi
 
 mqtt_pub() {
@@ -417,11 +435,12 @@ emit_snippet_if_new() {
 # ------------------------------------------------------------
 log "Starting wmbusmeters..."
 
-last_id=""
-last_driver=""
+run_once() {
+  last_id=""
+  last_driver=""
 
-if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
-  /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "${RAW_TOPIC}" -F '%p' \
+  if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
+  ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
     | awk -v dbg_n="${DEBUG_EVERY_N}" '
         function ishex(s) { return (s ~ /^[0-9A-Fa-f]+$/) }
         BEGIN { n=0 }
@@ -429,6 +448,7 @@ if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
           gsub(/[[:space:]]/, "", $0);
           sub(/^0x/i, "", $0);
           if (!ishex($0)) next;
+          if ((length($0) % 2) != 0) next;
 
           n++;
           if (dbg_n > 0 && (n % dbg_n) == 0) {
@@ -438,7 +458,7 @@ if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
           fflush();
         }
       ' \
-    | /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
+    | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
     | while IFS= read -r line; do
         echo "${line}"
 
@@ -458,23 +478,48 @@ if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
 
         if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
           id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
+          ts="$(echo "${line}" | jq -r '.timestamp // .device_date_time // empty' 2>/dev/null || true)"
           if [[ -n "${id}" ]]; then
-            mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
-            emit_discovery_from_json "${line}"
+            if [[ "${REQUIRE_TIMESTAMP}" == "true" && -z "${ts}" ]]; then
+              warn "Skip publish: missing timestamp for id=${id}"
+            else
+              mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
+              emit_discovery_from_json "${line}"
+            fi
           fi
         fi
-      done
+done
 else
-  /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "${RAW_TOPIC}" -F '%p' \
-    | /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
+  ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
+    | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
     | while IFS= read -r line; do
         echo "${line}"
         if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
           id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
+          ts="$(echo "${line}" | jq -r '.timestamp // .device_date_time // empty' 2>/dev/null || true)"
           if [[ -n "${id}" ]]; then
-            mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
-            emit_discovery_from_json "${line}"
+            if [[ "${REQUIRE_TIMESTAMP}" == "true" && -z "${ts}" ]]; then
+              warn "Skip publish: missing timestamp for id=${id}"
+            else
+              mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
+              emit_discovery_from_json "${line}"
+            fi
           fi
         fi
-      done
+done
 fi
+}
+
+# Restart loop (optional)
+while true; do
+  set +e
+  run_once
+  rc=$?
+  set -e
+  if [[ "${RESTART_ON_EXIT}" != "true" ]]; then
+    exit ${rc}
+  fi
+  warn "Pipeline exited (rc=${rc}), restarting in 2s..."
+  sleep 2
+  # continue
+done
