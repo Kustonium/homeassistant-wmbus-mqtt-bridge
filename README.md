@@ -1,60 +1,60 @@
 # Home Assistant Add-on: wMBus MQTT Bridge
 
-## 馃嚨馃嚤 Opis (PL)
+## ???? Opis (PL)
 
-Ten dodatek Home Assistant jest rozszerzeniem oraz forkiem oficjalnego projektu **wmbusmeters-ha-addon**, kt贸ry bazuje na narz臋dziu **wmbusmeters**.
+Ten dodatek Home Assistant jest rozszerzeniem oraz forkiem oficjalnego projektu **wmbusmeters-ha-addon**, który bazuje na narz?dziu **wmbusmeters**.
 
-Celem projektu jest dekodowanie telegram贸w Wireless M-Bus (C1 / T1 / S1) w Home Assistant **bez u偶ycia lokalnego dongla radiowego** (USB/RTL-SDR). Zamiast tego wykorzystuje **zewn臋trzne odbiorniki** (np. ESP32/gateway/bridge) i **MQTT jako kana艂 wej艣ciowy**.
+Celem projektu jest dekodowanie telegramów Wireless M-Bus (C1 / T1 / S1) w Home Assistant **bez u?ycia lokalnego dongla radiowego** (USB/RTL-SDR). Zamiast tego wykorzystuje **zewn?trzne odbiorniki** (np. ESP32/gateway/bridge) i **MQTT jako kana? wej?ciowy**.
 
-### Problem, kt贸ry rozwi膮zuje ten add-on
+### Problem, który rozwi?zuje ten add-on
 
 Oryginalny **wmbusmeters-ha-addon**:
-- zak艂ada, 偶e odbi贸r radiowy odbywa si臋 lokalnie (USB / serial / RTL-SDR),
-- nie przewiduje podania telegram贸w z zewn臋trznego 藕r贸d艂a,
-- nie obs艂uguje wej艣cia **STDIN** jako 藕r贸d艂a danych.
+- zak?ada, ?e odbiór radiowy odbywa si? lokalnie (USB / serial / RTL-SDR),
+- nie przewiduje podania telegramów z zewn?trznego ?ród?a,
+- nie obs?uguje wej?cia **STDIN** jako ?ród?a danych.
 
-W praktyce oznacza to, 偶e odbiorniki ESP32, gatewaye, mosty radiowe (bridge) i w艂asne odbiorniki wM-Bus nie mog膮 by膰 u偶yte bezpo艣rednio jako 藕r贸d艂o danych dla wmbusmeters w oficjalnym add-onie.
+W praktyce oznacza to, ?e odbiorniki ESP32, gatewaye, mosty radiowe (bridge) i w?asne odbiorniki wM-Bus nie mog? by? u?yte bezpo?rednio jako ?ród?o danych dla wmbusmeters w oficjalnym add-onie.
 
-### Rozwi膮zanie zastosowane w tym projekcie
+### Rozwi?zanie zastosowane w tym projekcie
 
-Ten fork wprowadza alternatywn膮 艣cie偶k臋 wej艣ciow膮 opart膮 o MQTT. Add-on dzia艂a jako most (bridge) pomi臋dzy zewn臋trznym 藕r贸d艂em telegram贸w wM-Bus a silnikiem dekoduj膮cym **wmbusmeters**.
+Ten fork wprowadza alternatywn? ?cie?k? wej?ciow? opart? o MQTT. Add-on dzia?a jako most (bridge) pomi?dzy zewn?trznym ?ród?em telegramów wM-Bus a silnikiem dekoduj?cym **wmbusmeters**.
 
-### Architektura przep艂ywu danych
+### Architektura przep?ywu danych
 
 ```
 ESP32 / Gateway / Bridge
-鈫?MQTT (surowy telegram wM-Bus w formacie HEX)
-鈫?wmbusmeters (stdin:hex)
-鈫?MQTT (JSON)
-鈫?Home Assistant (MQTT Discovery)
+→ MQTT (surowy telegram wM-Bus w formacie HEX)
+→ wmbusmeters (stdin:hex)
+→ MQTT (JSON)
+→ Home Assistant (MQTT Discovery)
 ```
 
 ### Kluczowe cechy
 
-- **MQTT jako wej艣cie danych** 鈥?surowe telegramy wM-Bus (HEX) odbierane z wybranego tematu MQTT.
-- **Wej艣cie STDIN dla wmbusmeters** 鈥?telegramy przekazywane przez `stdin:hex`, czego oryginalny add-on nie obs艂uguje.
-- **Pe艂ne dekodowanie przez wmbusmeters** 鈥?projekt nie zast臋puje wmbusmeters, lecz wykorzystuje go w ca艂o艣ci.
-- **MQTT + Home Assistant Discovery** 鈥?dane publikowane w MQTT i automatycznie rejestrowane w HA.
-- **Tryb LISTEN (nas艂uch)** 鈥?gdy lista `meters` jest pusta, add-on wypisuje w logach wszystkie s艂yszane liczniki wraz z sugerowanym driverem.
+- **MQTT jako wej?cie danych** — surowe telegramy wM-Bus (HEX) odbierane z wybranego tematu MQTT.
+- **Wej?cie STDIN dla wmbusmeters** — telegramy przekazywane przez `stdin:hex`, czego oryginalny add-on nie obs?uguje.
+- **Pe?ne dekodowanie przez wmbusmeters** — projekt nie zast?puje wmbusmeters, lecz wykorzystuje go w ca?o?ci.
+- **MQTT + Home Assistant Discovery** — dane publikowane w MQTT i automatycznie rejestrowane w HA.
+- **Tryb LISTEN (nas?uch)** — gdy lista `meters` jest pusta, add-on wypisuje w logach wszystkie s?yszane liczniki wraz z sugerowanym driverem.
 
-### Wymagania (WA呕NE)
+### Wymagania (WA?NE)
 
-Add-on domy艣lnie korzysta z wewn臋trznego brokera MQTT Home Assistant (Mosquitto add-on), ale mo偶e pracowa膰 z brokerem zewn臋trznym.
+Add-on domy?lnie korzysta z wewn?trznego brokera MQTT Home Assistant (Mosquitto add-on), ale mo?e pracowa? z brokerem zewn?trznym.
 
 **Tryby brokera (`mqtt_mode`):**
-- `auto` (domy艣lnie) 鈥?u偶ywa brokera HA je艣li dost臋pny, w przeciwnym razie zewn臋trzny
-- `ha` 鈥?wymusza broker HA (Mosquitto add-on)
-- `external` 鈥?zawsze u偶ywa ustawie艅 zewn臋trznych (`external_mqtt_host`, itd.)
+- `auto` (domy?lnie) — u?ywa brokera HA je?li dost?pny, w przeciwnym razie zewn?trzny
+- `ha` — wymusza broker HA (Mosquitto add-on)
+- `external` — zawsze u?ywa ustawień zewn?trznych (`external_mqtt_host`, itd.)
 
 ---
 
 ### Konfiguracja w Home Assistant (GUI)
 
-Konfiguracja odbywa si臋 przez interfejs graficzny dodatku 鈥?nie trzeba edytowa膰 plik贸w r臋cznie.
+Konfiguracja odbywa si? przez interfejs graficzny dodatku — nie trzeba edytowa? plików r?cznie.
 
-#### Krok 1 鈥?Tryb LISTEN (wykrycie licznik贸w)
+#### Krok 1 — Tryb LISTEN (wykrycie liczników)
 
-Zostaw sekcj臋 **meters** pust膮 i uruchom addon. W logach pojawi膮 si臋 wykryte liczniki:
+Zostaw sekcj? **meters** pust? i uruchom addon. W logach pojawi? si? wykryte liczniki:
 
 ```
 Received telegram from: 41553221
@@ -68,26 +68,26 @@ Suggested driver: mkradio3
 
 Zanotuj **8-cyfrowy numer** (`meter_id`) i sugerowany **driver**.
 
-#### Krok 2 鈥?Dodanie licznika w GUI
+#### Krok 2 — Dodanie licznika w GUI
 
-W konfiguracji dodatku wype艂nij sekcj臋 **meters**:
+W konfiguracji dodatku wype?nij sekcj? **meters**:
 
-| Pole | Opis | Przyk艂ad |
+| Pole | Opis | Przyk?ad |
 |------|------|---------|
-| `id` | Twoja w艂asna nazwa sensora w HA | `woda_zimna_lazienka` |
+| `id` | Twoja w?asna nazwa sensora w HA | `woda_zimna_lazienka` |
 | `meter_id` | 8-cyfrowy numer z trybu LISTEN | `41553221` |
 | `type` | Driver z trybu LISTEN | `mkradio3` |
-| `key` | Klucz szyfrowania (je艣li licznik szyfruje) | `00112233...` lub puste |
+| `key` | Klucz szyfrowania (je?li licznik szyfruje) | `00112233...` lub puste |
 
-Je艣li licznik nie szyfruje telegram贸w, pole `key` pozostaw puste.
+Je?li licznik nie szyfruje telegramów, pole `key` pozostaw puste.
 
 ---
 
 ### Docker standalone (bez Home Assistant)
 
-W trybie Docker konfiguracja odbywa si臋 przez plik `options.json`.
+W trybie Docker konfiguracja odbywa si? przez plik `options.json`.
 
-#### Szybki start (Docker Compose 鈥?DietPi/Ubuntu)
+#### Szybki start (Docker Compose — DietPi/Ubuntu)
 
 ```bash
 git clone https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge.git
@@ -98,25 +98,25 @@ docker compose up -d --build
 docker compose logs -f wmbus
 ```
 
-Je艣li widzisz `No meters configured -> LISTEN MODE` 鈥?kontener dzia艂a i czeka na telegramy.
+Je?li widzisz `No meters configured -> LISTEN MODE` — kontener dzia?a i czeka na telegramy.
 
 #### Konfiguracja (Docker)
 
-G艂贸wny plik: `./config/options.json` (wewn膮trz kontenera: `/config/options.json`).
+G?ówny plik: `./config/options.json` (wewn?trz kontenera: `/config/options.json`).
 
-Pliki pod `./config/etc/` s膮 **generowane automatycznie** przy ka偶dym starcie 鈥?nie edytuj ich r臋cznie, zostan膮 nadpisane.
+Pliki pod `./config/etc/` s? **generowane automatycznie** przy ka?dym starcie — nie edytuj ich r?cznie, zostan? nadpisane.
 
 **Pola wpisu licznika:**
 
 | Pole | Opis |
 |------|------|
-| `id` | Twoja w艂asna etykieta (cz臋艣膰 tematu MQTT i nazwa sensora w HA) |
+| `id` | Twoja w?asna etykieta (cz??? tematu MQTT i nazwa sensora w HA) |
 | `meter_id` | 8-cyfrowy numer seryjny licznika (z trybu LISTEN) |
 | `type` | Driver wmbusmeters (z trybu LISTEN), lub `auto` |
-| `type_other` | Niestandardowy driver 鈥?wype艂nij tylko gdy `type` = `other` |
+| `type_other` | Niestandardowy driver — wype?nij tylko gdy `type` = `other` |
 | `key` | Klucz szyfrowania w formacie HEX, lub `NOKEY` |
 
-Przyk艂ad `options.json`:
+Przyk?ad `options.json`:
 
 ```json
 {
@@ -155,10 +155,10 @@ docker compose restart wmbus
 
 #### Uwagi
 
-- Katalog `./config` musi by膰 **zapisywalny** (nie montuj jako `:ro`) 鈥?bridge tworzy tam `options.json` i konfiguracj臋 wmbusmeters.
-- Domy艣lny `raw_topic` to `wmbus_bridge/telegram` 鈥?upewnij si臋, 偶e Tw贸j odbiornik publikuje na ten sam temat.
+- Katalog `./config` musi by? **zapisywalny** (nie montuj jako `:ro`) — bridge tworzy tam `options.json` i konfiguracj? wmbusmeters.
+- Domy?lny `raw_topic` to `wmbus_bridge/telegram` — upewnij si?, ?e Twój odbiornik publikuje na ten sam temat.
 
-#### R臋czny test MQTT
+#### R?czny test MQTT
 
 ```bash
 mosquitto_pub -h localhost -p 1883 -t 'wmbus_bridge/telegram' -m '<HEX_TELEGRAM>'
@@ -169,27 +169,27 @@ mosquitto_sub -h localhost -p 1883 -t 'wmbusmeters/#' -v
 
 ### Przeznaczenie
 
-Ten add-on jest szczeg贸lnie przydatny gdy:
-- odbi贸r radiowy realizowany jest poza Home Assistant (ESP32, SBC, bridge),
-- chcesz u偶ywa膰 wmbusmeters bez dongla USB,
-- masz w艂asny pipeline radiowy i potrzebujesz tylko dekodera + integracji z HA.
+Ten add-on jest szczególnie przydatny gdy:
+- odbiór radiowy realizowany jest poza Home Assistant (ESP32, SBC, bridge),
+- chcesz u?ywa? wmbusmeters bez dongla USB,
+- masz w?asny pipeline radiowy i potrzebujesz tylko dekodera + integracji z HA.
 
-鈿狅笍 **Nie instaluj oficjalnego add-onu wmbusmeters r贸wnolegle.** Ten add-on zawiera w艂asn膮 instancj臋 wmbusmeters i zast臋puje go w tym scenariuszu.
+?? **Nie instaluj oficjalnego add-onu wmbusmeters równolegle.** Ten add-on zawiera w?asn? instancj? wmbusmeters i zast?puje go w tym scenariuszu.
 
 ### Projekty bazowe (upstream)
 
-- **wmbusmeters** 鈥?https://github.com/wmbusmeters/wmbusmeters (GPL-3.0)
-- **wmbusmeters-ha-addon** 鈥?https://github.com/wmbusmeters/wmbusmeters-ha-addon (GPL-3.0)
+- **wmbusmeters** — https://github.com/wmbusmeters/wmbusmeters (GPL-3.0)
+- **wmbusmeters-ha-addon** — https://github.com/wmbusmeters/wmbusmeters-ha-addon (GPL-3.0)
 
 ### Licencja
 
-Repozytorium zawiera i modyfikuje kod z projektu **wmbusmeters-ha-addon** obj臋tego licencj膮 GPL-3.0. Ca艂y projekt dystrybuowany jest na licencji:
+Repozytorium zawiera i modyfikuje kod z projektu **wmbusmeters-ha-addon** obj?tego licencj? GPL-3.0. Ca?y projekt dystrybuowany jest na licencji:
 
 **GNU General Public License v3.0 (GPL-3.0)**
 
 ---
 
-## 馃嚞馃嚙 Description (EN)
+## ???? Description (EN)
 
 This Home Assistant add-on is a fork and extension of the official **wmbusmeters-ha-addon**, based on **wmbusmeters**.
 
@@ -205,10 +205,10 @@ This fork introduces an MQTT-based input path:
 
 ```
 ESP32 / Gateway / Bridge
-鈫?MQTT (raw wM-Bus HEX telegram)
-鈫?wmbusmeters (stdin:hex)
-鈫?MQTT (JSON)
-鈫?Home Assistant (MQTT Discovery)
+→ MQTT (raw wM-Bus HEX telegram)
+→ wmbusmeters (stdin:hex)
+→ MQTT (JSON)
+→ Home Assistant (MQTT Discovery)
 ```
 
 ### Key features
@@ -221,17 +221,17 @@ ESP32 / Gateway / Bridge
 
 ### Broker modes (`mqtt_mode`)
 
-- `auto` (default) 鈥?use HA broker if available, otherwise external
-- `ha` 鈥?force HA broker (Mosquitto add-on)
-- `external` 鈥?always use external settings (`external_mqtt_host`, etc.)
+- `auto` (default) — use HA broker if available, otherwise external
+- `ha` — force HA broker (Mosquitto add-on)
+- `external` — always use external settings (`external_mqtt_host`, etc.)
 
 ---
 
 ### Configuration in Home Assistant (GUI)
 
-Configuration is done through the add-on GUI 鈥?no manual file editing required.
+Configuration is done through the add-on GUI — no manual file editing required.
 
-#### Step 1 鈥?LISTEN mode (meter discovery)
+#### Step 1 — LISTEN mode (meter discovery)
 
 Leave the **meters** list empty and start the add-on. The log will show all received telegrams:
 
@@ -247,7 +247,7 @@ Suggested driver: mkradio3
 
 Note the **8-digit number** (`meter_id`) and the suggested **driver**.
 
-#### Step 2 鈥?Add a meter in the GUI
+#### Step 2 — Add a meter in the GUI
 
 Fill in the **meters** section in the add-on configuration:
 
@@ -266,7 +266,7 @@ If the meter does not encrypt telegrams, leave `key` empty.
 
 In Docker mode, configuration is done via `options.json`.
 
-#### Quick start (Docker Compose 鈥?DietPi/Ubuntu)
+#### Quick start (Docker Compose — DietPi/Ubuntu)
 
 ```bash
 git clone https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge.git
@@ -277,13 +277,13 @@ docker compose up -d --build
 docker compose logs -f wmbus
 ```
 
-If you see `No meters configured -> LISTEN MODE` 鈥?the container is running and waiting for telegrams.
+If you see `No meters configured -> LISTEN MODE` — the container is running and waiting for telegrams.
 
 #### Configuration (Docker)
 
 Main file: `./config/options.json` (inside container: `/config/options.json`).
 
-Files under `./config/etc/` are **auto-generated on startup** 鈥?do not edit them manually.
+Files under `./config/etc/` are **auto-generated on startup** — do not edit them manually.
 
 **Meter fields:**
 
@@ -292,7 +292,7 @@ Files under `./config/etc/` are **auto-generated on startup** 鈥?do not edit the
 | `id` | Your label (used in MQTT topic and HA sensor name) |
 | `meter_id` | 8-digit serial number (from LISTEN mode) |
 | `type` | wmbusmeters driver (from LISTEN mode), or `auto` |
-| `type_other` | Custom driver name 鈥?only when `type` is `other` |
+| `type_other` | Custom driver name — only when `type` is `other` |
 | `key` | Encryption key in HEX, or `NOKEY` |
 
 Example `options.json`:
@@ -334,8 +334,8 @@ docker compose restart wmbus
 
 #### Notes
 
-- `./config` must be **writable** (do not mount as `:ro`) 鈥?the bridge creates `options.json` and wmbusmeters config there.
-- Default `raw_topic` is `wmbus_bridge/telegram` 鈥?make sure your receiver publishes to the same topic.
+- `./config` must be **writable** (do not mount as `:ro`) — the bridge creates `options.json` and wmbusmeters config there.
+- Default `raw_topic` is `wmbus_bridge/telegram` — make sure your receiver publishes to the same topic.
 
 #### Manual MQTT test
 
@@ -346,12 +346,12 @@ mosquitto_sub -h localhost -p 1883 -t 'wmbusmeters/#' -v
 
 ---
 
-鈿狅笍 **Do not install the official wmbusmeters add-on in parallel.** This add-on bundles its own wmbusmeters instance and replaces it for this use case.
+?? **Do not install the official wmbusmeters add-on in parallel.** This add-on bundles its own wmbusmeters instance and replaces it for this use case.
 
 ### Upstream projects
 
-- wmbusmeters 鈥?https://github.com/wmbusmeters/wmbusmeters (GPL-3.0)
-- wmbusmeters-ha-addon 鈥?https://github.com/wmbusmeters/wmbusmeters-ha-addon (GPL-3.0)
+- wmbusmeters — https://github.com/wmbusmeters/wmbusmeters (GPL-3.0)
+- wmbusmeters-ha-addon — https://github.com/wmbusmeters/wmbusmeters-ha-addon (GPL-3.0)
 
 ### License
 
