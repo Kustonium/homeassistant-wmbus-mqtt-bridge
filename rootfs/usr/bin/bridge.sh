@@ -523,9 +523,42 @@ done
 fi
 }
 
+# ------------------------------------------------------------
+# wait_for_mqtt
+# Czeka na dostępność brokera MQTT przed startem pipeline.
+# Potrzebne po aktualizacji addona - broker może być chwilę
+# niedostępny zanim mosquitto w HA zdąży się podnieść.
+# Próbuje co MQTT_WAIT_DELAY sekund, maksymalnie MQTT_WAIT_RETRIES razy.
+# Jeśli broker nie odpowie w tym czasie - kontynuuje mimo to
+# (pipeline i tak zrestartuje się przez pętlę restart_on_exit).
+# ------------------------------------------------------------
+MQTT_WAIT_RETRIES="${MQTT_WAIT_RETRIES:-30}"
+MQTT_WAIT_DELAY="${MQTT_WAIT_DELAY:-2}"
+
+wait_for_mqtt() {
+  log "Waiting for MQTT broker ${MQTT_HOST}:${MQTT_PORT}..."
+  for ((i=1; i<=MQTT_WAIT_RETRIES; i++)); do
+    if /usr/bin/mosquitto_pub "${PUB_ARGS[@]}" -t "wmbus_bridge/status" -m "starting" --quiet 2>/dev/null; then
+      log "MQTT broker ready (attempt ${i}/${MQTT_WAIT_RETRIES})"
+      return 0
+    fi
+    warn "MQTT not ready (attempt ${i}/${MQTT_WAIT_RETRIES}), retrying in ${MQTT_WAIT_DELAY}s..."
+    sleep "${MQTT_WAIT_DELAY}"
+  done
+  # Broker niedostępny po wszystkich próbach - ostrzegamy ale nie przerywamy,
+  # pętla restart_on_exit zajmie się ponownym uruchomieniem pipeline.
+  warn "MQTT broker not available after ${MQTT_WAIT_RETRIES} attempts, continuing anyway..."
+  return 1
+}
+
+# ------------------------------------------------------------
 # Restart loop (optional)
+# Uruchamia pipeline w pętli jeśli RESTART_ON_EXIT=true (domyślnie).
+# Przed każdym uruchomieniem sprawdza dostępność brokera MQTT.
+# ------------------------------------------------------------
 while true; do
   set +e
+  wait_for_mqtt
   run_once
   rc=$?
   set -e
