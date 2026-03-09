@@ -1,4 +1,4 @@
-## 1.3.1
+## 1.3.1/2
 
 ### PL (Polski)
 #### Dodano
@@ -14,6 +14,11 @@
 #### Naprawiono
 - Budowanie payload w `jq`: poprawione na składnię `if ... then ... else ... end` (kompatybilne z jq 1.6).
 - Walidacja konfiguracji: `meters` ma być listą (`[]`), nie `null`.
+- (1.3.2)Funkcja guess_state_class() zwracała "measurement" dla sensorów backflow,
+  co powodowało błąd w HA: device_class 'water' wymaga state_class
+  'total/total_increasing', nie 'measurement'.
+  Dodano warunek dla kluczy zawierających "backflow" z device_class
+  'water' lub 'gas' - zwraca "total_increasing".
 
 #### Breaking / Uwagi
 - Jeśli miałeś ręcznie dodane encje po starych topicach discovery, po aktualizacji usuń je lub zrestartuj HA (Discovery jest teraz per-pole).
@@ -35,6 +40,12 @@
 #### Fixed
 - `jq` payload generation: replaced unsupported ternary with `if ... then ... else ... end` (jq 1.6 compatible).
 - Config validation: `meters` must be a list (`[]`), not `null`.
+- (1.3.2)Guess_state_class() returned "measurement" for backflow sensors,
+  causing HA error: device_class 'water' requires state_class
+  'total/total_increasing', not 'measurement'.
+
+Added condition: if key_lc contains "backflow" and device_class is
+'water' or 'gas', return "total_increasing".
 
 #### Breaking / Notes
 - If you created manual entities based on legacy discovery topics, remove them or restart HA after update (Discovery is now per-field).

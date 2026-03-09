@@ -243,6 +243,12 @@ guess_state_class() {
     echo "total_increasing"; return 0
   fi
 
+  if [[ "${key_lc}" == *backflow* ]]; then
+    if [[ "${device_class}" == "water" || "${device_class}" == "gas" ]]; then
+      echo "total_increasing"; return 0
+    fi
+  fi
+
   echo "measurement"
 }
 
