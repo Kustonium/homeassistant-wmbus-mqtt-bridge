@@ -120,7 +120,7 @@ Przykład `options.json`:
 
 ```json
 {
-  "raw_topic": "wmbus_bridge/telegram",
+  "raw_topic": "wmbus_bridge/+/telegram",
   "loglevel": "normal",
   "filter_hex_only": true,
   "discovery_enabled": true,
@@ -156,12 +156,12 @@ docker compose restart wmbus
 #### Uwagi
 
 - Katalog `./config` musi być **zapisywalny** (nie montuj jako `:ro`) — bridge tworzy tam `options.json` i konfigurację wmbusmeters.
-- Domyślny `raw_topic` to `wmbus_bridge/telegram` — upewnij się, że Twój odbiornik publikuje na ten sam temat.
+- Domyślny `raw_topic` to `wmbus_bridge/+/telegram` — upewnij się, że Twój odbiornik publikuje na ten sam temat.
 
 #### Ręczny test MQTT
 
 ```bash
-mosquitto_pub -h localhost -p 1883 -t 'wmbus_bridge/telegram' -m '<HEX_TELEGRAM>'
+mosquitto_pub -h localhost -p 1883 -t 'wmbus_bridge/any/telegram' -m '<HEX_TELEGRAM>'
 mosquitto_sub -h localhost -p 1883 -t 'wmbusmeters/#' -v
 ```
 
@@ -299,7 +299,7 @@ Example `options.json`:
 
 ```json
 {
-  "raw_topic": "wmbus_bridge/telegram",
+  "raw_topic": "wmbus_bridge/+/telegram",
   "loglevel": "normal",
   "filter_hex_only": true,
   "discovery_enabled": true,
@@ -335,12 +335,12 @@ docker compose restart wmbus
 #### Notes
 
 - `./config` must be **writable** (do not mount as `:ro`) — the bridge creates `options.json` and wmbusmeters config there.
-- Default `raw_topic` is `wmbus_bridge/telegram` — make sure your receiver publishes to the same topic.
+- Default `raw_topic` is `wmbus_bridge/+/telegram` — make sure your receiver publishes to the same topic.
 
 #### Manual MQTT test
 
 ```bash
-mosquitto_pub -h localhost -p 1883 -t 'wmbus_bridge/telegram' -m '<HEX_TELEGRAM>'
+mosquitto_pub -h localhost -p 1883 -t 'wmbus_bridge/any/telegram' -m '<HEX_TELEGRAM>'
 mosquitto_sub -h localhost -p 1883 -t 'wmbusmeters/#' -v
 ```
 

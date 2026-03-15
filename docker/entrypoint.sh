@@ -19,17 +19,18 @@ if [[ ! -f "${OPTIONS_JSON}" ]]; then
   cat > "${OPTIONS_JSON}" <<'EOFJSON'
 {
   "raw_topic": "wmbus_bridge/+/telegram",
-  "state_prefix": "wmbusmeters",
-  "state_retain": true,
+  "loglevel": "normal",
+  "filter_hex_only": true,
+  "debug_every_n": 0,
 
-  "discovery": true,
+  "discovery_enabled": true,
   "discovery_prefix": "homeassistant",
   "discovery_retain": true,
 
-  "filter_hex_only": false,
-  "debug_every_n": 0,
-  "loglevel": "normal",
+  "state_prefix": "wmbusmeters",
+  "state_retain": false,
 
+  "mqtt_mode": "external",
   "external_mqtt_host": "mosquitto",
   "external_mqtt_port": 1883,
   "external_mqtt_username": "",
