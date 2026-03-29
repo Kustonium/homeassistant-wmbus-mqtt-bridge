@@ -1,3 +1,5 @@
+## 1.3.7
+Update version Wmbusmeters [2.0.0-134]
 ## 1.3.6
 
 ### PL (Polski)
