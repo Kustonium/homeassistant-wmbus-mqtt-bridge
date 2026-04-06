@@ -174,8 +174,9 @@ normalize_meter_id() {
 
   mid_raw="${mid_raw#0x}"
   mid_raw="${mid_raw#0X}"
+  mid_raw="$(echo "${mid_raw}" | tr '[:upper:]' '[:lower:]')"
 
-  [[ "${mid_raw}" =~ ^[0-9]+$ ]] || { echo ""; return 0; }
+  [[ "${mid_raw}" =~ ^[0-9a-f]+$ ]] || { echo ""; return 0; }
 
   if [[ "${#mid_raw}" -lt 8 ]]; then
     printf "%8s" "${mid_raw}" | tr ' ' '0'
