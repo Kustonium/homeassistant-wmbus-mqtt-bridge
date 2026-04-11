@@ -301,7 +301,6 @@ else
     fi
 
     {
-    {
       echo "name=${friendly_name}"
       echo "id=${mid}"
       if [[ -n "${key}" ]]; then
