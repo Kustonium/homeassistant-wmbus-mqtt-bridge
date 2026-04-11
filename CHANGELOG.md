@@ -1,10 +1,6 @@
-## 1.3.9
+## 1.4.0
 EN
-
-Improved validation and UI guidance for meter decryption keys.
-The key field now accepts only an empty value or a valid 32-character hexadecimal AES key, making invalid short values like 000000000000 fail early in the add-on configuration instead of later in wmbusmeters.
+Keep strict schema validation for meters[].key and add UI field description in translations. The key must be empty or exactly 32 hexadecimal characters, so invalid short values are blocked on save and users are warned earlier in the form.
 
 PL
-
-Poprawiono walidację i opis w interfejsie dla kluczy dekodujących liczników.
-Pole key akceptuje teraz wyłącznie pustą wartość albo poprawny 32-znakowy klucz AES w zapisie hex, dzięki czemu błędne krótkie wartości, takie jak 000000000000, są odrzucane już na etapie konfiguracji dodatku, a nie dopiero przez wmbusmeters.
+Pozostawiono ścisłą walidację meters[].key w schema i dodano opis pola w tłumaczeniach interfejsu. Klucz musi być pusty albo mieć dokładnie 32 znaki hex, dzięki czemu błędne krótkie wartości są blokowane przy zapisie, a użytkownik dostaje wcześniejszą jasną podpowiedź.
