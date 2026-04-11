@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
 description: "MQTT RAW HEX -> wmbusmeters (stdin:hex) -> MQTT + Home Assistant Discovery"
-version: "1.4.0"
+version: "1.4.1"
 slug: "wmbus_mqtt_bridge"
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
 
@@ -53,4 +53,4 @@ schema:
       meter_id: str
       type: list(auto|abbb23|amiplus|apator162|apatoreitn|dme_07|fhkvdataiii|flowiq2200|hcae2|hydrocalm3|hydrocalm4|hydrodigit|hydrus|iperl|itron|itronheat|iwmtx5|izar|kamheat|lse_07_17|mkradio3|mkradio3a|mkradio4|multical21|pollucomf|qcaloric|qheat|qwater|rfmamb|sensostar|sharky774|topaseskr|tsd2|unismart|vario451|waterstarm|other)
       type_other: str?
-      key: "match(^$|^[A-Fa-f0-9]{32}$)"
+      key: str?

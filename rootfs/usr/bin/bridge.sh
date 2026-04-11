@@ -275,7 +275,14 @@ else
     driver="$(echo "${meter_json}" | jq -r '.type // "auto"')"
     driver_other="$(echo "${meter_json}" | jq -r '.type_other // empty')"
     mid_raw="$(echo "${meter_json}" | jq -r '.meter_id // empty')"
-    key="$(echo "${meter_json}" | jq -r '.key // "NOKEY"')"
+    key="$(echo "${meter_json}" | jq -r '.key // empty')"
+
+    if [[ -z "${key}" || "${key}" == "null" ]]; then
+      key=""
+    elif [[ ! "${key}" =~ ^[A-Fa-f0-9]{32}$ ]]; then
+      warn "Invalid key for '${friendly_name}' -> skipping (expected empty or 32 hex chars, got: '${key}')"
+      continue
+    fi
 
     [[ -z "${driver}" || "${driver}" == "null" ]] && driver="auto"
 
@@ -294,9 +301,12 @@ else
     fi
 
     {
+    {
       echo "name=${friendly_name}"
       echo "id=${mid}"
-      echo "key=${key}"
+      if [[ -n "${key}" ]]; then
+        echo "key=${key}"
+      fi
       if [[ "${driver}" != "auto" ]]; then
         echo "driver=${driver}"
       fi
