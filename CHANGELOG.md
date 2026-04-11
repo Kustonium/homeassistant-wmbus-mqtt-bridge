@@ -1,6 +1,6 @@
-## 1.4.0
+## 1.4.1
 EN
-Keep strict schema validation for meters[].key and add UI field description in translations. The key must be empty or exactly 32 hexadecimal characters, so invalid short values are blocked on save and users are warned earlier in the form.
+Make meter keys optional in config.yaml and validate them in bridge.sh. Empty keys are allowed, valid 32-character hex keys are accepted, and invalid keys are skipped with a warning.
 
 PL
-Pozostawiono ścisłą walidację meters[].key w schema i dodano opis pola w tłumaczeniach interfejsu. Klucz musi być pusty albo mieć dokładnie 32 znaki hex, dzięki czemu błędne krótkie wartości są blokowane przy zapisie, a użytkownik dostaje wcześniejszą jasną podpowiedź.
+Ustawiono klucz licznika jako opcjonalny w config.yaml, a jego walidację przeniesiono do bridge.sh. Pusty klucz jest dozwolony, poprawny 32-znakowy klucz hex jest akceptowany, a błędny klucz powoduje ostrzeżenie i pominięcie licznika.
