@@ -14,6 +14,17 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            build_from: ghcr.io/home-assistant/amd64-base:3.20
+          - arch: aarch64
+            platform: linux/arm64
+            build_from: ghcr.io/home-assistant/aarch64-base:3.20
+
     steps:
       - uses: actions/checkout@v5
 
@@ -36,13 +47,14 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
-      - name: Build and push (full logs)
+      - name: Build and push ${{ matrix.arch }}
         run: |
           docker buildx build \
             --progress=plain \
-            --platform linux/amd64 \
+            --platform ${{ matrix.platform }} \
+            --build-arg BUILD_FROM=${{ matrix.build_from }} \
             --push \
-            -t ghcr.io/${{ env.OWNER_LC }}/amd64-addon-wmbus_mqtt_bridge:latest \
-            -t ghcr.io/${{ env.OWNER_LC }}/amd64-addon-wmbus_mqtt_bridge:${{ env.ADDON_VERSION }} \
+            -t ghcr.io/${{ env.OWNER_LC }}/${{ matrix.arch }}-addon-wmbus_mqtt_bridge:latest \
+            -t ghcr.io/${{ env.OWNER_LC }}/${{ matrix.arch }}-addon-wmbus_mqtt_bridge:${{ env.ADDON_VERSION }} \
             -f Dockerfile \
             .
