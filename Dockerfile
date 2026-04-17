@@ -17,7 +17,7 @@ ARG WMBUSMETERS_REF=master
 RUN git clone https://github.com/wmbusmeters/wmbusmeters.git . \
   && git checkout "${WMBUSMETERS_REF}" \
   && ./configure \
-  && make \
+  && make -j2\
   && install -d /out \
   && install -m 0755 build/wmbusmeters /out/wmbusmeters
 
