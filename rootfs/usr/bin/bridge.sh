@@ -109,7 +109,24 @@ MQTT_PORT="${MQTT_PORT:-1883}"
 MQTT_USER="${MQTT_USER:-}"
 MQTT_PASS="${MQTT_PASS:-}"
 
+WMBUSMETERS_BIN="$(command -v wmbusmeters || true)"
+WMBUSMETERS_RUNTIME_VERSION="$(wmbusmeters --version 2>&1 | head -n 1 || true)"
+WMBUSMETERS_BUILD_VERSION=""
+WMBUSMETERS_BUILD_COMMIT=""
+
+if [[ -f /usr/share/wmbusmeters-build-version.txt ]]; then
+  WMBUSMETERS_BUILD_VERSION="$(cat /usr/share/wmbusmeters-build-version.txt 2>/dev/null || true)"
+fi
+
+if [[ -f /usr/share/wmbusmeters-build-commit.txt ]]; then
+  WMBUSMETERS_BUILD_COMMIT="$(cat /usr/share/wmbusmeters-build-commit.txt 2>/dev/null || true)"
+fi
+
 log "core: bridge.sh (base=${BASE})"
+log "wmbusmeters binary: ${WMBUSMETERS_BIN:-unknown}"
+log "wmbusmeters runtime version: ${WMBUSMETERS_RUNTIME_VERSION:-unknown}"
+[[ -n "${WMBUSMETERS_BUILD_VERSION}" ]] && log "wmbusmeters build version: ${WMBUSMETERS_BUILD_VERSION}"
+[[ -n "${WMBUSMETERS_BUILD_COMMIT}" ]] && log "wmbusmeters build commit: ${WMBUSMETERS_BUILD_COMMIT}"
 log "MQTT: ${MQTT_HOST}:${MQTT_PORT} topic=${RAW_TOPIC}"
 log "state: prefix=${STATE_PREFIX} retain=${STATE_RETAIN}"
 log "discovery: enabled=${DISCOVERY_ENABLED} prefix=${DISCOVERY_PREFIX} retain=${DISCOVERY_RETAIN}"

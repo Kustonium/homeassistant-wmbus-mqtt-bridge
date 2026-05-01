@@ -16,9 +16,11 @@ WORKDIR /src
 ARG WMBUSMETERS_REF=master
 RUN git clone https://github.com/wmbusmeters/wmbusmeters.git . \
   && git checkout "${WMBUSMETERS_REF}" \
+  && install -d /out \
+  && git describe --tags --always --dirty > /out/wmbusmeters-build-version.txt \
+  && git rev-parse HEAD > /out/wmbusmeters-build-commit.txt \
   && ./configure \
   && make -j2\
-  && install -d /out \
   && install -m 0755 build/wmbusmeters /out/wmbusmeters
 
 
@@ -33,6 +35,8 @@ RUN apk add --no-cache \
   libusb librtlsdr
 
 COPY --from=builder /out/wmbusmeters /usr/bin/wmbusmeters
+COPY --from=builder /out/wmbusmeters-build-version.txt /usr/share/wmbusmeters-build-version.txt
+COPY --from=builder /out/wmbusmeters-build-commit.txt /usr/share/wmbusmeters-build-commit.txt
 
 # jeśli robisz refaktor core+wrapper:
 COPY rootfs/usr/bin/bridge.sh /usr/bin/bridge.sh
@@ -54,6 +58,8 @@ RUN apk add --no-cache \
   libusb librtlsdr
 
 COPY --from=builder /out/wmbusmeters /usr/bin/wmbusmeters
+COPY --from=builder /out/wmbusmeters-build-version.txt /usr/share/wmbusmeters-build-version.txt
+COPY --from=builder /out/wmbusmeters-build-commit.txt /usr/share/wmbusmeters-build-commit.txt
 COPY rootfs /
 RUN sed -i 's/\r$//' /usr/bin/run.sh /usr/bin/bridge.sh \
   && chmod a+x /usr/bin/run.sh /usr/bin/bridge.sh
