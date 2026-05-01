@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
 description: "MQTT RAW HEX -> wmbusmeters (stdin:hex) -> MQTT + Home Assistant Discovery"
-version: "1.4.3"
+version: "1.4.4"
 slug: "wmbus_mqtt_bridge"
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
 
@@ -14,7 +14,7 @@ services:
   - mqtt:want
 
 options:
-  raw_topic: "wmbus_bridge/+/telegram"
+  raw_topic: "wmbus/+/telegram"
   loglevel: "normal"
   filter_hex_only: true
   debug_every_n: 0
@@ -52,6 +52,6 @@ schema:
   meters:
     - id: str
       meter_id: str
-      type: list(auto|abbb23|amiplus|apator162|apatoreitn|dme_07|fhkvdataiii|flowiq2200|hcae2|hydrocalm3|hydrocalm4|hydrodigit|hydrus|iperl|itron|itronheat|iwmtx5|izar|kamheat|lse_07_17|mkradio3|mkradio3a|mkradio4|multical21|pollucomf|qcaloric|qheat|qwater|rfmamb|sensostar|sharky774|topaseskr|tsd2|unismart|vario451|waterstarm|other)
+      type: list(auto|abbb23|aerius|amiplus|apator08|apator162|apator172|apatoreitn|aptmbusna|aquastream|aventieshca|aventieswm|c5isf|caltose|cma12w|dme_07|dme173|ebzwmbe|ehzp|ei6500|elf|elf2|elster|eltako|elvsense|em24|emerlin868|enercal|engelmann_faw|esyswm|eurisii|ev200|evo868|fhkvdataiii|fhkvdataiv|fiowater|flowiq2200|gransystems|gwfgas|hcae2|hydrocalm3|hydrocalm4|hydroclimav2|hydrodigit|hydrus|iem3000|ime|iperl|istaheat|itron|itronheat|iwmtx5|izar|kaden|kamheat|kampress|kamwater|lansendw|lansenpu|lansenrp|lansensm|lansenth|lse_07_17|lse_08|maddalena|microclima|minomess|mkradio3|mkradio3a|mkradio4|mkradio4a|multical21|munia|nemo|nzr|omnipower|op041a|picoflux|piigth|pollucomf|q400|qcaloric|qheat|qheat_55_us|qheat5us|qheatus|qheatv2|qsmoke|qualcosonic|qwater|qwaterv2|relhca|rfmamb|sensostar|sharky|sharky774|sontex868|supercal|supercom587|topaseskr|tsd2|ultraheat|ultrimis|unismart|vario411|vario451|vario451mid|waterstarm|watertech|weh_07|werhlemodwm|zennerhca|other)
       type_other: str?
       key: str?
