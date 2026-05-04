@@ -1,0 +1,45 @@
+name: shellcheck
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Run ShellCheck
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t files < <(find . -type f -name '*.sh' \
+            -not -path './.git/*' \
+            -not -path './docker/config/*' \
+            | sort)
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No shell scripts found."
+            exit 0
+          fi
+
+          printf 'Checking shell scripts:\n'
+          printf ' - %s\n' "${files[@]}"
+
+          shellcheck \
+            -S warning \
+            -x \
+            "${files[@]}"
