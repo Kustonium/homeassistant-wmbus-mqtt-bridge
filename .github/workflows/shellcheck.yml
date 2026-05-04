@@ -29,6 +29,7 @@ jobs:
           mapfile -t files < <(find . -type f -name '*.sh' \
             -not -path './.git/*' \
             -not -path './docker/config/*' \
+            -not -path './wmbusmeters-mqtt-stdin/*' \
             | sort)
 
           if [ "${#files[@]}" -eq 0 ]; then
@@ -40,6 +41,7 @@ jobs:
           printf ' - %s\n' "${files[@]}"
 
           shellcheck \
+            -s bash \
             -S warning \
             -x \
             "${files[@]}"
