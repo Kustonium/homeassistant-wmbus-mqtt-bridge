@@ -1,0 +1,43 @@
+name: yaml-lint
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  yaml-lint:
+    name: YAML syntax check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install yamllint
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install yamllint
+
+      - name: Create yamllint config
+        run: |
+          cat > .yamllint.yml <<'EOF'
+          extends: default
+
+          rules:
+            line-length: disable
+            truthy: disable
+            comments-indentation: disable
+            indentation:
+              spaces: 2
+              indent-sequences: consistent
+          EOF
+
+      - name: Run yamllint
+        run: |
+          yamllint \
+            .github/workflows \
+            config.yaml \
+            repository.yaml
