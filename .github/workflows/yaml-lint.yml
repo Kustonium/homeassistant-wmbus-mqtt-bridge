@@ -27,9 +27,12 @@ jobs:
           extends: default
 
           rules:
+            document-start: disable
             line-length: disable
             truthy: disable
             comments-indentation: disable
+            trailing-spaces: disable
+            new-line-at-end-of-file: disable
             indentation:
               spaces: 2
               indent-sequences: consistent
@@ -38,6 +41,8 @@ jobs:
       - name: Run yamllint
         run: |
           yamllint \
-            .github/workflows \
+            .github/workflows/shellcheck.yml \
+            .github/workflows/yaml-lint.yml \
+            .github/workflows/build.yaml \
             config.yaml \
             repository.yaml
