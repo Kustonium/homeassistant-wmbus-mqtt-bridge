@@ -4,7 +4,7 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20
 
 # --- build wmbusmeters ---
-FROM alpine:3.20 AS builder
+FROM alpine:3.23 AS builder
 
 RUN apk add --no-cache \
   bash git build-base make linux-headers \
@@ -25,7 +25,7 @@ RUN git clone https://github.com/wmbusmeters/wmbusmeters.git . \
 
 
 # --- runtime: docker standalone (DietPi / generic Docker) ---
-FROM alpine:3.20 AS docker
+FROM alpine:3.23 AS docker
 
 RUN apk add --no-cache \
   bash \
