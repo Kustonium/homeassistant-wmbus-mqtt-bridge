@@ -1,12 +1,11 @@
 # syntax=docker/dockerfile:1
 
-# UWAGA: to musi istnieć, inaczej build padnie nawet przy target=docker
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20
 
 # --- build wmbusmeters ---
 FROM ${BUILD_FROM} AS builder
 
-ENV LANG C.UTF-8
+ENV LANG=C.UTF-8
 
 RUN apk add --no-cache \
   bash git build-base make linux-headers \
@@ -17,6 +16,7 @@ RUN apk add --no-cache \
 WORKDIR /src
 
 RUN git clone https://github.com/wmbusmeters/wmbusmeters.git . \
+  && sed -i 's/DEBUG_FLAGS=-O2 -g -flto/DEBUG_FLAGS=-O2 -g/' Makefile \
   && ./configure \
   && make \
   && install -d /out \
