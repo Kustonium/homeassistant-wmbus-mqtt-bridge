@@ -16,6 +16,9 @@ RUN apk add --no-cache \
 WORKDIR /src
 
 RUN git clone https://github.com/wmbusmeters/wmbusmeters.git . \
+# Aktualny upstream wmbusmeters potrafi wywalać build przy LTO (-flto)
+# na toolchainie używanym w tym add-onie (błąd lto-wrapper / vsnprintf / fortify).
+# Dlatego usuwamy -flto z Makefile, ale nadal bierzemy najnowszy upstream.
   && sed -i 's/DEBUG_FLAGS=-O2 -g -flto/DEBUG_FLAGS=-O2 -g/' Makefile \
   && ./configure \
   && make \
