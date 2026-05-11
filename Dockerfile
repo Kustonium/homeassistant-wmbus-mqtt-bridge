@@ -26,7 +26,7 @@ RUN git clone https://github.com/wmbusmeters/wmbusmeters.git . \
   && install -m 0755 build/wmbusmeters /out/wmbusmeters
 
 # --- runtime: docker standalone (DietPi / generic Docker) ---
-FROM alpine:3.20 AS docker
+FROM alpine:3.23 AS docker
 
 RUN apk add --no-cache \
   bash \
