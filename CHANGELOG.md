@@ -1,3 +1,3 @@
-## 1.4.4
+## 1.4.6
 
-## Update Wmbusmeters to 2.0.0-382 version
+## Updated to version [2.0.0-444]
