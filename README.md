@@ -81,6 +81,41 @@ W konfiguracji dodatku wypełnij sekcję **meters**:
 
 Jeśli licznik nie szyfruje telegramów, pole `key` pozostaw puste.
 
+#### Opcjonalnie — tryb SEARCH (dopasowanie po stanie licznika)
+
+Tryb `search_mode` pomaga znaleźć właściwy licznik w budynku, gdy w trybie LISTEN pojawia się dużo obcych urządzeń.
+
+Działa dwuetapowo:
+
+1. Przy pustej liście `meters` add-on zbiera kandydatów z logów LISTEN i zapisuje ich w:
+   `/data/search_candidates.tsv`
+2. Po restarcie add-on tworzy tymczasowe liczniki `search_<meter_id>`, dekoduje ich JSON-y i porównuje wartości `total_m3` z podanym odczytem.
+3. Gdy znajdzie pasujący licznik, wypisuje tylko czytelny wynik `SEARCH MATCH` oraz gotową konfigurację `SEARCH SUGGESTED CONFIG`.
+
+Przykład wyniku:
+
+```text
+[wmbus-bridge][WARN] SEARCH MATCH: id=03534159 driver=hydrodigit media=water field=total_m3 value=23.932 m3 expected=23.93 diff=0.002000 m3
+[wmbus-bridge][WARN] SEARCH SUGGESTED CONFIG: {"id":"meter_03534159","meter_id":"03534159","type":"hydrodigit","type_other":"","key":""}
+```
+
+Zalecana konfiguracja:
+
+| Pole | Zalecenie |
+|------|-----------|
+| `search_mode` | `true` tylko na czas szukania licznika |
+| `search_expected_value_m3` | aktualny odczyt z fizycznego licznika, np. `23.93` albo `23,93` |
+| `search_tolerance_m3` | zwykle `0.05` (50 litrów); nie używaj szerokiej tolerancji typu `0.5` w bloku |
+| `search_topic` | opcjonalny temat MQTT dla wyników, domyślnie `wmbus/search/candidates` |
+
+Ważne zasady:
+
+- SEARCH służy tylko do identyfikacji licznika — po znalezieniu ID wyłącz `search_mode`.
+- Tymczasowe liczniki `search_*` nie powinny tworzyć encji Home Assistant.
+- Po znalezieniu licznika skopiuj `SEARCH SUGGESTED CONFIG` do sekcji `meters`.
+- Po zakończeniu szukania usuń `/data/search_candidates.tsv`, jeśli chcesz zacząć kolejne wyszukiwanie od czystej listy.
+- Dla wodomierzy w bloku ustawiaj wąską tolerancję, np. `0.05`, bo wiele cudzych liczników może mieć podobny stan.
+
 ---
 
 ### Docker standalone (bez Home Assistant)
@@ -114,7 +149,7 @@ Pliki pod `./config/etc/` są **generowane automatycznie** przy każdym starcie 
 | `meter_id` | 8-cyfrowy numer seryjny licznika (z trybu LISTEN) |
 | `type` | Driver wmbusmeters (z trybu LISTEN), lub `auto` |
 | `type_other` | Niestandardowy driver — wypełnij tylko gdy `type` = `other` |
-| `key` | Klucz szyfrowania w formacie HEX, lub `NOKEY` |
+| `key` | Klucz szyfrowania w formacie HEX; zostaw puste, jeśli licznik nie szyfruje |
 
 Przykład `options.json`:
 
@@ -125,6 +160,9 @@ Przykład `options.json`:
   "filter_hex_only": true,
   "discovery_enabled": true,
   "state_prefix": "wmbusmeters",
+  "search_mode": false,
+  "search_expected_value_m3": "0",
+  "search_tolerance_m3": "0.05",
   "mqtt_mode": "external",
   "external_mqtt_host": "192.168.1.10",
   "external_mqtt_port": 1883,
@@ -135,7 +173,7 @@ Przykład `options.json`:
       "id": "woda_zimna_lazienka",
       "meter_id": "41553221",
       "type": "mkradio3",
-      "key": "NOKEY"
+      "key": ""
     },
     {
       "id": "cieplo_mieszkanie",
@@ -174,7 +212,7 @@ Ten add-on jest szczególnie przydatny gdy:
 - chcesz używać wmbusmeters bez dongla USB,
 - masz własny pipeline radiowy i potrzebujesz tylko dekodera + integracji z HA.
 
-⚠️ **Nie instaluj oficjalnego add-onu wmbusmeters równoległe.** Ten add-on zawiera własną instancję wmbusmeters i zastępuje go w tym scenariuszu.
+⚠️ **Nie instaluj oficjalnego add-onu wmbusmeters równolegle.** Ten add-on zawiera własną instancję wmbusmeters i zastępuje go w tym scenariuszu.
 
 ### Projekty bazowe (upstream)
 
@@ -260,6 +298,41 @@ Fill in the **meters** section in the add-on configuration:
 
 If the meter does not encrypt telegrams, leave `key` empty.
 
+#### Optional — SEARCH mode (matching by meter reading)
+
+`search_mode` helps identify the correct meter in buildings where LISTEN mode sees many nearby devices.
+
+It works in two stages:
+
+1. With an empty `meters` list, the add-on collects LISTEN candidates and stores them in:
+   `/data/search_candidates.tsv`
+2. After restart, the add-on creates temporary `search_<meter_id>` meters, decodes their JSON output and compares `total_m3` with the expected physical reading.
+3. When a match is found, it prints a readable `SEARCH MATCH` line and a ready-to-copy `SEARCH SUGGESTED CONFIG`.
+
+Example output:
+
+```text
+[wmbus-bridge][WARN] SEARCH MATCH: id=03534159 driver=hydrodigit media=water field=total_m3 value=23.932 m3 expected=23.93 diff=0.002000 m3
+[wmbus-bridge][WARN] SEARCH SUGGESTED CONFIG: {"id":"meter_03534159","meter_id":"03534159","type":"hydrodigit","type_other":"","key":""}
+```
+
+Recommended settings:
+
+| Field | Recommendation |
+|-------|----------------|
+| `search_mode` | `true` only while identifying a meter |
+| `search_expected_value_m3` | current physical meter reading, for example `23.93` or `23,93` |
+| `search_tolerance_m3` | usually `0.05` (50 liters); avoid wide values such as `0.5` in apartment blocks |
+| `search_topic` | optional MQTT topic for search results, default: `wmbus/search/candidates` |
+
+Important rules:
+
+- SEARCH is only for meter identification — disable `search_mode` after finding the ID.
+- Temporary `search_*` meters should not create Home Assistant entities.
+- Copy `SEARCH SUGGESTED CONFIG` into the `meters` section after finding the match.
+- Remove `/data/search_candidates.tsv` after searching if you want the next search to start from a clean candidate list.
+- Use a narrow tolerance for water meters in apartment blocks, for example `0.05`, because many nearby meters may have similar readings.
+
 ---
 
 ### Docker standalone (without Home Assistant)
@@ -293,7 +366,7 @@ Files under `./config/etc/` are **auto-generated on startup** — do not edit th
 | `meter_id` | 8-digit serial number (from LISTEN mode) |
 | `type` | wmbusmeters driver (from LISTEN mode), or `auto` |
 | `type_other` | Custom driver name — only when `type` is `other` |
-| `key` | Encryption key in HEX, or `NOKEY` |
+| `key` | Encryption key in HEX; leave empty if the meter is not encrypted |
 
 Example `options.json`:
 
@@ -304,6 +377,9 @@ Example `options.json`:
   "filter_hex_only": true,
   "discovery_enabled": true,
   "state_prefix": "wmbusmeters",
+  "search_mode": false,
+  "search_expected_value_m3": "0",
+  "search_tolerance_m3": "0.05",
   "mqtt_mode": "external",
   "external_mqtt_host": "192.168.1.10",
   "external_mqtt_port": 1883,
@@ -314,7 +390,7 @@ Example `options.json`:
       "id": "cold_water_bathroom",
       "meter_id": "41553221",
       "type": "mkradio3",
-      "key": "NOKEY"
+      "key": ""
     },
     {
       "id": "heat_apartment",
