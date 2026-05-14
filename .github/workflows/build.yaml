@@ -1,13 +1,17 @@
 name: build-addon
 
 on:
+  # Build and publish images only after code lands on main.
   push:
     branches:
       - main
-      - dev
+
+  # Pull requests still get a test build, but nothing is pushed to GHCR.
   pull_request:
     branches:
       - main
+
+  workflow_dispatch:
 
 permissions:
   contents: read
