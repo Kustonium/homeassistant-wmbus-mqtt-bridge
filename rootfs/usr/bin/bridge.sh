@@ -285,9 +285,17 @@ guess_state_class() {
 float_or_default() {
   local value="$1"
   local def="$2"
-  if [[ "${value}" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
-    echo "${value}"
+  local normalized
+
+  # Accept both decimal separators in add-on UI/options:
+  #   22.901 and 22,901 are treated as the same value.
+  # Spaces are ignored so pasted values like "22,901 " do not break search mode.
+  normalized="$(echo "${value}" | tr -d '[:space:]' | tr ',' '.')"
+
+  if [[ "${normalized}" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
+    echo "${normalized}"
   else
+    warn "Invalid numeric value '${value}', using default '${def}'. Use 22.901 or 22,901 format."
     echo "${def}"
   fi
 }
@@ -301,6 +309,11 @@ declare -A SEARCH_FIRST_VALUE
 declare -A SEARCH_REPORTED_EXPECTED
 
 declare -A SEARCH_REPORTED_DELTA
+
+SEARCH_CANDIDATES_FILE="${BASE}/search_candidates.tsv"
+SEARCH_USING_TEMP_METERS="false"
+OFFICIAL_METERS_COUNT=0
+SEARCH_IGNORED_COUNT=0
 
 search_field_is_candidate() {
   local key_lc="$1"
@@ -343,6 +356,78 @@ emit_search_payload() {
 
   [[ -n "${payload}" ]] || return 0
   mqtt_pub "${SEARCH_TOPIC}" "${payload}" "false" || true
+}
+
+
+search_type_is_water_candidate() {
+  local type_lc="$1"
+
+  [[ -n "${type_lc}" ]] || return 1
+  [[ "${type_lc}" == *encrypted* ]] && return 1
+
+  case "${type_lc}" in
+    *water*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+search_cache_candidate() {
+  local id="$1"
+  local driver="$2"
+  local type_line="${3:-}"
+  local type_lc
+
+  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  [[ -n "${driver}" ]] || driver="auto"
+
+  type_lc="$(echo "${type_line}" | tr '[:upper:]' '[:lower:]')"
+  if ! search_type_is_water_candidate "${type_lc}"; then
+    SEARCH_IGNORED_COUNT=$((SEARCH_IGNORED_COUNT + 1))
+    warn "SEARCH ignored: id=${id} driver=${driver} type=${type_line:-unknown} reason=not_water_m3_candidate_or_encrypted (ignored=${SEARCH_IGNORED_COUNT})."
+    return 0
+  fi
+
+  touch "${SEARCH_CANDIDATES_FILE}"
+  if grep -q "^${id}	" "${SEARCH_CANDIDATES_FILE}" 2>/dev/null; then
+    return 0
+  fi
+
+  printf '%s	%s
+' "${id}" "${driver}" >> "${SEARCH_CANDIDATES_FILE}"
+
+  local cached_count
+  cached_count="$(grep -Ec '^[0-9]{8}[[:space:]]' "${SEARCH_CANDIDATES_FILE}" 2>/dev/null || true)"
+  [[ "${cached_count}" =~ ^[0-9]+$ ]] || cached_count=0
+
+  warn "SEARCH discovered: id=${id} driver=${driver} type=${type_line:-unknown} stored as water candidate (cached=${cached_count}, ignored=${SEARCH_IGNORED_COUNT})."
+}
+
+create_search_meter_files_from_cache() {
+  [[ -f "${SEARCH_CANDIDATES_FILE}" ]] || return 0
+
+  local i=0
+  local id driver file safe_driver
+  while IFS=$'\t' read -r id driver; do
+    [[ "${id}" =~ ^[0-9]{8}$ ]] || continue
+    [[ -n "${driver}" ]] || driver="auto"
+    [[ "${driver}" =~ ^[A-Za-z0-9_]+$ ]] || driver="auto"
+
+    i=$((i+1))
+    file="$(printf '%s/meter-%04d' "${METER_DIR}" "${i}")"
+    safe_driver="${driver}"
+
+    {
+      echo "name=search_${id}"
+      echo "id=${id}"
+      if [[ "${safe_driver}" != "auto" ]]; then
+        echo "driver=${safe_driver}"
+      fi
+    } > "${file}"
+
+    warn "SEARCH temporary meter: search_${id} id=${id} driver=${safe_driver}"
+  done < "${SEARCH_CANDIDATES_FILE}"
+
+  echo "${i}"
 }
 
 process_search_json() {
@@ -403,8 +488,21 @@ METERS_COUNT=0
 if [[ -f "${OPTIONS_JSON}" ]] && jq -e '.meters and (.meters|length>0)' "${OPTIONS_JSON}" >/dev/null 2>&1; then
   METERS_COUNT="$(jq -r '.meters|length' "${OPTIONS_JSON}")"
 fi
+OFFICIAL_METERS_COUNT="${METERS_COUNT}"
 
-if [[ "${METERS_COUNT}" -eq 0 ]]; then
+if [[ "${METERS_COUNT}" -eq 0 && "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
+  cached_count="$(create_search_meter_files_from_cache)"
+  if [[ "${cached_count}" =~ ^[0-9]+$ && "${cached_count}" -gt 0 ]]; then
+    METERS_COUNT="${cached_count}"
+    SEARCH_USING_TEMP_METERS="true"
+    warn "No user meters configured -> SEARCH MODE (temporary cached candidates=${cached_count}, expected=${SEARCH_EXPECTED_VALUE_M3} m3, tolerance=${SEARCH_TOLERANCE_M3} m3)."
+    warn "SEARCH MODE uses cached candidates from ${SEARCH_CANDIDATES_FILE}. Remove that file or disable search_mode to return to pure LISTEN MODE."
+  else
+    warn "No meters configured -> SEARCH DISCOVERY MODE."
+    warn "SEARCH MODE needs decoded JSON values, but there are no cached candidates yet."
+    warn "The bridge will collect id+driver candidates first. Let it run long enough to hear meters; restart later to decode cached candidates and compare m3 values."
+  fi
+elif [[ "${METERS_COUNT}" -eq 0 ]]; then
   warn "No meters configured -> LISTEN MODE (will log DLL-ID + suggested driver)."
 else
   i=0
@@ -602,6 +700,7 @@ log "Starting wmbusmeters..."
 run_once() {
   last_id=""
   last_driver=""
+  last_type=""
 
   if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
   ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
@@ -626,25 +725,32 @@ run_once() {
     | while IFS= read -r line; do
         echo "${line}"
 
-        if [[ "${METERS_COUNT}" -eq 0 ]]; then
+        if [[ "${OFFICIAL_METERS_COUNT}" -eq 0 && "${SEARCH_USING_TEMP_METERS}" != "true" ]]; then
           if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9]{8}) ]]; then
             last_id="${BASH_REMATCH[1]}"
+            last_type=""
+            last_driver=""
+          fi
+          if [[ "${line}" =~ ^[[:space:]]*type:[[:space:]]*(.*)$ ]]; then
+            last_type="${BASH_REMATCH[1]}"
           fi
           if [[ "${line}" =~ ^[[:space:]]*driver:\ ([a-zA-Z0-9_]+) ]]; then
             last_driver="${BASH_REMATCH[1]}"
           fi
           if [[ -n "${last_id}" && -n "${last_driver}" ]]; then
-            emit_snippet_if_new "${last_id}" "${last_driver}"
+            if [[ "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
+              search_cache_candidate "${last_id}" "${last_driver}" "${last_type}"
+            else
+              emit_snippet_if_new "${last_id}" "${last_driver}"
+            fi
             last_id=""
             last_driver=""
+            last_type=""
           fi
         fi
 
         if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
           process_search_json "${line}"
-          if [[ "${SEARCH_USING_TEMP_METERS}" == "true" ]]; then
-            continue
-          fi
           id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
           ts="$(echo "${line}" | jq -r '.timestamp // .device_date_time // empty' 2>/dev/null || true)"
           if [[ -n "${id}" ]]; then
@@ -664,9 +770,6 @@ else
         echo "${line}"
         if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
           process_search_json "${line}"
-          if [[ "${SEARCH_USING_TEMP_METERS}" == "true" ]]; then
-            continue
-          fi
           id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
           ts="$(echo "${line}" | jq -r '.timestamp // .device_date_time // empty' 2>/dev/null || true)"
           if [[ -n "${id}" ]]; then
