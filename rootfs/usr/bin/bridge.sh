@@ -424,7 +424,7 @@ create_search_meter_files_from_cache() {
       fi
     } > "${file}"
 
-    warn "SEARCH temporary meter: search_${id} id=${id} driver=${safe_driver}"
+    # Do not spam logs with every temporary search meter. A summary is printed after cache load.
   done < "${SEARCH_CANDIDATES_FILE}"
 
   echo "${i}"
@@ -451,7 +451,11 @@ process_search_json() {
 
     in_tolerance="$(awk -v d="${absdiff}" -v t="${SEARCH_TOLERANCE_M3}" 'BEGIN { print (d <= t) ? "yes" : "no" }')"
     if [[ "${SEARCH_EXPECTED_VALUE_M3}" != "0" && "${in_tolerance}" == "yes" && -z "${SEARCH_REPORTED_EXPECTED[${state_key}]+x}" ]]; then
-      warn "SEARCH candidate: id=${id} field=${field} value=${value} m3 expected=${SEARCH_EXPECTED_VALUE_M3} diff=${absdiff} m3"
+      local media meter
+      media="$(jq -r '.media // empty' <<<"${json_line}" 2>/dev/null || true)"
+      meter="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
+      warn "SEARCH MATCH: id=${id} driver=${meter:-unknown} media=${media:-unknown} field=${field} value=${value} m3 expected=${SEARCH_EXPECTED_VALUE_M3} diff=${absdiff} m3"
+      warn "SEARCH SUGGESTED CONFIG: {\"id\":\"meter_${id}\",\"meter_id\":\"${id}\",\"type\":\"${meter:-auto}\",\"type_other\":\"\",\"key\":\"\"}"
       emit_search_payload "value_match" "${json_line}" "${field}" "${value}" "${absdiff}" "0"
       SEARCH_REPORTED_EXPECTED["${state_key}"]=1
     fi
@@ -735,70 +739,6 @@ clear_search_discovery_from_json() {
   )
 }
 
-
-# Clear retained HA MQTT Discovery configs left by older SEARCH runs.
-# This is intentionally based on the cached candidate list and common numeric
-# water-meter fields, because when SEARCH is disabled there are no search_*
-# JSON telegrams anymore from which we could infer exact discovery fields.
-clear_search_discovery_for_cached_id() {
-  local id="$1"
-  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
-
-  local uniq="wmbus_${id}"
-  local field obj cache_key cfg_topic
-  local fields=(
-    total_m3
-    backflow_m3
-    voltage_v
-    target_m3
-    volume_m3
-    total_volume_m3
-    current_consumption_m3
-  )
-
-  # Legacy one-off config topic used by older bridge versions.
-  cache_key="legacy|${id}|total_m3"
-  if [[ -z "${SEARCH_DISCOVERY_CLEARED_FIELD[${cache_key}]+x}" ]]; then
-    mqtt_pub "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/total_m3/config" "" "true" || true
-    SEARCH_DISCOVERY_CLEARED_FIELD["${cache_key}"]=1
-  fi
-
-  for field in "${fields[@]}"; do
-    obj="$(sanitize_obj_id "${field}")"
-    [[ -n "${obj}" ]] || continue
-
-    cache_key="common|${id}|${obj}"
-    [[ -n "${SEARCH_DISCOVERY_CLEARED_FIELD[${cache_key}]+x}" ]] && continue
-
-    cfg_topic="${DISCOVERY_PREFIX}/sensor/${uniq}/${obj}/config"
-    mqtt_pub "${cfg_topic}" "" "true" || true
-    SEARCH_DISCOVERY_CLEARED_FIELD["${cache_key}"]=1
-  done
-}
-
-cleanup_search_discovery_from_cache() {
-  [[ -f "${SEARCH_CANDIDATES_FILE}" ]] || return 0
-
-  local count=0
-  local id driver
-  while IFS=$'\t' read -r id driver; do
-    [[ "${id}" =~ ^[0-9]{8}$ ]] || continue
-    clear_search_discovery_for_cached_id "${id}"
-    count=$((count + 1))
-  done < "${SEARCH_CANDIDATES_FILE}"
-
-  if [[ "${count}" -gt 0 ]]; then
-    warn "SEARCH cleanup: cleared retained HA Discovery configs for cached search candidates (count=${count})."
-  fi
-}
-
-# If SEARCH is no longer running in temporary-meter mode, clean up retained HA
-# Discovery configs created by older buggy SEARCH runs. Without this, HA keeps
-# stale search_* devices/entities even after search_mode is disabled.
-if [[ "${SEARCH_USING_TEMP_METERS}" != "true" ]]; then
-  cleanup_search_discovery_from_cache
-fi
-
 # ------------------------------------------------------------
 # Listen-mode snippet (best-effort)
 # ------------------------------------------------------------
@@ -852,6 +792,26 @@ run_once() {
       ' \
     | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
     | while IFS= read -r line; do
+        if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
+          process_search_json "${line}"
+          if is_search_temp_json "${line}"; then
+            clear_search_discovery_from_json "${line}"
+            continue
+          fi
+          echo "${line}"
+          id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
+          ts="$(echo "${line}" | jq -r '.timestamp // .device_date_time // empty' 2>/dev/null || true)"
+          if [[ -n "${id}" ]]; then
+            if [[ "${REQUIRE_TIMESTAMP}" == "true" && -z "${ts}" ]]; then
+              warn "Skip publish: missing timestamp for id=${id}"
+            else
+              mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
+              emit_discovery_from_json "${line}"
+            fi
+          fi
+          continue
+        fi
+
         echo "${line}"
 
         if [[ "${OFFICIAL_METERS_COUNT}" -eq 0 && "${SEARCH_USING_TEMP_METERS}" != "true" ]]; then
@@ -878,35 +838,18 @@ run_once() {
           fi
         fi
 
-        if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
-          process_search_json "${line}"
-          if is_search_temp_json "${line}"; then
-            clear_search_discovery_from_json "${line}"
-            continue
-          fi
-          id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
-          ts="$(echo "${line}" | jq -r '.timestamp // .device_date_time // empty' 2>/dev/null || true)"
-          if [[ -n "${id}" ]]; then
-            if [[ "${REQUIRE_TIMESTAMP}" == "true" && -z "${ts}" ]]; then
-              warn "Skip publish: missing timestamp for id=${id}"
-            else
-              mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
-              emit_discovery_from_json "${line}"
-            fi
-          fi
-        fi
 done
 else
   ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
     | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
     | while IFS= read -r line; do
-        echo "${line}"
         if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
           process_search_json "${line}"
           if is_search_temp_json "${line}"; then
             clear_search_discovery_from_json "${line}"
             continue
           fi
+          echo "${line}"
           id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
           ts="$(echo "${line}" | jq -r '.timestamp // .device_date_time // empty' 2>/dev/null || true)"
           if [[ -n "${id}" ]]; then
@@ -917,6 +860,8 @@ else
               emit_discovery_from_json "${line}"
             fi
           fi
+        else
+          echo "${line}"
         fi
 done
 fi
