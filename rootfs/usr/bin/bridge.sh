@@ -364,7 +364,12 @@ search_cache_candidate() {
 
   printf '%s	%s
 ' "${id}" "${driver}" >> "${SEARCH_CANDIDATES_FILE}"
-  warn "SEARCH discovered: id=${id} driver=${driver} stored as candidate. Restart the add-on to decode cached candidates and compare values."
+
+  local cached_count
+  cached_count="$(grep -Ec '^[0-9]{8}[[:space:]]' "${SEARCH_CANDIDATES_FILE}" 2>/dev/null || true)"
+  [[ "${cached_count}" =~ ^[0-9]+$ ]] || cached_count=0
+
+  warn "SEARCH discovered: id=${id} driver=${driver} stored as candidate (cached=${cached_count})."
 }
 
 create_search_meter_files_from_cache() {
@@ -465,7 +470,7 @@ if [[ "${METERS_COUNT}" -eq 0 && "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTE
   else
     warn "No meters configured -> SEARCH DISCOVERY MODE."
     warn "SEARCH MODE needs decoded JSON values, but there are no cached candidates yet."
-    warn "The bridge will collect id+driver candidates first. Restart the add-on after candidates are discovered to decode and compare m3 values."
+    warn "The bridge will collect id+driver candidates first. Let it run long enough to hear meters; restart later to decode cached candidates and compare m3 values."
   fi
 elif [[ "${METERS_COUNT}" -eq 0 ]]; then
   warn "No meters configured -> LISTEN MODE (will log DLL-ID + suggested driver)."
