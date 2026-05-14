@@ -735,6 +735,70 @@ clear_search_discovery_from_json() {
   )
 }
 
+
+# Clear retained HA MQTT Discovery configs left by older SEARCH runs.
+# This is intentionally based on the cached candidate list and common numeric
+# water-meter fields, because when SEARCH is disabled there are no search_*
+# JSON telegrams anymore from which we could infer exact discovery fields.
+clear_search_discovery_for_cached_id() {
+  local id="$1"
+  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+
+  local uniq="wmbus_${id}"
+  local field obj cache_key cfg_topic
+  local fields=(
+    total_m3
+    backflow_m3
+    voltage_v
+    target_m3
+    volume_m3
+    total_volume_m3
+    current_consumption_m3
+  )
+
+  # Legacy one-off config topic used by older bridge versions.
+  cache_key="legacy|${id}|total_m3"
+  if [[ -z "${SEARCH_DISCOVERY_CLEARED_FIELD[${cache_key}]+x}" ]]; then
+    mqtt_pub "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/total_m3/config" "" "true" || true
+    SEARCH_DISCOVERY_CLEARED_FIELD["${cache_key}"]=1
+  fi
+
+  for field in "${fields[@]}"; do
+    obj="$(sanitize_obj_id "${field}")"
+    [[ -n "${obj}" ]] || continue
+
+    cache_key="common|${id}|${obj}"
+    [[ -n "${SEARCH_DISCOVERY_CLEARED_FIELD[${cache_key}]+x}" ]] && continue
+
+    cfg_topic="${DISCOVERY_PREFIX}/sensor/${uniq}/${obj}/config"
+    mqtt_pub "${cfg_topic}" "" "true" || true
+    SEARCH_DISCOVERY_CLEARED_FIELD["${cache_key}"]=1
+  done
+}
+
+cleanup_search_discovery_from_cache() {
+  [[ -f "${SEARCH_CANDIDATES_FILE}" ]] || return 0
+
+  local count=0
+  local id driver
+  while IFS=$'\t' read -r id driver; do
+    [[ "${id}" =~ ^[0-9]{8}$ ]] || continue
+    clear_search_discovery_for_cached_id "${id}"
+    count=$((count + 1))
+  done < "${SEARCH_CANDIDATES_FILE}"
+
+  if [[ "${count}" -gt 0 ]]; then
+    warn "SEARCH cleanup: cleared retained HA Discovery configs for cached search candidates (count=${count})."
+  fi
+}
+
+# If SEARCH is no longer running in temporary-meter mode, clean up retained HA
+# Discovery configs created by older buggy SEARCH runs. Without this, HA keeps
+# stale search_* devices/entities even after search_mode is disabled.
+if [[ "${SEARCH_USING_TEMP_METERS}" != "true" ]]; then
+  cleanup_search_discovery_from_cache
+fi
+
 # ------------------------------------------------------------
 # Listen-mode snippet (best-effort)
 # ------------------------------------------------------------
