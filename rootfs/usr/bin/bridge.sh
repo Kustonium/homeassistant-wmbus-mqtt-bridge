@@ -302,6 +302,10 @@ declare -A SEARCH_REPORTED_EXPECTED
 
 declare -A SEARCH_REPORTED_DELTA
 
+SEARCH_CANDIDATES_FILE="${BASE}/search_candidates.tsv"
+SEARCH_USING_TEMP_METERS="false"
+OFFICIAL_METERS_COUNT=0
+
 search_field_is_candidate() {
   local key_lc="$1"
 
@@ -343,6 +347,52 @@ emit_search_payload() {
 
   [[ -n "${payload}" ]] || return 0
   mqtt_pub "${SEARCH_TOPIC}" "${payload}" "false" || true
+}
+
+
+search_cache_candidate() {
+  local id="$1"
+  local driver="$2"
+
+  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  [[ -n "${driver}" ]] || driver="auto"
+
+  touch "${SEARCH_CANDIDATES_FILE}"
+  if grep -q "^${id}	" "${SEARCH_CANDIDATES_FILE}" 2>/dev/null; then
+    return 0
+  fi
+
+  printf '%s	%s
+' "${id}" "${driver}" >> "${SEARCH_CANDIDATES_FILE}"
+  warn "SEARCH discovered: id=${id} driver=${driver} stored as candidate. Restart the add-on to decode cached candidates and compare values."
+}
+
+create_search_meter_files_from_cache() {
+  [[ -f "${SEARCH_CANDIDATES_FILE}" ]] || return 0
+
+  local i=0
+  local id driver file safe_driver
+  while IFS=$'\t' read -r id driver; do
+    [[ "${id}" =~ ^[0-9]{8}$ ]] || continue
+    [[ -n "${driver}" ]] || driver="auto"
+    [[ "${driver}" =~ ^[A-Za-z0-9_]+$ ]] || driver="auto"
+
+    i=$((i+1))
+    file="$(printf '%s/meter-%04d' "${METER_DIR}" "${i}")"
+    safe_driver="${driver}"
+
+    {
+      echo "name=search_${id}"
+      echo "id=${id}"
+      if [[ "${safe_driver}" != "auto" ]]; then
+        echo "driver=${safe_driver}"
+      fi
+    } > "${file}"
+
+    warn "SEARCH temporary meter: search_${id} id=${id} driver=${safe_driver}"
+  done < "${SEARCH_CANDIDATES_FILE}"
+
+  echo "${i}"
 }
 
 process_search_json() {
@@ -403,8 +453,21 @@ METERS_COUNT=0
 if [[ -f "${OPTIONS_JSON}" ]] && jq -e '.meters and (.meters|length>0)' "${OPTIONS_JSON}" >/dev/null 2>&1; then
   METERS_COUNT="$(jq -r '.meters|length' "${OPTIONS_JSON}")"
 fi
+OFFICIAL_METERS_COUNT="${METERS_COUNT}"
 
-if [[ "${METERS_COUNT}" -eq 0 ]]; then
+if [[ "${METERS_COUNT}" -eq 0 && "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
+  cached_count="$(create_search_meter_files_from_cache)"
+  if [[ "${cached_count}" =~ ^[0-9]+$ && "${cached_count}" -gt 0 ]]; then
+    METERS_COUNT="${cached_count}"
+    SEARCH_USING_TEMP_METERS="true"
+    warn "No user meters configured -> SEARCH MODE (temporary cached candidates=${cached_count}, expected=${SEARCH_EXPECTED_VALUE_M3} m3, tolerance=${SEARCH_TOLERANCE_M3} m3)."
+    warn "SEARCH MODE uses cached candidates from ${SEARCH_CANDIDATES_FILE}. Remove that file or disable search_mode to return to pure LISTEN MODE."
+  else
+    warn "No meters configured -> SEARCH DISCOVERY MODE."
+    warn "SEARCH MODE needs decoded JSON values, but there are no cached candidates yet."
+    warn "The bridge will collect id+driver candidates first. Restart the add-on after candidates are discovered to decode and compare m3 values."
+  fi
+elif [[ "${METERS_COUNT}" -eq 0 ]]; then
   warn "No meters configured -> LISTEN MODE (will log DLL-ID + suggested driver)."
 else
   i=0
@@ -626,7 +689,7 @@ run_once() {
     | while IFS= read -r line; do
         echo "${line}"
 
-        if [[ "${METERS_COUNT}" -eq 0 ]]; then
+        if [[ "${OFFICIAL_METERS_COUNT}" -eq 0 && "${SEARCH_USING_TEMP_METERS}" != "true" ]]; then
           if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9]{8}) ]]; then
             last_id="${BASH_REMATCH[1]}"
           fi
@@ -634,7 +697,11 @@ run_once() {
             last_driver="${BASH_REMATCH[1]}"
           fi
           if [[ -n "${last_id}" && -n "${last_driver}" ]]; then
-            emit_snippet_if_new "${last_id}" "${last_driver}"
+            if [[ "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
+              search_cache_candidate "${last_id}" "${last_driver}"
+            else
+              emit_snippet_if_new "${last_id}" "${last_driver}"
+            fi
             last_id=""
             last_driver=""
           fi
