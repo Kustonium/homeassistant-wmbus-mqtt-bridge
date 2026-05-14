@@ -305,6 +305,7 @@ declare -A SEARCH_REPORTED_DELTA
 SEARCH_CANDIDATES_FILE="${BASE}/search_candidates.tsv"
 SEARCH_USING_TEMP_METERS="false"
 OFFICIAL_METERS_COUNT=0
+SEARCH_IGNORED_COUNT=0
 
 search_field_is_candidate() {
   local key_lc="$1"
@@ -350,12 +351,33 @@ emit_search_payload() {
 }
 
 
+search_type_is_water_candidate() {
+  local type_lc="$1"
+
+  [[ -n "${type_lc}" ]] || return 1
+  [[ "${type_lc}" == *encrypted* ]] && return 1
+
+  case "${type_lc}" in
+    *water*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 search_cache_candidate() {
   local id="$1"
   local driver="$2"
+  local type_line="${3:-}"
+  local type_lc
 
   [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
   [[ -n "${driver}" ]] || driver="auto"
+
+  type_lc="$(echo "${type_line}" | tr '[:upper:]' '[:lower:]')"
+  if ! search_type_is_water_candidate "${type_lc}"; then
+    SEARCH_IGNORED_COUNT=$((SEARCH_IGNORED_COUNT + 1))
+    warn "SEARCH ignored: id=${id} driver=${driver} type=${type_line:-unknown} reason=not_water_m3_candidate_or_encrypted (ignored=${SEARCH_IGNORED_COUNT})."
+    return 0
+  fi
 
   touch "${SEARCH_CANDIDATES_FILE}"
   if grep -q "^${id}	" "${SEARCH_CANDIDATES_FILE}" 2>/dev/null; then
@@ -369,7 +391,7 @@ search_cache_candidate() {
   cached_count="$(grep -Ec '^[0-9]{8}[[:space:]]' "${SEARCH_CANDIDATES_FILE}" 2>/dev/null || true)"
   [[ "${cached_count}" =~ ^[0-9]+$ ]] || cached_count=0
 
-  warn "SEARCH discovered: id=${id} driver=${driver} stored as candidate (cached=${cached_count})."
+  warn "SEARCH discovered: id=${id} driver=${driver} type=${type_line:-unknown} stored as water candidate (cached=${cached_count}, ignored=${SEARCH_IGNORED_COUNT})."
 }
 
 create_search_meter_files_from_cache() {
@@ -670,6 +692,7 @@ log "Starting wmbusmeters..."
 run_once() {
   last_id=""
   last_driver=""
+  last_type=""
 
   if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
   ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
@@ -697,18 +720,24 @@ run_once() {
         if [[ "${OFFICIAL_METERS_COUNT}" -eq 0 && "${SEARCH_USING_TEMP_METERS}" != "true" ]]; then
           if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9]{8}) ]]; then
             last_id="${BASH_REMATCH[1]}"
+            last_type=""
+            last_driver=""
+          fi
+          if [[ "${line}" =~ ^[[:space:]]*type:[[:space:]]*(.*)$ ]]; then
+            last_type="${BASH_REMATCH[1]}"
           fi
           if [[ "${line}" =~ ^[[:space:]]*driver:\ ([a-zA-Z0-9_]+) ]]; then
             last_driver="${BASH_REMATCH[1]}"
           fi
           if [[ -n "${last_id}" && -n "${last_driver}" ]]; then
             if [[ "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
-              search_cache_candidate "${last_id}" "${last_driver}"
+              search_cache_candidate "${last_id}" "${last_driver}" "${last_type}"
             else
               emit_snippet_if_new "${last_id}" "${last_driver}"
             fi
             last_id=""
             last_driver=""
+            last_type=""
           fi
         fi
 
