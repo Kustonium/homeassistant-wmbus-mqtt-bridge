@@ -1,16 +1,12 @@
 name: build-addon
 
 on:
-  # Build and publish images only after code lands on main.
+  # Build once on dev. The same checked commit can then be merged to main.
   push:
     branches:
-      - main
+      - dev
 
-  # Pull requests still get a test build, but nothing is pushed to GHCR.
-  pull_request:
-    branches:
-      - main
-
+  # Manual run is kept for emergency/release publishing from main.
   workflow_dispatch:
 
 permissions:
@@ -40,7 +36,7 @@ jobs:
           echo "Building version: ${VER}"
 
       - uses: docker/login-action@v4
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -52,8 +48,8 @@ jobs:
       - name: Build amd64
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "Publishing amd64 image to GHCR because this is push to main"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "Publishing amd64 image to GHCR because this is manual workflow_dispatch on main"
 
             docker buildx build \
               --progress=plain \
@@ -65,7 +61,7 @@ jobs:
               -f Dockerfile \
               .
           else
-            echo "Test build amd64 only. No GHCR push for dev or pull_request."
+            echo "Test build amd64 only. No GHCR push for dev."
 
             docker buildx build \
               --progress=plain \
@@ -94,7 +90,7 @@ jobs:
           echo "Building version: ${VER}"
 
       - uses: docker/login-action@v4
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -106,8 +102,8 @@ jobs:
       - name: Build aarch64
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "Publishing aarch64 image to GHCR because this is push to main"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "Publishing aarch64 image to GHCR because this is manual workflow_dispatch on main"
 
             docker buildx build \
               --progress=plain \
@@ -119,7 +115,7 @@ jobs:
               -f Dockerfile \
               .
           else
-            echo "Test build aarch64 only. No GHCR push for dev or pull_request."
+            echo "Test build aarch64 only. No GHCR push for dev."
 
             docker buildx build \
               --progress=plain \
