@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   yaml-lint:
-    name: YAML syntax check
+    name: yaml-lint
     runs-on: ubuntu-latest
 
     steps:
