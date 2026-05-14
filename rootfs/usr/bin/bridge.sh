@@ -559,6 +559,7 @@ fi
 # ------------------------------------------------------------
 declare -A DISCOVERY_SENT_FIELD
 declare -A DISCOVERY_CLEANED_LEGACY
+declare -A SEARCH_DISCOVERY_CLEARED_FIELD
 
 clean_legacy_totalm3() {
   local id="$1"
@@ -670,6 +671,70 @@ emit_discovery_from_json() {
   )
 }
 
+
+# ------------------------------------------------------------
+# Search temporary meters must never create HA devices/entities.
+# SEARCH uses temporary names search_<id> only to let wmbusmeters decode
+# JSON values for matching. These decoded telegrams are internal search data,
+# not real configured meters.
+# ------------------------------------------------------------
+is_search_temp_json() {
+  local json_line="$1"
+  [[ "${SEARCH_MODE}" == "true" ]] || return 1
+
+  local name
+  name="$(jq -r '.name // empty' <<<"${json_line}" 2>/dev/null || true)"
+  [[ "${name}" == search_* ]]
+}
+
+clear_search_discovery_from_json() {
+  local json_line="$1"
+
+  is_search_temp_json "${json_line}" || return 0
+
+  local id
+  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
+  [[ -n "${id}" ]] || return 0
+
+  # Clear older retained discovery configs if a previous buggy search run
+  # already created HA entities. Use retain=true because MQTT Discovery
+  # removal requires an empty retained config payload.
+  clean_legacy_totalm3 "${id}"
+
+  local uniq="wmbus_${id}"
+  while IFS= read -r key; do
+    [[ -n "${key}" ]] || continue
+
+    local obj cache_key cfg_topic
+    obj="$(sanitize_obj_id "${key}")"
+    [[ -n "${obj}" ]] || continue
+
+    cache_key="${id}|${obj}"
+    [[ -n "${SEARCH_DISCOVERY_CLEARED_FIELD[${cache_key}]+x}" ]] && continue
+
+    cfg_topic="${DISCOVERY_PREFIX}/sensor/${uniq}/${obj}/config"
+    mqtt_pub "${cfg_topic}" "" "true" || true
+    SEARCH_DISCOVERY_CLEARED_FIELD["${cache_key}"]=1
+  done < <(
+    jq -r '
+      to_entries[]
+      | select(.key as $k
+        | ($k != "_")
+        and ($k != "id")
+        and ($k != "name")
+        and ($k != "meter")
+        and ($k != "media")
+        and ($k != "timestamp")
+        and ($k != "device_date_time")
+        and ($k != "rssi")
+        and ($k != "lqi")
+      )
+      | select((.value|type)=="number")
+      | .key
+    ' <<<"${json_line}" 2>/dev/null || true
+  )
+}
+
 # ------------------------------------------------------------
 # Listen-mode snippet (best-effort)
 # ------------------------------------------------------------
@@ -751,6 +816,10 @@ run_once() {
 
         if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
           process_search_json "${line}"
+          if is_search_temp_json "${line}"; then
+            clear_search_discovery_from_json "${line}"
+            continue
+          fi
           id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
           ts="$(echo "${line}" | jq -r '.timestamp // .device_date_time // empty' 2>/dev/null || true)"
           if [[ -n "${id}" ]]; then
@@ -770,6 +839,10 @@ else
         echo "${line}"
         if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
           process_search_json "${line}"
+          if is_search_temp_json "${line}"; then
+            clear_search_discovery_from_json "${line}"
+            continue
+          fi
           id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
           ts="$(echo "${line}" | jq -r '.timestamp // .device_date_time // empty' 2>/dev/null || true)"
           if [[ -n "${id}" ]]; then
