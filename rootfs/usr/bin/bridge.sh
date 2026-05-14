@@ -78,6 +78,13 @@ LOGLEVEL="${LOGLEVEL:-$(json_get '.loglevel' 'normal')}"
 FILTER_HEX_ONLY="${FILTER_HEX_ONLY:-$(json_get_bool '.filter_hex_only' 'true')}"
 DEBUG_EVERY_N="${DEBUG_EVERY_N:-$(json_get_int '.debug_every_n' '0')}"
 
+SEARCH_MODE="${SEARCH_MODE:-$(json_get_bool '.search_mode' 'false')}"
+SEARCH_EXPECTED_VALUE_M3="${SEARCH_EXPECTED_VALUE_M3:-$(json_get '.search_expected_value_m3' '0')}"
+SEARCH_TOLERANCE_M3="${SEARCH_TOLERANCE_M3:-$(json_get '.search_tolerance_m3' '1')}"
+SEARCH_DELTA_MODE="${SEARCH_DELTA_MODE:-$(json_get_bool '.search_delta_mode' 'false')}"
+SEARCH_MIN_DELTA_M3="${SEARCH_MIN_DELTA_M3:-$(json_get '.search_min_delta_m3' '0.001')}"
+SEARCH_TOPIC="${SEARCH_TOPIC:-$(json_get '.search_topic' 'wmbus/search/candidates')}"
+
 # Robustness toggles
 IGNORE_RETAINED="${IGNORE_RETAINED:-$(json_get_bool '.ignore_retained' 'true')}"
 REQUIRE_TIMESTAMP="${REQUIRE_TIMESTAMP:-$(json_get_bool '.require_timestamp' 'false')}"
@@ -131,6 +138,7 @@ log "MQTT: ${MQTT_HOST}:${MQTT_PORT} topic=${RAW_TOPIC}"
 log "state: prefix=${STATE_PREFIX} retain=${STATE_RETAIN}"
 log "discovery: enabled=${DISCOVERY_ENABLED} prefix=${DISCOVERY_PREFIX} retain=${DISCOVERY_RETAIN}"
 log "wmbusmeters: loglevel=${LOGLEVEL} filter_hex_only=${FILTER_HEX_ONLY} debug_every_n=${DEBUG_EVERY_N}"
+log "search: mode=${SEARCH_MODE} expected_value_m3=${SEARCH_EXPECTED_VALUE_M3} tolerance_m3=${SEARCH_TOLERANCE_M3} delta_mode=${SEARCH_DELTA_MODE} min_delta_m3=${SEARCH_MIN_DELTA_M3} topic=${SEARCH_TOPIC}"
 log "robust: ignore_retained=${IGNORE_RETAINED} require_timestamp=${REQUIRE_TIMESTAMP} restart_on_exit=${RESTART_ON_EXIT}"
 
 # ------------------------------------------------------------
@@ -268,6 +276,122 @@ guess_state_class() {
   fi
 
   echo "measurement"
+}
+
+
+# ------------------------------------------------------------
+# Search mode helpers
+# ------------------------------------------------------------
+float_or_default() {
+  local value="$1"
+  local def="$2"
+  if [[ "${value}" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
+    echo "${value}"
+  else
+    echo "${def}"
+  fi
+}
+
+SEARCH_EXPECTED_VALUE_M3="$(float_or_default "${SEARCH_EXPECTED_VALUE_M3}" "0")"
+SEARCH_TOLERANCE_M3="$(float_or_default "${SEARCH_TOLERANCE_M3}" "1")"
+SEARCH_MIN_DELTA_M3="$(float_or_default "${SEARCH_MIN_DELTA_M3}" "0.001")"
+
+declare -A SEARCH_FIRST_VALUE
+
+declare -A SEARCH_REPORTED_EXPECTED
+
+declare -A SEARCH_REPORTED_DELTA
+
+search_field_is_candidate() {
+  local key_lc="$1"
+
+  case "${key_lc}" in
+    *m3*|*volume_m3*|*total_volume*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+emit_search_payload() {
+  local kind="$1"
+  local json_line="$2"
+  local field="$3"
+  local value="$4"
+  local diff="$5"
+  local delta="$6"
+
+  local id meter media name payload
+  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
+  [[ -n "${id}" ]] || return 0
+
+  meter="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
+  media="$(jq -r '.media // empty' <<<"${json_line}" 2>/dev/null || true)"
+  name="$(jq -r '.name // empty' <<<"${json_line}" 2>/dev/null || true)"
+
+  payload="$(jq -c -n \
+    --arg kind "${kind}" \
+    --arg id "${id}" \
+    --arg meter "${meter}" \
+    --arg media "${media}" \
+    --arg name "${name}" \
+    --arg field "${field}" \
+    --argjson value "${value}" \
+    --argjson expected "${SEARCH_EXPECTED_VALUE_M3}" \
+    --argjson diff "${diff}" \
+    --argjson delta "${delta}" \
+    '{event:$kind,id:$id,meter:$meter,media:$media,name:$name,field:$field,value_m3:$value,expected_value_m3:$expected,diff_m3:$diff,delta_m3:$delta}' \
+    2>/dev/null || true)"
+
+  [[ -n "${payload}" ]] || return 0
+  mqtt_pub "${SEARCH_TOPIC}" "${payload}" "false" || true
+}
+
+process_search_json() {
+  local json_line="$1"
+  [[ "${SEARCH_MODE}" == "true" ]] || return 0
+
+  local id
+  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
+  [[ -n "${id}" ]] || return 0
+
+  while IFS=$'\t' read -r field value; do
+    [[ -n "${field}" && -n "${value}" ]] || continue
+
+    local field_lc state_key diff absdiff in_tolerance delta
+    field_lc="$(echo "${field}" | tr '[:upper:]' '[:lower:]')"
+    search_field_is_candidate "${field_lc}" || continue
+
+    state_key="${id}|${field}"
+    diff="$(awk -v v="${value}" -v e="${SEARCH_EXPECTED_VALUE_M3}" 'BEGIN { printf "%.6f", v - e }')"
+    absdiff="$(awk -v d="${diff}" 'BEGIN { if (d < 0) d = -d; printf "%.6f", d }')"
+
+    in_tolerance="$(awk -v d="${absdiff}" -v t="${SEARCH_TOLERANCE_M3}" 'BEGIN { print (d <= t) ? "yes" : "no" }')"
+    if [[ "${SEARCH_EXPECTED_VALUE_M3}" != "0" && "${in_tolerance}" == "yes" && -z "${SEARCH_REPORTED_EXPECTED[${state_key}]+x}" ]]; then
+      warn "SEARCH candidate: id=${id} field=${field} value=${value} m3 expected=${SEARCH_EXPECTED_VALUE_M3} diff=${absdiff} m3"
+      emit_search_payload "value_match" "${json_line}" "${field}" "${value}" "${absdiff}" "0"
+      SEARCH_REPORTED_EXPECTED["${state_key}"]=1
+    fi
+
+    if [[ "${SEARCH_DELTA_MODE}" == "true" ]]; then
+      if [[ -z "${SEARCH_FIRST_VALUE[${state_key}]+x}" ]]; then
+        SEARCH_FIRST_VALUE["${state_key}"]="${value}"
+      else
+        delta="$(awk -v v="${value}" -v first="${SEARCH_FIRST_VALUE[${state_key}]}" 'BEGIN { printf "%.6f", v - first }')"
+        in_tolerance="$(awk -v d="${delta}" -v min="${SEARCH_MIN_DELTA_M3}" 'BEGIN { print (d >= min) ? "yes" : "no" }')"
+        if [[ "${in_tolerance}" == "yes" && -z "${SEARCH_REPORTED_DELTA[${state_key}]+x}" ]]; then
+          warn "SEARCH delta: id=${id} field=${field} first=${SEARCH_FIRST_VALUE[${state_key}]} now=${value} delta=${delta} m3"
+          emit_search_payload "delta_match" "${json_line}" "${field}" "${value}" "0" "${delta}"
+          SEARCH_REPORTED_DELTA["${state_key}"]=1
+        fi
+      fi
+    fi
+  done < <(
+    jq -r '
+      to_entries[]
+      | select((.value|type)=="number")
+      | [.key, (.value|tostring)]
+      | @tsv
+    ' <<<"${json_line}" 2>/dev/null || true
+  )
 }
 
 # ------------------------------------------------------------
@@ -517,6 +641,7 @@ run_once() {
         fi
 
         if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
+          process_search_json "${line}"
           id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
           ts="$(echo "${line}" | jq -r '.timestamp // .device_date_time // empty' 2>/dev/null || true)"
           if [[ -n "${id}" ]]; then
@@ -535,6 +660,7 @@ else
     | while IFS= read -r line; do
         echo "${line}"
         if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
+          process_search_json "${line}"
           id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
           ts="$(echo "${line}" | jq -r '.timestamp // .device_date_time // empty' 2>/dev/null || true)"
           if [[ -n "${id}" ]]; then
