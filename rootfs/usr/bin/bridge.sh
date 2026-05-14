@@ -306,7 +306,7 @@ search_field_is_candidate() {
   local key_lc="$1"
 
   case "${key_lc}" in
-    *m3*|*volume_m3*|*total_volume*) return 0 ;;
+    *total_volume*|*m3*) return 0 ;;
     *) return 1 ;;
   esac
 }
