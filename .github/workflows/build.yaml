@@ -1,141 +1,145 @@
 name: build-addon
 
-concurrency:
-  group: build-addon-${{ github.ref }}
-  cancel-in-progress: true
-
 on:
-  # Build once on dev. The same checked commit can then be merged to main.
   push:
     branches:
       - dev
-      - main
-
-  # Manual run is kept for emergency/release publishing from main.
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: build-addon-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build-amd64:
-    name: Build amd64
+    name: Build and push amd64 dev image
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Lowercase owner
+      - name: Debug GitHub context
         shell: bash
-        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
+        run: |
+          echo "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
+          echo "GITHUB_REPOSITORY_OWNER=${GITHUB_REPOSITORY_OWNER}"
+          echo "GITHUB_REF=${GITHUB_REF}"
+          echo "GITHUB_ACTOR=${GITHUB_ACTOR}"
 
-      - name: Read add-on version from config.yaml
+      - name: Prepare build variables
         shell: bash
         run: |
           set -euo pipefail
+          echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
           VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' config.yaml | head -n1)"
           if [[ -z "${VER}" ]]; then
             echo "ERROR: Cannot read version from config.yaml"
             exit 1
           fi
-          echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
-          echo "Building version: ${VER}"
 
-      - uses: docker/login-action@v4
-        if: github.ref == 'refs/heads/main'
+          echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
+          echo "Building dev version: ${VER}"
+
+      - name: Check GHCR token
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ secrets.GHCR_TOKEN }}" ]]; then
+            echo "ERROR: Missing repository secret GHCR_TOKEN. Create a PAT with read:packages and write:packages."
+            exit 1
+          fi
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: Kustonium
+          password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Build amd64
+      - name: Build and push amd64 dev image
         shell: bash
         run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "Publishing amd64 image to GHCR because this run is on main"
-
-            docker buildx build \
-              --progress=plain \
-              --platform linux/amd64 \
-              --build-arg BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20 \
-              --push \
-              -t ghcr.io/${{ env.OWNER_LC }}/amd64-addon-wmbus_mqtt_bridge:latest \
-              -t ghcr.io/${{ env.OWNER_LC }}/amd64-addon-wmbus_mqtt_bridge:${{ env.ADDON_VERSION }} \
-              -f Dockerfile \
-              .
-          else
-            echo "Test build amd64 only. No GHCR push because this is not main."
-
-            docker buildx build \
-              --progress=plain \
-              --platform linux/amd64 \
-              --build-arg BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20 \
-              -f Dockerfile \
-              .
-          fi
+          set -euo pipefail
+          docker buildx build \
+            --progress=plain \
+            --platform linux/amd64 \
+            --build-arg BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20 \
+            --push \
+            -t ghcr.io/${{ env.OWNER_LC }}/amd64-addon-wmbus_mqtt_bridge-dev:dev \
+            -t ghcr.io/${{ env.OWNER_LC }}/amd64-addon-wmbus_mqtt_bridge-dev:${{ env.ADDON_VERSION }} \
+            -f Dockerfile \
+            .
 
   build-aarch64:
-    name: Build aarch64
+    name: Build and push aarch64 dev image
     runs-on: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Lowercase owner
+      - name: Debug GitHub context
         shell: bash
-        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
+        run: |
+          echo "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
+          echo "GITHUB_REPOSITORY_OWNER=${GITHUB_REPOSITORY_OWNER}"
+          echo "GITHUB_REF=${GITHUB_REF}"
+          echo "GITHUB_ACTOR=${GITHUB_ACTOR}"
 
-      - name: Read add-on version from config.yaml
+      - name: Prepare build variables
         shell: bash
         run: |
           set -euo pipefail
+          echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
           VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' config.yaml | head -n1)"
           if [[ -z "${VER}" ]]; then
             echo "ERROR: Cannot read version from config.yaml"
             exit 1
           fi
-          echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
-          echo "Building version: ${VER}"
 
-      - uses: docker/login-action@v4
-        if: github.ref == 'refs/heads/main'
+          echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
+          echo "Building dev version: ${VER}"
+
+      - name: Check GHCR token
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ secrets.GHCR_TOKEN }}" ]]; then
+            echo "ERROR: Missing repository secret GHCR_TOKEN. Create a PAT with read:packages and write:packages."
+            exit 1
+          fi
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: Kustonium
+          password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Build aarch64
+      - name: Build and push aarch64 dev image
         shell: bash
         run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "Publishing aarch64 image to GHCR because this run is on main"
-
-            docker buildx build \
-              --progress=plain \
-              --platform linux/arm64 \
-              --build-arg BUILD_FROM=ghcr.io/home-assistant/aarch64-base:3.20 \
-              --push \
-              -t ghcr.io/${{ env.OWNER_LC }}/aarch64-addon-wmbus_mqtt_bridge:latest \
-              -t ghcr.io/${{ env.OWNER_LC }}/aarch64-addon-wmbus_mqtt_bridge:${{ env.ADDON_VERSION }} \
-              -f Dockerfile \
-              .
-          else
-            echo "Test build aarch64 only. No GHCR push because this is not main."
-
-            docker buildx build \
-              --progress=plain \
-              --platform linux/arm64 \
-              --build-arg BUILD_FROM=ghcr.io/home-assistant/aarch64-base:3.20 \
-              -f Dockerfile \
-              .
-          fi
+          set -euo pipefail
+          docker buildx build \
+            --progress=plain \
+            --platform linux/arm64 \
+            --build-arg BUILD_FROM=ghcr.io/home-assistant/aarch64-base:3.20 \
+            --push \
+            -t ghcr.io/${{ env.OWNER_LC }}/aarch64-addon-wmbus_mqtt_bridge-dev:dev \
+            -t ghcr.io/${{ env.OWNER_LC }}/aarch64-addon-wmbus_mqtt_bridge-dev:${{ env.ADDON_VERSION }} \
+            -f Dockerfile \
+            .
