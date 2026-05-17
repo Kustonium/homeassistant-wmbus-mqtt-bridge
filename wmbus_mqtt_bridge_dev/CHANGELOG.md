@@ -1,7 +1,8 @@
-## 1.5.0
+## 1.5.0-dev
 
-Marked as **experimental** — first release of the embedded WebUI. Tested on the
-companion dev add-on; please report regressions via GitHub Issues.
+Development snapshot tracking the upcoming `1.5.0` stable release.
+First version of the embedded WebUI — please report regressions via
+GitHub Issues.
 
 ### Added
 - **WebUI with Home Assistant Ingress** — new panel "wMBus Bridge" served on
