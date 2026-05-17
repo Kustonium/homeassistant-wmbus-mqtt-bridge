@@ -48,12 +48,21 @@ jobs:
           echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
           echo "Building dev version: ${VER}"
 
+      - name: Check GHCR token
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ secrets.GHCR_TOKEN }}" ]]; then
+            echo "ERROR: Missing repository secret GHCR_TOKEN. Create a PAT with read:packages and write:packages."
+            exit 1
+          fi
+
       - name: Login to GHCR
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: Kustonium
+          password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -102,12 +111,21 @@ jobs:
           echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
           echo "Building dev version: ${VER}"
 
+      - name: Check GHCR token
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ secrets.GHCR_TOKEN }}" ]]; then
+            echo "ERROR: Missing repository secret GHCR_TOKEN. Create a PAT with read:packages and write:packages."
+            exit 1
+          fi
+
       - name: Login to GHCR
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: Kustonium
+          password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
