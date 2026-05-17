@@ -1,70 +1,55 @@
 name: build-addon
 
-concurrency:
-  group: build-addon-${{ github.ref }}
-  cancel-in-progress: true
-
 on:
   push:
     branches:
       - dev
-      - main
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: build-addon-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build-amd64:
-    name: Build amd64
+    name: Build and push amd64 dev image
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Prepare channel metadata
+      - name: Debug GitHub context
+        shell: bash
+        run: |
+          echo "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
+          echo "GITHUB_REPOSITORY_OWNER=${GITHUB_REPOSITORY_OWNER}"
+          echo "GITHUB_REF=${GITHUB_REF}"
+          echo "GITHUB_ACTOR=${GITHUB_ACTOR}"
+
+      - name: Prepare build variables
         shell: bash
         run: |
           set -euo pipefail
+          echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
 
-          OWNER_LC="${GITHUB_REPOSITORY_OWNER,,}"
-
-          if [[ "${GITHUB_REF}" == "refs/heads/dev" ]]; then
-            CONFIG_FILE="wmbus_mqtt_bridge_dev/config.yaml"
-            IMAGE_NAME="amd64-addon-wmbus_mqtt_bridge-dev"
-            EXTRA_TAG="dev"
-          elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
-            CONFIG_FILE="wmbus_mqtt_bridge/config.yaml"
-            IMAGE_NAME="amd64-addon-wmbus_mqtt_bridge"
-            EXTRA_TAG="latest"
-          else
-            echo "ERROR: Unsupported branch for publishing: ${GITHUB_REF}"
-            exit 1
-          fi
-
-          VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' "${CONFIG_FILE}" | head -n1)"
+          VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' config.yaml | head -n1)"
           if [[ -z "${VER}" ]]; then
-            echo "ERROR: Cannot read version from ${CONFIG_FILE}"
+            echo "ERROR: Cannot read version from config.yaml"
             exit 1
           fi
 
-          echo "OWNER_LC=${OWNER_LC}" >> "$GITHUB_ENV"
-          echo "CONFIG_FILE=${CONFIG_FILE}" >> "$GITHUB_ENV"
           echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
-          echo "IMAGE=ghcr.io/${OWNER_LC}/${IMAGE_NAME}" >> "$GITHUB_ENV"
-          echo "EXTRA_TAG=${EXTRA_TAG}" >> "$GITHUB_ENV"
+          echo "Building dev version: ${VER}"
 
-          echo "Branch: ${GITHUB_REF}"
-          echo "Config: ${CONFIG_FILE}"
-          echo "Image: ghcr.io/${OWNER_LC}/${IMAGE_NAME}"
-          echo "Version: ${VER}"
-          echo "Extra tag: ${EXTRA_TAG}"
-
-      - uses: docker/login-action@v4
+      - name: Login to GHCR
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -73,7 +58,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Build and push amd64
+      - name: Build and push amd64 dev image
         shell: bash
         run: |
           set -euo pipefail
@@ -82,57 +67,43 @@ jobs:
             --platform linux/amd64 \
             --build-arg BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20 \
             --push \
-            -t "${IMAGE}:${ADDON_VERSION}" \
-            -t "${IMAGE}:${EXTRA_TAG}" \
+            -t ghcr.io/${{ env.OWNER_LC }}/amd64-addon-wmbus_mqtt_bridge-dev:dev \
+            -t ghcr.io/${{ env.OWNER_LC }}/amd64-addon-wmbus_mqtt_bridge-dev:${{ env.ADDON_VERSION }} \
             -f Dockerfile \
             .
 
   build-aarch64:
-    name: Build aarch64
+    name: Build and push aarch64 dev image
     runs-on: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Prepare channel metadata
+      - name: Debug GitHub context
+        shell: bash
+        run: |
+          echo "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
+          echo "GITHUB_REPOSITORY_OWNER=${GITHUB_REPOSITORY_OWNER}"
+          echo "GITHUB_REF=${GITHUB_REF}"
+          echo "GITHUB_ACTOR=${GITHUB_ACTOR}"
+
+      - name: Prepare build variables
         shell: bash
         run: |
           set -euo pipefail
+          echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
 
-          OWNER_LC="${GITHUB_REPOSITORY_OWNER,,}"
-
-          if [[ "${GITHUB_REF}" == "refs/heads/dev" ]]; then
-            CONFIG_FILE="wmbus_mqtt_bridge_dev/config.yaml"
-            IMAGE_NAME="aarch64-addon-wmbus_mqtt_bridge-dev"
-            EXTRA_TAG="dev"
-          elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
-            CONFIG_FILE="wmbus_mqtt_bridge/config.yaml"
-            IMAGE_NAME="aarch64-addon-wmbus_mqtt_bridge"
-            EXTRA_TAG="latest"
-          else
-            echo "ERROR: Unsupported branch for publishing: ${GITHUB_REF}"
-            exit 1
-          fi
-
-          VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' "${CONFIG_FILE}" | head -n1)"
+          VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' config.yaml | head -n1)"
           if [[ -z "${VER}" ]]; then
-            echo "ERROR: Cannot read version from ${CONFIG_FILE}"
+            echo "ERROR: Cannot read version from config.yaml"
             exit 1
           fi
 
-          echo "OWNER_LC=${OWNER_LC}" >> "$GITHUB_ENV"
-          echo "CONFIG_FILE=${CONFIG_FILE}" >> "$GITHUB_ENV"
           echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
-          echo "IMAGE=ghcr.io/${OWNER_LC}/${IMAGE_NAME}" >> "$GITHUB_ENV"
-          echo "EXTRA_TAG=${EXTRA_TAG}" >> "$GITHUB_ENV"
+          echo "Building dev version: ${VER}"
 
-          echo "Branch: ${GITHUB_REF}"
-          echo "Config: ${CONFIG_FILE}"
-          echo "Image: ghcr.io/${OWNER_LC}/${IMAGE_NAME}"
-          echo "Version: ${VER}"
-          echo "Extra tag: ${EXTRA_TAG}"
-
-      - uses: docker/login-action@v4
+      - name: Login to GHCR
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -141,7 +112,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Build and push aarch64
+      - name: Build and push aarch64 dev image
         shell: bash
         run: |
           set -euo pipefail
@@ -150,7 +121,7 @@ jobs:
             --platform linux/arm64 \
             --build-arg BUILD_FROM=ghcr.io/home-assistant/aarch64-base:3.20 \
             --push \
-            -t "${IMAGE}:${ADDON_VERSION}" \
-            -t "${IMAGE}:${EXTRA_TAG}" \
+            -t ghcr.io/${{ env.OWNER_LC }}/aarch64-addon-wmbus_mqtt_bridge-dev:dev \
+            -t ghcr.io/${{ env.OWNER_LC }}/aarch64-addon-wmbus_mqtt_bridge-dev:${{ env.ADDON_VERSION }} \
             -f Dockerfile \
             .
