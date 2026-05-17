@@ -1,5 +1,9 @@
 name: build-addon
 
+concurrency:
+  group: build-addon-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   # Build once on dev. The same checked commit can then be merged to main.
   push:
@@ -31,9 +35,15 @@ jobs:
       - name: Read add-on version from config.yaml
         shell: bash
         run: |
-          VER="$(grep -oP '^version:\s*"\K[^"]+' config.yaml)"
-          echo "ADDON_VERSION=${VER}" >> $GITHUB_ENV
+          set -euo pipefail
+          VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' config.yaml | head -n1)"
+          if [[ -z "${VER}" ]]; then
+            echo "ERROR: Cannot read version from config.yaml"
+            exit 1
+          fi
+          echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
           echo "Building version: ${VER}"
+
       - uses: docker/login-action@v4
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         with:
@@ -49,6 +59,7 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.ref }}" == "refs/heads/main" ]]; then
             echo "Publishing amd64 image to GHCR because this is manual workflow_dispatch on main"
+
             docker buildx build \
               --progress=plain \
               --platform linux/amd64 \
@@ -60,6 +71,7 @@ jobs:
               .
           else
             echo "Test build amd64 only. No GHCR push for dev."
+
             docker buildx build \
               --progress=plain \
               --platform linux/amd64 \
@@ -67,6 +79,7 @@ jobs:
               -f Dockerfile \
               .
           fi
+
   build-aarch64:
     name: Build aarch64
     runs-on: ubuntu-24.04-arm
@@ -81,9 +94,15 @@ jobs:
       - name: Read add-on version from config.yaml
         shell: bash
         run: |
-          VER="$(grep -oP '^version:\s*"\K[^"]+' config.yaml)"
-          echo "ADDON_VERSION=${VER}" >> $GITHUB_ENV
+          set -euo pipefail
+          VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' config.yaml | head -n1)"
+          if [[ -z "${VER}" ]]; then
+            echo "ERROR: Cannot read version from config.yaml"
+            exit 1
+          fi
+          echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
           echo "Building version: ${VER}"
+
       - uses: docker/login-action@v4
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         with:
@@ -99,6 +118,7 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.ref }}" == "refs/heads/main" ]]; then
             echo "Publishing aarch64 image to GHCR because this is manual workflow_dispatch on main"
+
             docker buildx build \
               --progress=plain \
               --platform linux/arm64 \
@@ -110,6 +130,7 @@ jobs:
               .
           else
             echo "Test build aarch64 only. No GHCR push for dev."
+
             docker buildx build \
               --progress=plain \
               --platform linux/arm64 \
