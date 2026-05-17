@@ -1,0 +1,16 @@
+configuration:
+  meters:
+    name: Meters
+    description: List of meters to decode.
+    fields:
+      id:
+        name: Name
+      meter_id:
+        name: Meter ID
+      type:
+        name: Driver
+      type_other:
+        name: Custom driver
+      key:
+        name: AES key
+        description: Leave empty or enter exactly 32 hexadecimal characters, for example 00000000000000000000000000000000.
