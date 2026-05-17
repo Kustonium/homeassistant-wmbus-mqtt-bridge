@@ -1,0 +1,8 @@
+#!/usr/bin/with-contenv bashio
+set -euo pipefail
+
+export WMBUS_BASE="${WMBUS_BASE:-/data}"
+export WEBUI_PORT="${WEBUI_PORT:-8099}"
+
+bashio::log.info "Starting read-only web dashboard on port ${WEBUI_PORT}..."
+exec /usr/bin/python3 /usr/bin/webui.py

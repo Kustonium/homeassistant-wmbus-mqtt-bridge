@@ -1,14 +1,21 @@
-name: "wMBus MQTT Bridge"
+name: "wMBus MQTT Bridge Dev"
 description: "MQTT RAW HEX -> wmbusmeters (stdin:hex) -> MQTT + Home Assistant Discovery"
-version: "1.4.7"
-slug: "wmbus_mqtt_bridge"
-image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
+version: "1.5.0"
+slug: "wmbus_mqtt_bridge_dev"
+stage: experimental
+image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge-dev"
 
 arch:
   - amd64
   - aarch64
 
 init: false
+
+ingress: true
+ingress_port: 8099
+hassio_api: true
+panel_icon: mdi:gauge
+panel_title: "wMBus Bridge"
 
 services:
   - mqtt:want
@@ -21,7 +28,7 @@ options:
 
   search_mode: false
   search_expected_value_m3: 0
-  search_tolerance_m3: 1
+  search_tolerance_m3: 0.05
   search_delta_mode: false
   search_min_delta_m3: 0.001
   search_topic: "wmbus/search/candidates"

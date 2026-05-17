@@ -32,6 +32,347 @@ CONF_FILE="${ETC_DIR}/wmbusmeters.conf"
 
 mkdir -p "${ETC_DIR}" "${METER_DIR}"
 
+# ------------------------------------------------------------
+# Runtime status files for optional read-only Ingress dashboard
+# ------------------------------------------------------------
+STATUS_JSON="${BASE}/status.json"
+STATUS_METERS_FILE="${BASE}/status_meters.tsv"
+STATUS_CANDIDATES_FILE="${BASE}/status_candidates.tsv"
+STATUS_EVENTS_FILE="${BASE}/status_events.tsv"
+STATUS_SEEN_FILE="${BASE}/status_seen.tsv"
+STATUS_RAW_COUNT_FILE="${BASE}/status_raw_count.txt"
+STATUS_LAST_RAW_FILE="${BASE}/status_last_raw_seen.txt"
+STATUS_RECENT_RAW_FILE="${BASE}/status_recent_raw.tsv"
+STATUS_CANDIDATE_ANALYSIS_FILE="${BASE}/status_candidate_analysis.tsv"
+STATUS_CANDIDATE_RAW_FILE="${BASE}/status_candidate_raw.tsv"
+SEARCH_MATCHES_FILE="${BASE}/search_matches.tsv"
+SEARCH_STATUS_FILE="${BASE}/search_status.json"
+
+STATUS_MQTT_CONNECTED="false"
+STATUS_WMBUSMETERS_RUNNING="false"
+STATUS_RAW_COUNT=0
+STATUS_DECODED_COUNT=0
+STATUS_DISCOVERY_PUBLISHED="false"
+STATUS_LAST_RAW_SEEN=""
+STATUS_LAST_DECODED_SEEN=""
+STATUS_LAST_ERROR=""
+STATUS_LAST_EVENT="starting"
+
+touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}"
+[[ -f "${STATUS_RAW_COUNT_FILE}" ]] || echo "0" > "${STATUS_RAW_COUNT_FILE}"
+
+iso_now() {
+  date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z'
+}
+
+status_add_event() {
+  local level="$1"
+  local message="$2"
+  local now
+  now="$(iso_now)"
+  STATUS_LAST_EVENT="${message}"
+  printf '%s	%s	%s
+' "${now}" "${level}" "${message}" >> "${STATUS_EVENTS_FILE}" 2>/dev/null || true
+  tail -n 40 "${STATUS_EVENTS_FILE}" > "${STATUS_EVENTS_FILE}.tmp" 2>/dev/null && mv "${STATUS_EVENTS_FILE}.tmp" "${STATUS_EVENTS_FILE}" 2>/dev/null || true
+}
+
+epoch_now() {
+  date +%s 2>/dev/null || echo 0
+}
+
+status_record_seen() {
+  local id="$1"
+  local kind="${2:-meter}"
+  local ts
+  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  ts="$(epoch_now)"
+  printf '%s\t%s\t%s\n' "${id}" "${kind}" "${ts}" >> "${STATUS_SEEN_FILE}" 2>/dev/null || true
+  tail -n 5000 "${STATUS_SEEN_FILE}" > "${STATUS_SEEN_FILE}.tmp" 2>/dev/null && mv "${STATUS_SEEN_FILE}.tmp" "${STATUS_SEEN_FILE}" 2>/dev/null || true
+}
+
+status_seen_stats() {
+  local id="$1"
+  local kind="${2:-meter}"
+  local now
+  now="$(epoch_now)"
+
+  awk -F '\t' -v id="${id}" -v kind="${kind}" -v now="${now}" '
+    $1 == id && $2 == kind && $3 ~ /^[0-9]+$/ {
+      ts = $3 + 0
+      count++
+      if (ts >= now - 900) seen15++
+      if (ts >= now - 3600) seen60++
+      if (prev > 0 && ts >= prev) {
+        sum += ts - prev
+        intervals++
+      }
+      prev = ts
+    }
+    END {
+      if (intervals > 0) {
+        avg = int((sum / intervals) + 0.5)
+      } else {
+        avg = 0
+      }
+      printf "%d\t%d\t%d\t%d\n", count + 0, avg + 0, seen15 + 0, seen60 + 0
+    }
+  ' "${STATUS_SEEN_FILE}" 2>/dev/null || printf '0\t0\t0\t0\n'
+}
+
+status_read_raw_count() {
+  local v
+  v="$(cat "${STATUS_RAW_COUNT_FILE}" 2>/dev/null || echo "0")"
+  [[ "${v}" =~ ^[0-9]+$ ]] || v=0
+  echo "${v}"
+}
+
+status_read_last_raw_seen() {
+  cat "${STATUS_LAST_RAW_FILE}" 2>/dev/null || true
+}
+
+status_store_raw_seen() {
+  local now="$1"
+  local count tmp
+  count="$(status_read_raw_count)"
+  count=$((count + 1))
+  tmp="${STATUS_RAW_COUNT_FILE}.tmp"
+  printf '%s\n' "${count}" > "${tmp}" 2>/dev/null && mv "${tmp}" "${STATUS_RAW_COUNT_FILE}" 2>/dev/null || true
+  printf '%s\n' "${now}" > "${STATUS_LAST_RAW_FILE}" 2>/dev/null || true
+  STATUS_RAW_COUNT="${count}"
+  STATUS_LAST_RAW_SEEN="${now}"
+}
+
+status_store_recent_raw() {
+  local raw="${1:-}"
+  local now
+  [[ -n "${raw}" ]] || return 0
+  [[ "${raw}" =~ ^[0-9A-Fa-f]+$ ]] || return 0
+  now="$(iso_now)"
+  printf '%s\t%s\t%s\n' "${now}" "${#raw}" "${raw}" >> "${STATUS_RECENT_RAW_FILE}" 2>/dev/null || true
+  tail -n 200 "${STATUS_RECENT_RAW_FILE}" > "${STATUS_RECENT_RAW_FILE}.tmp" 2>/dev/null && mv "${STATUS_RECENT_RAW_FILE}.tmp" "${STATUS_RECENT_RAW_FILE}" 2>/dev/null || true
+}
+
+id_to_le_hex() {
+  local id="$1"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || { echo ""; return 0; }
+  echo "${id:6:2}${id:4:2}${id:2:2}${id:0:2}" | tr '[:upper:]' '[:lower:]'
+}
+
+status_find_recent_raw_for_id() {
+  local id="$1"
+  local le raw
+  le="$(id_to_le_hex "${id}")"
+  [[ -n "${le}" ]] || return 1
+  tac "${STATUS_RECENT_RAW_FILE}" 2>/dev/null | while IFS=$'\t' read -r ts len raw; do
+    raw="$(echo "${raw:-}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${raw}" == *"${le}"* ]]; then
+      printf '%s\t%s\t%s\n' "${ts}" "${len}" "${raw}"
+      return 0
+    fi
+  done
+}
+
+status_upsert_candidate_analysis() {
+  local id="$1"
+  local encryption="$2"
+  local note="$3"
+  local ci="${4:-}"
+  local security="${5:-}"
+  local raw_len="${6:-0}"
+  local last_seen="${7:-}"
+  local tmp
+
+  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  [[ -n "${last_seen}" ]] || last_seen="$(iso_now)"
+
+  tmp="${STATUS_CANDIDATE_ANALYSIS_FILE}.tmp"
+  awk -F '\t' -v id="${id}" '$1 != id {print}' "${STATUS_CANDIDATE_ANALYSIS_FILE}" 2>/dev/null > "${tmp}" || true
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${id}" "${encryption:-unknown}" "${note:-}" "${ci:-}" "${security:-}" "${raw_len:-0}" "${last_seen}" >> "${tmp}"
+  mv "${tmp}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" 2>/dev/null || true
+}
+
+status_record_candidate_raw() {
+  local id="$1"
+  local raw="$2"
+  local ts="${3:-}"
+  local tmp
+  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  [[ -n "${raw}" ]] || return 0
+  [[ -n "${ts}" ]] || ts="$(iso_now)"
+
+  tmp="${STATUS_CANDIDATE_RAW_FILE}.tmp"
+  awk -F '\t' -v id="${id}" '$1 != id {print}' "${STATUS_CANDIDATE_RAW_FILE}" 2>/dev/null > "${tmp}" || true
+  printf '%s\t%s\t%s\t%s\n' "${id}" "${ts}" "${#raw}" "${raw}" >> "${tmp}"
+  mv "${tmp}" "${STATUS_CANDIDATE_RAW_FILE}" 2>/dev/null || true
+}
+
+status_analyze_candidate_from_text() {
+  local id="$1"
+  local driver="${2:-auto}"
+  local type_line="${3:-}"
+  local type_lc raw_row raw_ts raw_len raw ci encryption note security
+
+  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  type_lc="$(echo "${type_line}" | tr '[:upper:]' '[:lower:]')"
+
+  raw_row="$(status_find_recent_raw_for_id "${id}" || true)"
+  raw_ts=""
+  raw_len="0"
+  raw=""
+  if [[ -n "${raw_row}" ]]; then
+    IFS=$'\t' read -r raw_ts raw_len raw <<< "${raw_row}"
+    status_record_candidate_raw "${id}" "${raw}" "${raw_ts}"
+    # Best-effort CI position for normal wM-Bus DLL frames:
+    # L(1), C(1), M(2), A/id+ver+type(6), CI(1) => byte offset 10 => hex offset 20.
+    # This is metadata only. AES decision below does NOT rely on this guess.
+    if [[ "${#raw}" -ge 22 ]]; then
+      ci="${raw:20:2}"
+    else
+      ci=""
+    fi
+  else
+    ci=""
+  fi
+
+  security=""
+
+  # Do not guess encryption from driver. Only use explicit backend evidence:
+  # 1) wmbusmeters/listen text explicitly says encrypted/AES,
+  # 2) process_search_json marks a temporary no-key search meter as decoded.
+  if [[ "${type_lc}" == *encrypted* || "${type_lc}" == *aes* ]]; then
+    encryption="aes_required"
+    note="wmbusmeters/listen output explicitly reports encrypted/AES telegram"
+  elif [[ -n "${raw}" ]]; then
+    encryption="unknown"
+    note="RAW was mapped to this candidate, but no backend security parser has classified AES yet"
+  else
+    encryption="unknown"
+    note="No RAW/security analysis mapped to this candidate yet"
+  fi
+
+  status_upsert_candidate_analysis "${id}" "${encryption}" "${note}" "${ci}" "${security}" "${raw_len}" "$(iso_now)"
+}
+
+status_mark_search_decoded_no_aes() {
+  local json_line="$1"
+  local id meter media field
+  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
+  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+
+  # Search temporary meters are created without key=. If wmbusmeters decodes
+  # numeric JSON from such a meter, then no AES key was required for that telegram.
+  if is_search_temp_json "${json_line}"; then
+    meter="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
+    media="$(jq -r '.media // empty' <<<"${json_line}" 2>/dev/null || true)"
+    field="$(jq -r 'to_entries[] | select((.value|type)=="number") | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+    status_upsert_candidate_analysis "${id}" "no_aes" "Temporary SEARCH meter decoded without key; no AES key was required for this telegram" "" "" "0" "$(iso_now)"
+  fi
+}
+
+search_record_match() {
+  local json_line="$1"
+  local field="$2"
+  local value="$3"
+  local diff="$4"
+  local id meter media now tmp
+
+  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
+  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  meter="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
+  media="$(jq -r '.media // empty' <<<"${json_line}" 2>/dev/null || true)"
+  now="$(iso_now)"
+
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${now}" "${id}" "${meter:-auto}" "${media:-}" "${field}" "${value}" "${SEARCH_EXPECTED_VALUE_M3}" "${diff}" "${SEARCH_TOLERANCE_M3}" >> "${SEARCH_MATCHES_FILE}" 2>/dev/null || true
+  tail -n 100 "${SEARCH_MATCHES_FILE}" > "${SEARCH_MATCHES_FILE}.tmp" 2>/dev/null && mv "${SEARCH_MATCHES_FILE}.tmp" "${SEARCH_MATCHES_FILE}" 2>/dev/null || true
+}
+
+write_status_json() {
+  local tmp="${STATUS_JSON}.tmp"
+  # RAW is counted in a process-substitution/subshell created by tee.
+  # Keep it in files too, otherwise later writes from the main shell
+  # would overwrite raw_count back to 0.
+  STATUS_RAW_COUNT="$(status_read_raw_count)"
+  STATUS_LAST_RAW_SEEN="$(status_read_last_raw_seen)"
+  jq -n     --arg updated_at "$(iso_now)"     --arg raw_topic "${RAW_TOPIC:-}"     --arg state_prefix "${STATE_PREFIX:-}"     --arg discovery_prefix "${DISCOVERY_PREFIX:-}"     --arg search_mode "${SEARCH_MODE:-false}"     --arg loglevel "${LOGLEVEL:-}"     --arg mqtt_host "${MQTT_HOST:-}"     --arg mqtt_port "${MQTT_PORT:-}"     --arg mqtt_connected "${STATUS_MQTT_CONNECTED}"     --arg wmbusmeters_running "${STATUS_WMBUSMETERS_RUNNING}"     --arg raw_count "${STATUS_RAW_COUNT}"     --arg decoded_count "${STATUS_DECODED_COUNT}"     --arg discovery_published "${STATUS_DISCOVERY_PUBLISHED}"     --arg last_raw_seen "${STATUS_LAST_RAW_SEEN}"     --arg last_decoded_seen "${STATUS_LAST_DECODED_SEEN}"     --arg last_error "${STATUS_LAST_ERROR}"     --arg last_event "${STATUS_LAST_EVENT}"     '{updated_at:$updated_at,
+      config:{raw_topic:$raw_topic,state_prefix:$state_prefix,discovery_prefix:$discovery_prefix,search_mode:($search_mode=="true"),loglevel:$loglevel},
+      mqtt:{host:$mqtt_host,port:$mqtt_port,connected:($mqtt_connected=="true")},
+      pipeline:{raw_count:($raw_count|tonumber? // 0),decoded_count:($decoded_count|tonumber? // 0),wmbusmeters_running:($wmbusmeters_running=="true"),discovery_published:($discovery_published=="true"),last_raw_seen:$last_raw_seen,last_decoded_seen:$last_decoded_seen,last_error:$last_error,last_event:$last_event}}'     > "${tmp}" 2>/dev/null && mv "${tmp}" "${STATUS_JSON}" 2>/dev/null || true
+}
+
+status_raw_seen() {
+  local raw="${1:-}"
+  # If a RAW telegram arrived from mosquitto_sub, MQTT and the input pipeline
+  # are alive even if no configured meter JSON has been decoded yet.
+  STATUS_MQTT_CONNECTED="true"
+  STATUS_WMBUSMETERS_RUNNING="true"
+  status_store_raw_seen "$(iso_now)"
+  status_store_recent_raw "${raw}"
+  if (( STATUS_RAW_COUNT == 1 || STATUS_RAW_COUNT % 25 == 0 )); then
+    status_add_event "ok" "RAW telegram received (${#raw} hex chars)"
+  fi
+  write_status_json
+}
+
+status_meter_seen() {
+  local json_line="$1"
+  local id name meter media value_key value last_seen tmp
+  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
+  [[ -n "${id}" ]] || return 0
+  name="$(jq -r '.name // empty' <<<"${json_line}" 2>/dev/null || true)"
+  meter="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
+  media="$(jq -r '.media // empty' <<<"${json_line}" 2>/dev/null || true)"
+  # Prefer instantaneous fields (current power, flow rate) — they're what
+  # users see as "live consumption" in HA. Anchor on power/flow-rate units
+  # (_kw, _w, _m3h, _l_h) so temperatures (_c) don't qualify. Fall back to
+  # cumulative totals/meter readings when no live field is published.
+  # Examples: amiplus → current_power_consumption_kw (live);
+  # water meters → total_m3 (no live field exists, cumulative is the reading).
+  value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(_kw$|_w$|_m3h$|_l_h$)";"i")) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+  if [[ -z "${value_key}" ]]; then
+    value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(^total|_m3$|kwh|wh$|energy|volume)";"i")) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+  fi
+  if [[ -n "${value_key}" ]]; then
+    value="$(jq -r --arg k "${value_key}" '.[$k] // empty' <<<"${json_line}" 2>/dev/null || true)"
+  else
+    value_key="value"
+    value="$(jq -r 'to_entries[] | select((.value|type)=="number") | .value' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+  fi
+  status_record_seen "${id}" "meter"
+  last_seen="$(iso_now)"
+  IFS=$'\t' read -r seen_count avg_interval_s seen_15m seen_60m < <(status_seen_stats "${id}" "meter")
+  tmp="${STATUS_METERS_FILE}.tmp"
+  awk -F '	' -v id="${id}" '$1 != id {print}' "${STATUS_METERS_FILE}" 2>/dev/null > "${tmp}" || true
+  printf '%s	%s	%s	%s	%s	%s	%s	%s	%s	%s	%s	%s
+' "${id}" "${name}" "${meter}" "${media}" "${value_key}" "${value}" "${last_seen}" "published" "${seen_count}" "${avg_interval_s}" "${seen_15m}" "${seen_60m}" >> "${tmp}"
+  mv "${tmp}" "${STATUS_METERS_FILE}" 2>/dev/null || true
+}
+
+status_candidate_seen() {
+  local id="$1"
+  local driver="${2:-auto}"
+  local type_line="${3:-}"
+  local now tmp
+  STATUS_WMBUSMETERS_RUNNING="true"
+  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  local existed="false"
+  if grep -q "^${id}	" "${STATUS_CANDIDATES_FILE}" 2>/dev/null; then
+    existed="true"
+  fi
+  status_record_seen "${id}" "candidate"
+  now="$(iso_now)"
+  IFS=$'\t' read -r seen_count avg_interval_s seen_15m seen_60m < <(status_seen_stats "${id}" "candidate")
+  tmp="${STATUS_CANDIDATES_FILE}.tmp"
+  awk -F '	' -v id="${id}" '$1 != id {print}' "${STATUS_CANDIDATES_FILE}" 2>/dev/null > "${tmp}" || true
+  printf '%s	%s	%s	%s	%s	%s	%s	%s
+' "${id}" "${driver}" "${type_line}" "${now}" "${seen_count}" "${avg_interval_s}" "${seen_15m}" "${seen_60m}" >> "${tmp}"
+  mv "${tmp}" "${STATUS_CANDIDATES_FILE}" 2>/dev/null || true
+  status_analyze_candidate_from_text "${id}" "${driver}" "${type_line}"
+  if [[ "${existed}" != "true" ]]; then
+    status_add_event "candidate" "Candidate detected ${id} (${driver})"
+  fi
+  write_status_json
+}
+
 json_get() {
   local expr="$1"
   local def="${2:-}"
@@ -140,6 +481,8 @@ log "discovery: enabled=${DISCOVERY_ENABLED} prefix=${DISCOVERY_PREFIX} retain=$
 log "wmbusmeters: loglevel=${LOGLEVEL} filter_hex_only=${FILTER_HEX_ONLY} debug_every_n=${DEBUG_EVERY_N}"
 log "search: mode=${SEARCH_MODE} expected_value_m3=${SEARCH_EXPECTED_VALUE_M3} tolerance_m3=${SEARCH_TOLERANCE_M3} delta_mode=${SEARCH_DELTA_MODE} min_delta_m3=${SEARCH_MIN_DELTA_M3} topic=${SEARCH_TOPIC}"
 log "robust: ignore_retained=${IGNORE_RETAINED} require_timestamp=${REQUIRE_TIMESTAMP} restart_on_exit=${RESTART_ON_EXIT}"
+status_add_event "ok" "bridge starting"
+write_status_json
 
 # ------------------------------------------------------------
 # MQTT args
@@ -314,6 +657,100 @@ SEARCH_CANDIDATES_FILE="${BASE}/search_candidates.tsv"
 SEARCH_USING_TEMP_METERS="false"
 OFFICIAL_METERS_COUNT=0
 SEARCH_IGNORED_COUNT=0
+SEARCH_TEMP_METERS_LOADED=0
+SEARCH_CHECKED_VALUES=0
+SEARCH_DECODED_JSON_COUNT=0
+SEARCH_MATCH_COUNT=0
+SEARCH_LAST_CACHE_CHANGE=""
+SEARCH_LAST_CANDIDATE_ID=""
+SEARCH_LAST_CANDIDATE_DRIVER=""
+SEARCH_LAST_CANDIDATE_TYPE=""
+SEARCH_LAST_CHECKED_ID=""
+SEARCH_LAST_CHECKED_DRIVER=""
+SEARCH_LAST_CHECKED_FIELD=""
+SEARCH_LAST_CHECKED_VALUE=""
+SEARCH_LAST_CHECKED_DIFF=""
+SEARCH_LAST_REASON="starting"
+SEARCH_LAST_IGNORED_REASON=""
+
+search_cached_count() {
+  if [[ -f "${SEARCH_CANDIDATES_FILE}" ]]; then
+    grep -Ec '^[0-9]{8}[[:space:]]' "${SEARCH_CANDIDATES_FILE}" 2>/dev/null || echo 0
+  else
+    echo 0
+  fi
+}
+
+write_search_status() {
+  local phase="${1:-auto}"
+  local reason="${2:-}"
+  local tmp="${SEARCH_STATUS_FILE}.tmp"
+  local cached_count matches_count updated
+
+  cached_count="$(search_cached_count)"
+  [[ "${cached_count}" =~ ^[0-9]+$ ]] || cached_count=0
+  matches_count="$(wc -l < "${SEARCH_MATCHES_FILE}" 2>/dev/null || echo 0)"
+  [[ "${matches_count}" =~ ^[0-9]+$ ]] || matches_count=0
+
+  if [[ "${phase}" == "auto" ]]; then
+    if [[ "${SEARCH_MATCH_COUNT}" -gt 0 || "${matches_count}" -gt 0 ]]; then
+      phase="matched"
+    elif [[ "${SEARCH_USING_TEMP_METERS}" == "true" ]]; then
+      phase="search"
+    elif [[ "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
+      phase="collecting"
+    else
+      phase="listen"
+    fi
+  fi
+
+  [[ -n "${reason}" ]] && SEARCH_LAST_REASON="${reason}"
+  updated="$(iso_now)"
+
+  jq -n \
+    --arg updated_at "${updated}" \
+    --arg phase "${phase}" \
+    --arg search_mode "${SEARCH_MODE:-false}" \
+    --arg expected "${SEARCH_EXPECTED_VALUE_M3:-0}" \
+    --arg tolerance "${SEARCH_TOLERANCE_M3:-0}" \
+    --arg cached "${cached_count}" \
+    --arg ignored "${SEARCH_IGNORED_COUNT:-0}" \
+    --arg loaded "${SEARCH_TEMP_METERS_LOADED:-0}" \
+    --arg decoded "${SEARCH_DECODED_JSON_COUNT:-0}" \
+    --arg checked "${SEARCH_CHECKED_VALUES:-0}" \
+    --arg matches "${matches_count}" \
+    --arg cache_changed_at "${SEARCH_LAST_CACHE_CHANGE:-}" \
+    --arg last_candidate_id "${SEARCH_LAST_CANDIDATE_ID:-}" \
+    --arg last_candidate_driver "${SEARCH_LAST_CANDIDATE_DRIVER:-}" \
+    --arg last_candidate_type "${SEARCH_LAST_CANDIDATE_TYPE:-}" \
+    --arg last_checked_id "${SEARCH_LAST_CHECKED_ID:-}" \
+    --arg last_checked_driver "${SEARCH_LAST_CHECKED_DRIVER:-}" \
+    --arg last_checked_field "${SEARCH_LAST_CHECKED_FIELD:-}" \
+    --arg last_checked_value "${SEARCH_LAST_CHECKED_VALUE:-}" \
+    --arg last_checked_diff "${SEARCH_LAST_CHECKED_DIFF:-}" \
+    --arg last_reason "${SEARCH_LAST_REASON:-}" \
+    --arg last_ignored_reason "${SEARCH_LAST_IGNORED_REASON:-}" \
+    '{updated_at:$updated_at,
+      phase:$phase,
+      search_mode:($search_mode=="true"),
+      expected_m3:($expected|tonumber? // 0),
+      tolerance_m3:($tolerance|tonumber? // 0),
+      cached_candidates:($cached|tonumber? // 0),
+      ignored_candidates:($ignored|tonumber? // 0),
+      loaded_temp_meters:($loaded|tonumber? // 0),
+      decoded_json:($decoded|tonumber? // 0),
+      checked_values:($checked|tonumber? // 0),
+      matches:($matches|tonumber? // 0),
+      cache_changed_at:$cache_changed_at,
+      last_candidate:{id:$last_candidate_id,driver:$last_candidate_driver,type:$last_candidate_type},
+      last_checked:{id:$last_checked_id,driver:$last_checked_driver,field:$last_checked_field,value:$last_checked_value,diff_m3:$last_checked_diff},
+      last_reason:$last_reason,
+      last_ignored_reason:$last_ignored_reason}' \
+    > "${tmp}" 2>/dev/null && mv "${tmp}" "${SEARCH_STATUS_FILE}" 2>/dev/null || true
+}
+
+
+write_search_status "auto" "bridge_starting"
 
 search_field_is_candidate() {
   local key_lc="$1"
@@ -383,7 +820,12 @@ search_cache_candidate() {
   type_lc="$(echo "${type_line}" | tr '[:upper:]' '[:lower:]')"
   if ! search_type_is_water_candidate "${type_lc}"; then
     SEARCH_IGNORED_COUNT=$((SEARCH_IGNORED_COUNT + 1))
+    SEARCH_LAST_CANDIDATE_ID="${id}"
+    SEARCH_LAST_CANDIDATE_DRIVER="${driver}"
+    SEARCH_LAST_CANDIDATE_TYPE="${type_line:-unknown}"
+    SEARCH_LAST_IGNORED_REASON="not_water_m3_candidate_or_encrypted"
     warn "SEARCH ignored: id=${id} driver=${driver} type=${type_line:-unknown} reason=not_water_m3_candidate_or_encrypted (ignored=${SEARCH_IGNORED_COUNT})."
+    write_search_status "auto" "candidate_ignored"
     return 0
   fi
 
@@ -394,12 +836,18 @@ search_cache_candidate() {
 
   printf '%s	%s
 ' "${id}" "${driver}" >> "${SEARCH_CANDIDATES_FILE}"
+  SEARCH_LAST_CACHE_CHANGE="$(iso_now)"
+  SEARCH_LAST_CANDIDATE_ID="${id}"
+  SEARCH_LAST_CANDIDATE_DRIVER="${driver}"
+  SEARCH_LAST_CANDIDATE_TYPE="${type_line:-unknown}"
 
   local cached_count
   cached_count="$(grep -Ec '^[0-9]{8}[[:space:]]' "${SEARCH_CANDIDATES_FILE}" 2>/dev/null || true)"
   [[ "${cached_count}" =~ ^[0-9]+$ ]] || cached_count=0
 
   warn "SEARCH discovered: id=${id} driver=${driver} type=${type_line:-unknown} stored as water candidate (cached=${cached_count}, ignored=${SEARCH_IGNORED_COUNT})."
+  status_candidate_seen "${id}" "${driver}" "${type_line:-unknown}"
+  write_search_status "auto" "candidate_cached"
 }
 
 create_search_meter_files_from_cache() {
@@ -437,6 +885,9 @@ process_search_json() {
   local id
   id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
   [[ -n "${id}" ]] || return 0
+  if is_search_temp_json "${json_line}"; then
+    SEARCH_DECODED_JSON_COUNT=$((SEARCH_DECODED_JSON_COUNT + 1))
+  fi
 
   while IFS=$'\t' read -r field value; do
     [[ -n "${field}" && -n "${value}" ]] || continue
@@ -445,9 +896,19 @@ process_search_json() {
     field_lc="$(echo "${field}" | tr '[:upper:]' '[:lower:]')"
     search_field_is_candidate "${field_lc}" || continue
 
+    local meter_name
+    meter_name="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
+    SEARCH_CHECKED_VALUES=$((SEARCH_CHECKED_VALUES + 1))
+    SEARCH_LAST_CHECKED_ID="${id}"
+    SEARCH_LAST_CHECKED_DRIVER="${meter_name:-auto}"
+    SEARCH_LAST_CHECKED_FIELD="${field}"
+    SEARCH_LAST_CHECKED_VALUE="${value}"
+
     state_key="${id}|${field}"
     diff="$(awk -v v="${value}" -v e="${SEARCH_EXPECTED_VALUE_M3}" 'BEGIN { printf "%.6f", v - e }')"
     absdiff="$(awk -v d="${diff}" 'BEGIN { if (d < 0) d = -d; printf "%.6f", d }')"
+    SEARCH_LAST_CHECKED_DIFF="${absdiff}"
+    SEARCH_LAST_REASON="value_out_of_tolerance"
 
     in_tolerance="$(awk -v d="${absdiff}" -v t="${SEARCH_TOLERANCE_M3}" 'BEGIN { print (d <= t) ? "yes" : "no" }')"
     if [[ "${SEARCH_EXPECTED_VALUE_M3}" != "0" && "${in_tolerance}" == "yes" && -z "${SEARCH_REPORTED_EXPECTED[${state_key}]+x}" ]]; then
@@ -457,7 +918,13 @@ process_search_json() {
       warn "SEARCH MATCH: id=${id} driver=${meter:-unknown} media=${media:-unknown} field=${field} value=${value} m3 expected=${SEARCH_EXPECTED_VALUE_M3} diff=${absdiff} m3"
       warn "SEARCH SUGGESTED CONFIG: {\"id\":\"meter_${id}\",\"meter_id\":\"${id}\",\"type\":\"${meter:-auto}\",\"type_other\":\"\",\"key\":\"\"}"
       emit_search_payload "value_match" "${json_line}" "${field}" "${value}" "${absdiff}" "0"
+      search_record_match "${json_line}" "${field}" "${value}" "${absdiff}"
+      SEARCH_MATCH_COUNT=$((SEARCH_MATCH_COUNT + 1))
+      SEARCH_LAST_REASON="value_match"
+      write_search_status "matched" "value_match"
       SEARCH_REPORTED_EXPECTED["${state_key}"]=1
+    else
+      write_search_status "auto" "value_out_of_tolerance"
     fi
 
     if [[ "${SEARCH_DELTA_MODE}" == "true" ]]; then
@@ -499,15 +966,19 @@ if [[ "${METERS_COUNT}" -eq 0 && "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTE
   if [[ "${cached_count}" =~ ^[0-9]+$ && "${cached_count}" -gt 0 ]]; then
     METERS_COUNT="${cached_count}"
     SEARCH_USING_TEMP_METERS="true"
+    SEARCH_TEMP_METERS_LOADED="${cached_count}"
     warn "No user meters configured -> SEARCH MODE (temporary cached candidates=${cached_count}, expected=${SEARCH_EXPECTED_VALUE_M3} m3, tolerance=${SEARCH_TOLERANCE_M3} m3)."
     warn "SEARCH MODE uses cached candidates from ${SEARCH_CANDIDATES_FILE}. Remove that file or disable search_mode to return to pure LISTEN MODE."
+    write_search_status "search" "loaded_temp_meters"
   else
     warn "No meters configured -> SEARCH DISCOVERY MODE."
     warn "SEARCH MODE needs decoded JSON values, but there are no cached candidates yet."
     warn "The bridge will collect id+driver candidates first. Let it run long enough to hear meters; restart later to decode cached candidates and compare m3 values."
+    write_search_status "collecting" "no_cached_candidates"
   fi
 elif [[ "${METERS_COUNT}" -eq 0 ]]; then
   warn "No meters configured -> LISTEN MODE (will log DLL-ID + suggested driver)."
+  write_search_status "listen" "listen_mode"
 else
   i=0
   while IFS= read -r meter_json; do
@@ -556,6 +1027,7 @@ else
 
     log "meter: ${friendly_name} id=${mid} driver=${driver}"
   done < <(jq -c '.meters[]' "${OPTIONS_JSON}" 2>/dev/null || true)
+  write_search_status "configured" "official_meters_configured"
 fi
 
 # ------------------------------------------------------------
@@ -748,7 +1220,13 @@ touch "${SNIPPET_STATE}"
 emit_snippet_if_new() {
   local id="$1"
   local driver="$2"
+  local type_line="${3:-}"
   [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+
+  # Update dashboard stats every time this candidate is heard.
+  # Pass the real type_line from wmbusmeters output so the webui can
+  # show encryption status (e.g. "Electricity meter (0x02) encrypted").
+  status_candidate_seen "${id}" "${driver:-auto}" "${type_line:-listen}"
 
   if ! grep -qx "${id}" "${SNIPPET_STATE}" 2>/dev/null; then
     echo "${id}" >> "${SNIPPET_STATE}"
@@ -756,7 +1234,8 @@ emit_snippet_if_new() {
     warn "Received telegram from: ${id}"
     [[ -n "${driver}" ]] && warn "Suggested driver: ${driver}"
     warn "Add to options.json meters[] (example):"
-    warn "  {\"id\":\"meter_${id}\",\"meter_id\":\"${id}\",\"type\":\"auto\",\"type_other\":\"\",\"key\":\"NOKEY\"}"
+    warn "  no key:   {\"id\":\"meter_${id}\",\"meter_id\":\"${id}\",\"type\":\"auto\",\"type_other\":\"\",\"key\":\"\"}"
+    warn "  zero key: {\"id\":\"meter_${id}\",\"meter_id\":\"${id}\",\"type\":\"auto\",\"type_other\":\"\",\"key\":\"00000000000000000000000000000000\"}"
     warn "=================================="
   fi
 }
@@ -790,14 +1269,22 @@ run_once() {
           fflush();
         }
       ' \
+    | tee >(while IFS= read -r raw_line; do status_raw_seen "${raw_line}"; done >/dev/null) \
     | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
     | while IFS= read -r line; do
         if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
+          STATUS_WMBUSMETERS_RUNNING="true"
+          STATUS_DECODED_COUNT=$((STATUS_DECODED_COUNT + 1))
+          STATUS_LAST_DECODED_SEEN="$(iso_now)"
+          status_add_event "ok" "Decoded telegram received"
+          write_status_json
+          status_mark_search_decoded_no_aes "${line}"
           process_search_json "${line}"
           if is_search_temp_json "${line}"; then
             clear_search_discovery_from_json "${line}"
             continue
           fi
+          status_meter_seen "${line}"
           echo "${line}"
           id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
           ts="$(echo "${line}" | jq -r '.timestamp // .device_date_time // empty' 2>/dev/null || true)"
@@ -807,6 +1294,8 @@ run_once() {
             else
               mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
               emit_discovery_from_json "${line}"
+              STATUS_DISCOVERY_PUBLISHED="true"
+              write_status_json
             fi
           fi
           continue
@@ -830,7 +1319,7 @@ run_once() {
             if [[ "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
               search_cache_candidate "${last_id}" "${last_driver}" "${last_type}"
             else
-              emit_snippet_if_new "${last_id}" "${last_driver}"
+              emit_snippet_if_new "${last_id}" "${last_driver}" "${last_type}"
             fi
             last_id=""
             last_driver=""
@@ -841,14 +1330,22 @@ run_once() {
 done
 else
   ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
+    | tee >(while IFS= read -r raw_line; do status_raw_seen "${raw_line}"; done >/dev/null) \
     | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
     | while IFS= read -r line; do
         if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
+          STATUS_WMBUSMETERS_RUNNING="true"
+          STATUS_DECODED_COUNT=$((STATUS_DECODED_COUNT + 1))
+          STATUS_LAST_DECODED_SEEN="$(iso_now)"
+          status_add_event "ok" "Decoded telegram received"
+          write_status_json
+          status_mark_search_decoded_no_aes "${line}"
           process_search_json "${line}"
           if is_search_temp_json "${line}"; then
             clear_search_discovery_from_json "${line}"
             continue
           fi
+          status_meter_seen "${line}"
           echo "${line}"
           id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
           ts="$(echo "${line}" | jq -r '.timestamp // .device_date_time // empty' 2>/dev/null || true)"
@@ -858,6 +1355,8 @@ else
             else
               mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
               emit_discovery_from_json "${line}"
+              STATUS_DISCOVERY_PUBLISHED="true"
+              write_status_json
             fi
           fi
         else
@@ -884,6 +1383,10 @@ wait_for_mqtt() {
   for ((i=1; i<=MQTT_WAIT_RETRIES; i++)); do
     if /usr/bin/mosquitto_pub "${PUB_ARGS[@]}" -t "wmbus_bridge/status" -m "starting" --quiet 2>/dev/null; then
       log "MQTT broker ready (attempt ${i}/${MQTT_WAIT_RETRIES})"
+      STATUS_MQTT_CONNECTED="true"
+      STATUS_LAST_ERROR=""
+      status_add_event "ok" "MQTT broker ready"
+      write_status_json
       return 0
     fi
     warn "MQTT not ready (attempt ${i}/${MQTT_WAIT_RETRIES}), retrying in ${MQTT_WAIT_DELAY}s..."
@@ -892,6 +1395,10 @@ wait_for_mqtt() {
   # Broker niedostępny po wszystkich próbach - ostrzegamy ale nie przerywamy,
   # pętla restart_on_exit zajmie się ponownym uruchomieniem pipeline.
   warn "MQTT broker not available after ${MQTT_WAIT_RETRIES} attempts, continuing anyway..."
+  STATUS_MQTT_CONNECTED="false"
+  STATUS_LAST_ERROR="MQTT broker not available"
+  status_add_event "error" "MQTT broker not available"
+  write_status_json
   return 1
 }
 
@@ -910,6 +1417,10 @@ while true; do
     exit ${rc}
   fi
   warn "Pipeline exited (rc=${rc}), restarting in 2s..."
+  STATUS_WMBUSMETERS_RUNNING="false"
+  STATUS_LAST_ERROR="pipeline exited rc=${rc}"
+  status_add_event "error" "Pipeline exited rc=${rc}"
+  write_status_json
   sleep 2
   # continue
 done

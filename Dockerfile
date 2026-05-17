@@ -50,6 +50,7 @@ FROM ${BUILD_FROM} AS addon
 
 RUN apk add --no-cache \
   bash \
+  python3 \
   mosquitto-clients jq \
   libstdc++ zlib libxml2 \
   libusb librtlsdr
@@ -58,4 +59,4 @@ COPY --from=builder /out/wmbusmeters /usr/bin/wmbusmeters
 COPY rootfs /
 
 RUN sed -i 's/\r$//' /usr/bin/run.sh /usr/bin/bridge.sh \
-  && chmod a+x /usr/bin/run.sh /usr/bin/bridge.sh
+  && chmod a+x /usr/bin/run.sh /usr/bin/bridge.sh /usr/bin/webui.py
