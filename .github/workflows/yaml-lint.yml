@@ -44,5 +44,6 @@ jobs:
             .github/workflows/shellcheck.yml \
             .github/workflows/yaml-lint.yml \
             .github/workflows/build.yaml \
-            config.yaml \
+            wmbus_mqtt_bridge/config.yaml \
+            wmbus_mqtt_bridge_dev/config.yaml \
             repository.yaml
