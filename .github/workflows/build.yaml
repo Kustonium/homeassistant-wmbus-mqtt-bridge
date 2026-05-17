@@ -1,26 +1,20 @@
 name: build-addon
 
 on:
-  # Dev branch = test builds only. No GHCR push.
-  # The tested commit is later merged to main through a pull request.
+  # Build once on dev. The same checked commit can then be merged to main.
   push:
     branches:
       - dev
 
-  # Release/publish is explicit: run manually from main.
+  # Manual run is kept for emergency/release publishing from main.
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
 
-concurrency:
-  group: build-addon-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  IMAGE_SUFFIX: addon-wmbus_mqtt_bridge
 
 jobs:
   build-amd64:
@@ -32,20 +26,14 @@ jobs:
 
       - name: Lowercase owner
         shell: bash
-        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
 
       - name: Read add-on version from config.yaml
         shell: bash
         run: |
-          set -euo pipefail
-          VER="$(sed -nE 's/^version:[[:space:]]*"?([^"#]+)"?.*/\1/p' config.yaml | head -n 1 | tr -d '[:space:]')"
-          if [[ -z "${VER}" ]]; then
-            echo "Cannot read version from config.yaml" >&2
-            exit 1
-          fi
-          echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
+          VER="$(grep -oP '^version:\s*"\K[^"]+' config.yaml)"
+          echo "ADDON_VERSION=${VER}" >> $GITHUB_ENV
           echo "Building version: ${VER}"
-
       - uses: docker/login-action@v4
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         with:
@@ -59,25 +47,19 @@ jobs:
       - name: Build amd64
         shell: bash
         run: |
-          set -euo pipefail
-
-          IMAGE="ghcr.io/${{ env.OWNER_LC }}/amd64-${{ env.IMAGE_SUFFIX }}"
-
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "Publishing amd64 main image to GHCR: ${IMAGE}:{${ADDON_VERSION},latest}"
-
+            echo "Publishing amd64 image to GHCR because this is manual workflow_dispatch on main"
             docker buildx build \
               --progress=plain \
               --platform linux/amd64 \
               --build-arg BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20 \
               --push \
-              -t "${IMAGE}:latest" \
-              -t "${IMAGE}:${ADDON_VERSION}" \
+              -t ghcr.io/${{ env.OWNER_LC }}/amd64-addon-wmbus_mqtt_bridge:latest \
+              -t ghcr.io/${{ env.OWNER_LC }}/amd64-addon-wmbus_mqtt_bridge:${{ env.ADDON_VERSION }} \
               -f Dockerfile \
               .
           else
-            echo "Test build amd64 only. No GHCR push. Publishing is manual workflow_dispatch on main only."
-
+            echo "Test build amd64 only. No GHCR push for dev."
             docker buildx build \
               --progress=plain \
               --platform linux/amd64 \
@@ -85,7 +67,6 @@ jobs:
               -f Dockerfile \
               .
           fi
-
   build-aarch64:
     name: Build aarch64
     runs-on: ubuntu-24.04-arm
@@ -95,20 +76,14 @@ jobs:
 
       - name: Lowercase owner
         shell: bash
-        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
 
       - name: Read add-on version from config.yaml
         shell: bash
         run: |
-          set -euo pipefail
-          VER="$(sed -nE 's/^version:[[:space:]]*"?([^"#]+)"?.*/\1/p' config.yaml | head -n 1 | tr -d '[:space:]')"
-          if [[ -z "${VER}" ]]; then
-            echo "Cannot read version from config.yaml" >&2
-            exit 1
-          fi
-          echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
+          VER="$(grep -oP '^version:\s*"\K[^"]+' config.yaml)"
+          echo "ADDON_VERSION=${VER}" >> $GITHUB_ENV
           echo "Building version: ${VER}"
-
       - uses: docker/login-action@v4
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         with:
@@ -122,25 +97,19 @@ jobs:
       - name: Build aarch64
         shell: bash
         run: |
-          set -euo pipefail
-
-          IMAGE="ghcr.io/${{ env.OWNER_LC }}/aarch64-${{ env.IMAGE_SUFFIX }}"
-
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "Publishing aarch64 main image to GHCR: ${IMAGE}:{${ADDON_VERSION},latest}"
-
+            echo "Publishing aarch64 image to GHCR because this is manual workflow_dispatch on main"
             docker buildx build \
               --progress=plain \
               --platform linux/arm64 \
               --build-arg BUILD_FROM=ghcr.io/home-assistant/aarch64-base:3.20 \
               --push \
-              -t "${IMAGE}:latest" \
-              -t "${IMAGE}:${ADDON_VERSION}" \
+              -t ghcr.io/${{ env.OWNER_LC }}/aarch64-addon-wmbus_mqtt_bridge:latest \
+              -t ghcr.io/${{ env.OWNER_LC }}/aarch64-addon-wmbus_mqtt_bridge:${{ env.ADDON_VERSION }} \
               -f Dockerfile \
               .
           else
-            echo "Test build aarch64 only. No GHCR push. Publishing is manual workflow_dispatch on main only."
-
+            echo "Test build aarch64 only. No GHCR push for dev."
             docker buildx build \
               --progress=plain \
               --platform linux/arm64 \
