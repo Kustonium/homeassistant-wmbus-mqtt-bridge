@@ -5,6 +5,13 @@ on:
     branches:
       - main
       - dev
+    # Workflow-level path filter: docs-only / repo-root-only commits skip
+    # the run entirely. Per-job filtering below decides which addon(s)
+    # to rebuild when only one channel changed.
+    paths:
+      - 'wmbus_mqtt_bridge/**'
+      - 'wmbus_mqtt_bridge_dev/**'
+      - '.github/workflows/build.yaml'
   workflow_dispatch:
 
 permissions:
@@ -60,28 +67,52 @@ jobs:
             runs_on: ubuntu-24.04-arm
 
     steps:
-      - name: Skip when branch does not match channel
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Gate (branch + path-aware)
         id: gate
         shell: bash
         run: |
           set -euo pipefail
-          REF_BRANCH="${GITHUB_REF#refs/heads/}"
+
+          # workflow_dispatch always builds, regardless of branch / paths
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "manual dispatch on ${REF_BRANCH} — building ${{ matrix.addon }} (${{ matrix.channel }})"
+            echo "manual dispatch — building ${{ matrix.addon }} (${{ matrix.channel }})"
             echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
+          # Branch must match the channel this matrix row owns
+          REF_BRANCH="${GITHUB_REF#refs/heads/}"
           if [[ "${REF_BRANCH}" != "${{ matrix.branch }}" ]]; then
             echo "branch ${REF_BRANCH} != ${{ matrix.branch }} for channel ${{ matrix.channel }} — skipping"
             echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "branch ${REF_BRANCH} matches channel ${{ matrix.channel }} — building"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-      - name: Checkout
-        if: steps.gate.outputs.skip != 'true'
-        uses: actions/checkout@v6
+          # Per-job path filter: only build if files in this addon's
+          # folder OR the workflow itself changed in this push.
+          CHANGED="$(git diff --name-only HEAD~1 HEAD 2>/dev/null || true)"
+          if [[ -z "${CHANGED}" ]]; then
+            # Likely first commit on this branch — cannot diff. Build to be safe.
+            echo "cannot determine changed files — building defensively"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Files changed in this push:"
+          echo "${CHANGED}" | sed 's/^/  /'
+
+          if echo "${CHANGED}" | grep -qE "^(${{ matrix.addon }}/|\.github/workflows/build\.yaml$)"; then
+            echo "match in ${{ matrix.addon }}/ or workflow file — building"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "no relevant changes for ${{ matrix.addon }} — skipping (avoids phantom HA updates)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Debug GitHub context
         if: steps.gate.outputs.skip != 'true'
