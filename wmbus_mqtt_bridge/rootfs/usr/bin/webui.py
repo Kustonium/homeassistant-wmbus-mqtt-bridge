@@ -36,7 +36,7 @@ OPTIONS_JSON = BASE / "options.json"
 ZERO_AES_KEY = "00000000000000000000000000000000"
 
 VALID_ID_RE = re.compile(r"^[0-9A-Fa-f]{8}$")
-MEDIA_FILTERS = {"all", "water", "electricity", "heat", "other"}
+MEDIA_FILTERS = {"all", "water", "warm_water", "electricity", "heat", "other"}
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +187,28 @@ def safe_int(value: object) -> int:
         return 0
 
 
+def fmt_ts(iso: str) -> str:
+    """Convert ISO timestamp to human-readable: 18.05.2026 10:32:19"""
+    if not iso:
+        return ''
+    try:
+        # Handle both Z and +HH:MM timezone
+        s = str(iso).replace('Z', '+00:00')
+        # Split off timezone
+        if '+' in s[10:]:
+            s = s[:s.rindex('+')]
+        elif s.count('-') > 2:
+            s = s[:s.rindex('-')]
+        s = s.strip().replace('T', ' ')[:19]
+        if len(s) >= 19:
+            date, time = s[:10], s[11:19]
+            y, m, d = date.split('-')
+            return f'{d}.{m}.{y} {time}'
+        return iso
+    except Exception:
+        return str(iso)
+
+
 def fmt_interval(seconds: object) -> str:
     sec = safe_int(seconds)
     if sec <= 0:
@@ -208,32 +230,41 @@ def reception_line(row: dict) -> str:
     )
 
 
-def media_icon(media: str, driver: str = "") -> str:
+def media_icon(media: str, driver: str = "", html: bool = False) -> str:
     mc = media_class(media, driver)
     if mc == "electricity":
         return "⚡"
     if mc == "heat":
         return "🔥"
+    if mc == "warm_water":
+        return "🔶"
     if mc == "water":
         return "💧"
     return "📡"
 
 
+
+def tr_media(lang: str, mc: str) -> str:
+    """Translate media class name to localized string."""
+    from i18n import I18N, DEFAULT_LANG
+    lang = lang if lang in I18N else DEFAULT_LANG
+    key = f"media_{mc}"
+    return I18N[lang].get(key) or I18N["en"].get(key) or mc
+
+
 def media_class(media: str, driver: str = "") -> str:
-    # Check type_line (wmbusmeters self-reported device type) FIRST.
-    # Important: "Warm Water (30°C-90°C) meter" is a water meter,
-    # not a heat meter. Do not classify by the word "warm" before "water".
-    # Driver name is a fallback only.
     media_lc = (media or "").lower()
     if media_lc and media_lc not in {"listen", "search-cache"}:
-        if ("water" in media_lc or "hydro" in media_lc or "cold" in media_lc or "hot water" in media_lc or "warm water" in media_lc) and "encrypted" not in media_lc:
+        if ("warm water" in media_lc or "hot water" in media_lc) and "encrypted" not in media_lc:
+            return "warm_water"
+        if ("water" in media_lc or "hydro" in media_lc or "cold" in media_lc) and "encrypted" not in media_lc:
             return "water"
         if "electric" in media_lc:
             return "electricity"
         if "heat" in media_lc or "warm" in media_lc:
             return "heat"
 
-    # Fallback: driver name heuristics. Keep water/hydro before heat/warm.
+    # Fallback: driver name heuristics
     driver_lc = (driver or "").lower()
     if "electric" in driver_lc or "amiplus" in driver_lc or "vario" in driver_lc:
         return "electricity"
@@ -382,7 +413,7 @@ def update_options_for_search(expected: str, tolerance: str, enabled: bool = Tru
 
 
 
-def add_meter_to_options(meter_id: str, driver: str, key: str) -> tuple[bool, str]:
+def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str = "") -> tuple[bool, str]:
     """Add a meter entry to addon options via HA Supervisor API.
 
     Writing directly to /data/options.json does NOT persist across restarts —
@@ -413,8 +444,18 @@ def add_meter_to_options(meter_id: str, driver: str, key: str) -> tuple[bool, st
         if isinstance(m, dict) and m.get("meter_id") == meter_id:
             return False, f"Meter {meter_id} already exists in options."
 
+    # Build entry id: use provided name (sanitized) or fall back to meter_XXXXXXXX
+    import re as _re, unicodedata as _ud
+    if meter_name:
+        # Keep Unicode letters and numbers, replace everything else with _
+        safe_name = _re.sub(r'[^\w\-]', '_', meter_name.strip())
+        safe_name = _re.sub(r'_+', '_', safe_name).strip('_')
+        entry_id = safe_name if safe_name else f"meter_{meter_id}"
+    else:
+        entry_id = f"meter_{meter_id}"
+
     entry = {
-        "id": f"meter_{meter_id}",
+        "id": entry_id,
         "meter_id": meter_id,
         "type": driver if driver and driver != "unknown" else "auto",
         "type_other": "",
@@ -439,6 +480,9 @@ def add_meter_to_options(meter_id: str, driver: str, key: str) -> tuple[bool, st
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 if resp.status in (200, 201):
+                    # Also write locally so the next add_meter call reads the updated list
+                    # (Supervisor may not have written options.json yet when user adds quickly)
+                    write_json_atomic(OPTIONS_JSON, options)
                     key_info = f"key={key[:4]}..." if key else "no key"
                     msg = f"Meter {meter_id} ({driver}) added via Supervisor API. {key_info}. Restart addon to apply."
                     webui_add_event("ok", msg)
@@ -601,9 +645,19 @@ def state(include_ignored: bool = False) -> dict:
         c["ignored"] = "true" if c.get("id") in ignored else "false"
         c["analysis"] = analysis.get(c.get("id") or "", {})
 
-    # Remove candidates that are already in configured meters
+    # Remove candidates that are already in configured meters (decoded)
     configured_ids = {m.get("id") for m in meters if m.get("id")}
     candidates = [c for c in candidates if c.get("id") not in configured_ids]
+
+    # Also remove candidates that are pending (in options.json but not yet decoded)
+    # so the user doesn't see them twice (once in pending panel, once in candidate table)
+    options_meter_ids = {
+        str(m.get("meter_id") or "").strip().lower()
+        for m in (options.get("meters") or [])
+        if isinstance(m, dict) and m.get("meter_id")
+    }
+    if options_meter_ids:
+        candidates = [c for c in candidates if str(c.get("id") or "").lower() not in options_meter_ids]
 
     if not include_ignored:
         candidates = [c for c in candidates if c.get("ignored") != "true"]
@@ -708,10 +762,21 @@ def nav(active: str, lang: str) -> str:
     return "".join(f'<a class="{("active" if key == active else "")}" href="{href}">{label}</a>' for href, label, key in items)
 
 
-def shell(active: str, body: str, updated_at: str, refresh: bool = True, lang: str = DEFAULT_LANG) -> str:
+def shell(active: str, body: str, updated_at: str, refresh: bool = True, lang: str = DEFAULT_LANG, localize_body: bool = True) -> str:
     lang = lang if lang in SUPPORTED_LANGS else DEFAULT_LANG
-    body = localize_html(body, lang)
-    refresh_meta = '<meta http-equiv="refresh" content="15">' if refresh else ""
+    if localize_body:
+        body = localize_html(body, lang)
+    # discover: smart refresh — reload only when tab is hidden, every 60s
+    # other pages: standard 15s meta refresh
+    if refresh and active == "discover":
+        refresh_meta = ""
+        smart_refresh_js = "<script>document.addEventListener('visibilitychange',function(){if(!document.hidden)return;if(!window._discoverTimer)window._discoverTimer=setTimeout(function(){location.reload()},60000);});document.addEventListener('visibilitychange',function(){if(document.hidden)return;clearTimeout(window._discoverTimer);window._discoverTimer=null;});</script>"
+    elif refresh:
+        refresh_meta = '<meta http-equiv="refresh" content="15">'
+        smart_refresh_js = ""
+    else:
+        refresh_meta = ""
+        smart_refresh_js = ""
     return f'''<!doctype html>
 <html lang="{esc(lang)}">
 <head>
@@ -757,7 +822,7 @@ def shell(active: str, body: str, updated_at: str, refresh: bool = True, lang: s
 </head>
 <body>
   <div class="app">
-    <div class="main"><div class="topbar"><div class="top-left"><span>wMBus MQTT Bridge</span></div><nav class="tabs">{nav(active, lang)}</nav>{lang_switcher(lang)}<div class="kebab">⋮</div></div><main><div class="updated">{esc(tr(lang, "updated_label"))} {esc(updated_at or tr(lang, "unknown_value"))}</div>{body}</main></div>
+    <div class="main"><div class="topbar"><div class="top-left"><span>wMBus MQTT Bridge</span></div><nav class="tabs">{nav(active, lang)}</nav>{lang_switcher(lang)}<div class="kebab">⋮</div></div><main><div class="updated">{esc(tr(lang, "updated_label"))} {esc(fmt_ts(updated_at) if updated_at else tr(lang, "unknown_value"))}</div>{body}</main></div>
   </div>
   <div id="toast" class="toast">{esc(tr(lang, "copied_toast"))}</div>
   <script>
@@ -775,6 +840,7 @@ def shell(active: str, body: str, updated_at: str, refresh: bool = True, lang: s
       window.location.href = url.toString();
     }}
   </script>
+  {smart_refresh_js}
 </body>
 </html>'''
 
@@ -783,6 +849,8 @@ def filter_by_media(rows: list[dict], media: str) -> list[dict]:
     media = media if media in MEDIA_FILTERS else "all"
     if media == "all":
         return rows
+    if media == "water":
+        return [r for r in rows if media_class(r.get("media", "") or r.get("type", ""), r.get("driver", "")) in ("water", "warm_water")]
     return [r for r in rows if media_class(r.get("media", "") or r.get("type", ""), r.get("driver", "")) == media]
 
 
@@ -822,17 +890,33 @@ def render_restart_block(lang: str, button_label_key: str = "restart_addon", ext
 
 
 def pending_meters(data: dict) -> list[dict]:
-    """Meters saved in options.json but not yet decoded by wmbusmeters.
-
-    Decoded meters land in status_meters.tsv (bridge.sh writes there after
-    wmbusmeters parses a telegram). A meter in options.json with no matching
-    entry in status_meters.tsv is either freshly added (waiting for restart)
-    or restarted-but-no-telegram-yet. Either way, it's worth showing so the
-    user gets visible confirmation that the add landed.
-    """
-    options = data.get("options", {}) if isinstance(data.get("options"), dict) else {}
+    """Meters saved in options.json but not yet decoded by wmbusmeters."""
+    # Read directly from OPTIONS_JSON for freshness — state() may have cached stale data
+    options = read_json(OPTIONS_JSON)
+    if not isinstance(options, dict):
+        options = {}
     configured = options.get("meters", []) if isinstance(options.get("meters"), list) else []
-    decoded_ids = {str(m.get("id") or "").lower() for m in data.get("meters", []) if m.get("id")}
+    if not configured:
+        return []
+
+    # If bridge started AFTER options.json was last written, it already loaded the meters.
+    # Pending panel should only show when meters were added AFTER the last bridge start.
+    try:
+        options_mtime = OPTIONS_JSON.stat().st_mtime
+        status_mtime  = STATUS_JSON.stat().st_mtime
+        if status_mtime > options_mtime:
+            # bridge restarted after options were saved — no longer pending
+            return []
+    except OSError:
+        pass
+
+    decoded_ids = set()
+    for m in data.get("meters", []):
+        mid = str(m.get("id") or "").lower()
+        if mid:
+            decoded_ids.add(mid)
+            bare = mid[6:] if mid.startswith("meter_") else mid
+            decoded_ids.add(bare)
     out: list[dict] = []
     for entry in configured:
         if not isinstance(entry, dict):
@@ -847,8 +931,6 @@ def pending_meters(data: dict) -> list[dict]:
             "has_key": bool((entry.get("key") or "").strip()),
         })
     return out
-
-
 def render_pending_panel(pending: list[dict], lang: str = DEFAULT_LANG) -> str:
     if not pending:
         return ''
@@ -875,11 +957,14 @@ def render_pending_panel(pending: list[dict], lang: str = DEFAULT_LANG) -> str:
 
 
 def render_pending_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
-    icon = "⏳"
+    mc = media_class(m.get("media", "") or m.get("type", ""), m.get("driver", ""))
+    icon = media_icon(m.get("media", "") or m.get("type", ""), m.get("driver", ""))
+    icon_bg = {"electricity": "#1a2a3b", "heat": "#3b2010", "water": "#0f2a3b", "warm_water": "#3b2010"}.get(mc, "#2a2a2a")
+    icon_color = {"electricity": "#60b4f0", "heat": "#f07840", "water": "#40c0e0", "warm_water": "#f09040"}.get(mc, "#888")
     return f'''
-    <article class="meter-card" style="opacity:0.75;border-style:dashed;">
+    <article class="meter-card" style="opacity:0.75;border-style:dashed;border-color:#f3c84b44;">
       <div class="meter-top">
-        <div class="micon" style="background:#3b3210;color:#f3c84b;">{icon}</div>
+        <div class="micon" style="background:{icon_bg};color:{icon_color};">{icon}</div>
         <div>
           <div class="mname">{esc(m["name"])}</div>
           <div class="mid">{esc(m["id"])}<br>{esc(m["driver"])}</div>
@@ -915,7 +1000,7 @@ def render_system_status(model: dict) -> str:
       <div class="status-row">{status_dot(model['decoded_ok'], warn=candidate_count > 0)}<span>Decoded JSON received</span><span class="right">{model['decoded_count']}</span></div>
       <div class="status-row">{status_dot(meter_count > 0, warn=candidate_count > 0)}<span>Configured meters</span><span class="right">{meter_count}</span></div>
       <div class="status-row">{status_dot(model['discovery_ok'], warn=candidate_count > 0)}<span>HA Discovery published</span><span class="right">{'yes' if model['discovery_ok'] else 'not yet'}</span></div>
-    </div><div class="last-line"><span>Last RAW telegram</span><span>{esc(pipe.get('last_raw_seen') or 'not seen this session')} <span class="pill raw">RAW</span></span></div></section>'''
+    </div><div class="last-line"><span>Last RAW telegram</span><span>{esc(fmt_ts(pipe.get('last_raw_seen') or '') or 'not seen this session')} <span class="pill raw">RAW</span></span></div></section>'''
 
 
 def render_stats(model: dict) -> str:
@@ -943,14 +1028,31 @@ def render_discovery(model: dict) -> str:
     </div><a class="button" href="settings">OPEN SETTINGS</a></section>'''
 
 
+def _signal_bars(seen_15m: int) -> str:
+    """Return 4 signal strength bars based on seen_15m count."""
+    n = 4 if seen_15m >= 10 else 3 if seen_15m >= 5 else 2 if seen_15m >= 2 else 1
+    ok = "#4df08d"
+    off = "#2a3a3a"
+    bars = "".join(
+        f'<span style="display:inline-block;width:4px;height:{4+i*3}px;background:{"'+ ok +'" if i < n else "'+ off +'"};border-radius:1px;vertical-align:bottom;margin-right:1px;"></span>'
+        for i in range(4)
+    )
+    return f'<span style="display:inline-flex;align-items:flex-end;height:16px;gap:1px;">{bars}</span>'
+
+
 def render_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
     icon = media_icon(m.get("media", ""), m.get("driver", ""))
+    mc = media_class(m.get("media", ""), m.get("driver", ""))
+    icon_bg = {"electricity": "#1a2a3b", "heat": "#3b2010", "water": "#0f2a3b", "warm_water": "#2a1f0a"}.get(mc, "#1a2a2a")
+    icon_color = {"electricity": "#60b4f0", "heat": "#f07840", "water": "#40c0e0", "warm_water": "#f09040"}.get(mc, "#888")
+    seen_15m = int(m.get("seen_15m") or 0)
+    signal = _signal_bars(seen_15m)
     meter_id = m.get("id") or ""
     confirm_msg = tr(lang, "confirm_delete").format(mid=meter_id)
     return f'''
-    <article class="meter-card"><div class="meter-top"><div class="micon">{icon}</div><div><div class="mname">{esc(m.get('name') or m.get('id'))}</div><div class="mid">{esc(m.get('id'))}<br>{esc(m.get('driver'))}</div></div><div class="online">{esc(tr(lang, "online_label"))}<br><span class="mid">{esc(m.get('last_seen') or '')}</span></div></div>
+    <article class="meter-card"><div class="meter-top"><div class="micon" style="background:{icon_bg};color:{icon_color};">{icon}</div><div><div class="mname">{esc(m.get('name') or m.get('id'))}</div><div class="mid">{esc(m.get('id'))}<br>{esc(m.get('driver'))}</div></div><div class="online">{esc(tr(lang, "online_label"))} {signal}<br><span class="mid">{fmt_ts(m.get('last_seen') or '')}</span></div></div>
       <div><div class="value-key">{esc(m.get('value_key') or tr(lang, "value_label"))}</div><div class="value-main">{esc(m.get('value') or '—')}</div></div>
-      <div><div class="meter-meta"><span>{esc(tr(lang, "media"))}<strong>{esc(m.get('media') or tr(lang, "unknown_label"))}</strong></span><span>{esc(tr(lang, "reception"))}<strong>{esc(fmt_interval(m.get('avg_interval_s')))}</strong></span><span>{esc(tr(lang, "seen_15m_label"))}<strong>{esc(m.get('seen_15m') or '0')}</strong></span><span>{esc(tr(lang, "seen_60m_label"))}<strong>{esc(m.get('seen_60m') or '0')}</strong></span></div>
+      <div><div class="meter-meta"><span>{esc(tr(lang, "media"))}<strong>{esc(tr_media(lang, media_class(m.get('media',''), m.get('driver',''))))}</strong></span><span>{esc(tr(lang, "reception"))}<strong>{esc(fmt_interval(m.get('avg_interval_s')))}</strong></span><span>{esc(tr(lang, "seen_15m_label"))}<strong>{esc(m.get('seen_15m') or '0')}</strong></span><span>{esc(tr(lang, "seen_60m_label"))}<strong>{esc(m.get('seen_60m') or '0')}</strong></span></div>
       <div class="entity-row"><span class="published">{esc(m.get('discovery') or tr(lang, "state_label"))}</span>
         <form method="post" action="remove-meter" style="margin:0;" onsubmit="return confirm({json.dumps(confirm_msg)});">
           <input type="hidden" name="meter_id" value="{esc(meter_id)}">
@@ -979,7 +1081,7 @@ def render_search_cache_table(rows: list[dict], max_items: int | None = None, la
         media  = row.get("media") or ""
         body.append(
             f"<tr><td><strong>{esc(row.get('id'))}</strong><span class='muted'>from /data/search_candidates.tsv</span></td>"
-            f"<td>{esc(driver)}</td><td>{esc(media_icon(media, driver))} {esc(media_class(media, driver))}</td>"
+            f"<td>{esc(driver)}</td><td>{media_icon(media, driver)} {esc(tr_media(lang, media_class(media, driver)))}</td>"
             f"<td><span class='pill ok'>{esc(tr(lang, 'used_by_search_label'))}</span><span class='muted'>{esc(tr(lang, 'loaded_as_temp_meter'))}</span></td></tr>"
         )
     return f"<div class='table-wrap'><table class='table'><thead><tr><th>{esc(tr(lang, 'meter_id'))}</th><th>{esc(tr(lang, 'driver'))}</th><th>{esc(tr(lang, 'media'))}</th><th>{esc(tr(lang, 'role_label'))}</th></tr></thead><tbody>{''.join(body)}</tbody></table></div>"
@@ -1023,14 +1125,48 @@ def render_candidates_table(candidates: list[dict], max_items: int | None = None
             # can paste the 32-char HEX key before submitting.
             add_inline = ''
             if enc_cls != 'bad':
+                mtype = (c.get('type') or '').strip()
+                mtype_lc = mtype.lower()
+                last4 = mid[-4:]
+                if 'warm water' in mtype_lc or 'hot water' in mtype_lc:
+                    suggested_name = f"Warm_Water_{last4}"
+                elif 'cold water' in mtype_lc:
+                    suggested_name = f"Cold_Water_{last4}"
+                elif 'water' in mtype_lc or 'hydro' in mtype_lc:
+                    suggested_name = f"Cold_Water_{last4}"
+                elif 'electric' in mtype_lc:
+                    suggested_name = f"Electricity_{last4}"
+                elif 'heat' in mtype_lc:
+                    suggested_name = f"Heat_{last4}"
+                else:
+                    suggested_name = f"meter_{mid}" if not mtype else f"{mtype[:12]}_{last4}"
+                popup_id = f"add-popup-{esc(mid)}"
                 add_inline = (
-                    f'<form method="post" action="add-meter" style="display:inline;margin:0;">'
+                    f'<span style="position:relative;display:inline-block;">'
+                    f'<button class="small-button" type="button" '
+                    f'onclick="document.getElementById(\'{popup_id}\').style.display=\'block\';'
+                    f'this.style.display=\'none\';">'
+                    f'{esc(tr(lang, "add_meter_short_btn"))}</button>'
+                    f'<span id="{popup_id}" style="display:none;position:absolute;right:0;top:28px;'
+                    f'z-index:99;background:#1a2a35;border:1px solid #2a4555;border-radius:8px;'
+                    f'padding:10px;min-width:220px;white-space:normal;">'
+                    f'<form method="post" action="add-meter" style="margin:0;">'
                     f'<input type="hidden" name="meter_id" value="{esc(mid)}">'
                     f'<input type="hidden" name="driver" value="{esc(driver)}">'
                     f'<input type="hidden" name="key" value="">'
                     f'<input type="hidden" name="return_to" value="discover">'
-                    f'<button class="small-button" type="submit">{esc(tr(lang, "add_meter_short_btn"))}</button>'
-                    f'</form>'
+                    f'<label style="font-size:11px;color:#95adbd;display:block;margin-bottom:4px;">'
+                    f'{esc(tr(lang, "meter_name_label"))}</label>'
+                    f'<input type="text" name="meter_name" value="{esc(suggested_name)}" '
+                    f'style="width:100%;background:#0e151b;border:1px solid #2a4555;color:#e8f1f8;'
+                    f'border-radius:4px;padding:5px 7px;font-size:12px;margin-bottom:6px;box-sizing:border-box;">'
+                    f'<div style="display:flex;gap:6px;">'
+                    f'<button class="small-button" type="submit" style="flex:1;">{esc(tr(lang, "save_label"))}</button>'
+                    f'<button class="small-button" type="button" style="flex:1;" '
+                    f'onclick="document.getElementById(\'{popup_id}\').style.display=\'none\';'
+                    f'this.closest(\'span\').previousElementSibling.style.display=\'\';">'
+                    f'{esc(tr(lang, "cancel_label"))}</button>'
+                    f'</div></form></span></span>'
                 )
             actions = (
                 add_inline
@@ -1039,10 +1175,10 @@ def render_candidates_table(candidates: list[dict], max_items: int | None = None
             )
         rows.append(
             f'''<tr><td><strong>{esc(mid)}</strong><span class="muted">{esc(c.get('type') or tr(lang, "listen_label"))}</span></td>'''
-            f'''<td>{esc(driver)}</td><td>{esc(media_icon(c.get('type',''), driver))} {esc(mclass)}</td>'''
+            f'''<td>{esc(driver)}</td><td>{media_icon(c.get('type',''), driver)} {esc(tr_media(lang, mclass))}</td>'''
             f'''<td><span class="pill {esc(enc_cls)}">{esc(enc)}</span><span class="muted">{esc(enc_note)}</span></td>'''
             f'''<td>{esc(c.get('seen_count') or '0')}<span class="muted">{esc(reception_line(c))}</span></td>'''
-            f'''<td>{esc(c.get('last_seen') or '')}</td><td>{actions}</td></tr>'''
+            f'''<td>{fmt_ts(c.get('last_seen') or '')}</td><td>{actions}</td></tr>'''
         )
     return (
         f'<div class="table-wrap"><table class="table"><thead><tr>'
@@ -1050,6 +1186,66 @@ def render_candidates_table(candidates: list[dict], max_items: int | None = None
         f'<th>{esc(tr(lang, "encryption_aes"))}</th><th>{esc(tr(lang, "reception"))}</th>'
         f'<th>{esc(tr(lang, "last_telegram"))}</th><th>{esc(tr(lang, "action"))}</th>'
         f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+    )
+
+
+def render_waiting_panel(data: dict, lang: str = DEFAULT_LANG) -> str:
+    """Show info banner after restart: meters loaded, waiting for first telegrams."""
+    try:
+        options_mtime = OPTIONS_JSON.stat().st_mtime
+        status_mtime  = STATUS_JSON.stat().st_mtime
+        if status_mtime <= options_mtime:
+            return ""  # pending panel handles this case
+    except OSError:
+        return ""
+
+    options = read_json(OPTIONS_JSON)
+    if not isinstance(options, dict):
+        return ""
+    configured = [m for m in (options.get("meters") or []) if isinstance(m, dict) and m.get("meter_id")]
+    if not configured:
+        return ""
+
+    decoded_ids = set()
+    for m in data.get("meters", []):
+        mid = str(m.get("id") or "").lower()
+        if mid:
+            decoded_ids.add(mid)
+            bare = mid[6:] if mid.startswith("meter_") else mid
+            decoded_ids.add(bare)
+
+    waiting = [m for m in configured if str(m.get("meter_id") or "").lower() not in decoded_ids]
+    if not waiting:
+        return ""
+
+    rows = []
+    for m in waiting:
+        mid = esc(m.get("meter_id", ""))
+        name = esc(m.get("id") or mid)
+        driver = esc(m.get("type") or "auto")
+        rows.append(
+            f'<div style="display:grid;grid-template-columns:130px 100px 1fr;gap:8px;'
+            f'padding:5px 0;border-bottom:0.5px solid #1e3040;font-size:12px;">'
+            f'<strong style="font-family:monospace;">{mid}</strong>'
+            f'<span style="color:#95adbd;">{name}</span>'
+            f'<span style="color:#95adbd;">{driver}</span>'
+            f'</div>'
+        )
+
+    return (
+        f'<div class="notice" style="margin-top:14px;background:#0d1f2d;border-color:#1e3a50;">'
+        f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">'
+        f'<span style="font-size:16px;">&#x23F3;</span>'
+        f'<strong>{esc(tr(lang, "waiting_for_telegrams_title"))} ({len(waiting)})</strong>'
+        f'</div>'
+        f'<div style="color:#95adbd;font-size:12px;margin-bottom:10px;">'
+        f'{esc(tr(lang, "waiting_for_telegrams_text"))}'
+        f'</div>'
+        f'{"".join(rows)}'
+        f'<div style="margin-top:8px;color:#6a8a9a;font-size:11px;">'
+        f'{esc(tr(lang, "waiting_for_telegrams_hint"))}'
+        f'</div>'
+        f'</div>'
     )
 
 
@@ -1068,7 +1264,7 @@ def render_candidate_summary(candidates: list[dict], lang: str = DEFAULT_LANG) -
     <div class="candidate-summary">
       <div class="summary-big">{count}</div>
       <div><div class="summary-title">{esc(tr(lang, "detected_candidates_lower"))}</div><div class="summary-sub">{esc(tr(lang, "full_list_in_discover"))}</div></div>
-      <div class="summary-best"><span class="muted">{esc(tr(lang, "best_candidate"))}</span><strong>{esc(best.get('id'))} / {esc(best_driver)}</strong><span>{esc(media_icon(best.get('type',''), best_driver))} {esc(best_media)} · {esc(reception_line(best))}</span></div>
+      <div class="summary-best"><span class="muted">{esc(tr(lang, "best_candidate"))}</span><strong>{esc(best.get('id'))} / {esc(best_driver)}</strong><span>{media_icon(best.get('type',''), best_driver)} {esc(tr_media(lang, best_media))} · {esc(reception_line(best))}</span></div>
       <a class="button inline" href="discover">{esc(tr(lang, "open_discover_btn"))}</a>
     </div>'''
 
@@ -1094,6 +1290,7 @@ def page_dashboard(data: dict, params: dict[str, list[str]], lang: str = DEFAULT
       <h1>{esc(tr(lang, "dashboard_title"))}</h1><div class="sub">{esc(tr(lang, "dashboard_sub"))}</div>
       <section class="grid3">{render_system_status(model)}{render_stats(model)}{render_discovery(model)}</section>
       {render_pending_panel(pending, lang)}
+      {render_waiting_panel(data, lang)}
       <section class="card" style="margin-top:14px;"><div class="section-head"><h2>{esc(tr(lang, "configured_meters"))}</h2>{render_filter_links('.', media, lang)}</div>{render_configured_meters(meters, max_items=6, lang=lang, pending=pending)}</section>
       <section class="card" style="margin-top:14px;"><div class="section-head"><h2>{esc(tr(lang, "detected_candidates"))}</h2></div>{render_candidate_summary(data['candidates'], lang)}</section>
       <div class="footer"><span>wMBus MQTT Bridge</span><span>{esc(tr(lang, "footer_subtitle"))}</span><span>{esc(tr(lang, "footer_caption"))}</span></div>'''
@@ -1109,6 +1306,7 @@ def page_meters(data: dict, params: dict[str, list[str]], lang: str = DEFAULT_LA
     body = (
         f'<h1>{esc(tr(lang, "meters_title"))}</h1><div class="sub">{esc(tr(lang, "meters_sub"))}</div>'
         f'{render_pending_panel(pending, lang)}'
+        f'{render_waiting_panel(data, lang)}'
         f'<section class="card" style="margin-top:18px;"><div class="section-head">'
         f'<h2>{esc(tr(lang, "configured_meters"))} ({len(meters)} / {model["meter_count"]})</h2>'
         f'{render_filter_links("meters", media, lang)}</div>'
@@ -1130,7 +1328,7 @@ def page_discover(data: dict, params: dict[str, list[str]], lang: str = DEFAULT_
     if added_msg:
         banner = (
             f'<div class="notice good" style="margin-top:14px;">&#10003; {esc(added_msg)}'
-            f'<br><b>{esc(tr(lang, "restart_to_apply" if is_supervisor_mode() else "restart_to_apply_docker"))}</b></div>'
+            f'<br><span style="font-size:13px;">{esc(tr(lang, "add_more_before_restart"))}</span></div>'
         )
     elif error_msg:
         banner = f'<div class="notice warn" style="margin-top:14px;">&#9888; {esc(error_msg)}</div>'
@@ -1141,12 +1339,14 @@ def page_discover(data: dict, params: dict[str, list[str]], lang: str = DEFAULT_
         ignored = [c for c in full_data["candidates"] if c.get("ignored") == "true"]
         list_html = render_candidates_table(filter_by_media(ignored, media), show_restore=True, lang=lang)
         title = f'{esc(tr(lang, "ignored_candidates_label"))} ({len(ignored)})'
-        ignored_link = f'<a class="filter" href="discover">{esc(tr(lang, "active_filter"))}</a>'
+        ignored_link = f'<a class="filter" href="discover">{esc(tr(lang, "active_filter"))} ({model["candidate_count"]})</a>'
     else:
+        ignored_count = model["ignored_count"]
         candidates = filter_by_media(data["candidates"], media)
         list_html = render_candidates_table(candidates, lang=lang)
         title = f'{esc(tr(lang, "detected_candidates"))} — {len(candidates)} / {model["candidate_count"]}'
-        ignored_link = f'<a class="filter" href="discover?ignored=1">{esc(tr(lang, "ignored_filter"))}</a>'
+        ignored_label = f'{esc(tr(lang, "ignored_filter"))} ({ignored_count})' if ignored_count > 0 else esc(tr(lang, "ignored_filter"))
+        ignored_link = f'<a class="filter" href="discover?ignored=1">{ignored_label}</a>'
 
     body = f'''
     <h1>{esc(tr(lang, "discover_title"))}</h1>
@@ -1166,7 +1366,7 @@ def page_discover(data: dict, params: dict[str, list[str]], lang: str = DEFAULT_
       <div style="height:10px"></div>
       {list_html}
     </section>'''
-    return shell('discover', body, model['status'].get('updated_at', ''), lang=lang)
+    return shell('discover', body, model['status'].get('updated_at', ''), refresh=True, lang=lang)
 
 
 def _search_matches_cards(matches: list[dict], lang: str = DEFAULT_LANG) -> str:
@@ -1275,7 +1475,7 @@ def page_search(data: dict, params: dict[str, list[str]], lang: str = DEFAULT_LA
         f'<span>{esc(tr(lang, "last_checked_kv"))}</span>'
         f'<span>{esc(last_checked.get("id") or "")} / {esc(last_checked.get("field") or "")}={esc(last_checked.get("value") or "")}, diff={esc(last_checked.get("diff_m3") or "")}</span>'
         f'<span>{esc(tr(lang, "last_reason_kv"))}</span><span>{esc(last_reason)}</span>'
-        f'<span>{esc(tr(lang, "status_updated_kv"))}</span><span>{esc(updated)}</span>'
+        f'<span>{esc(tr(lang, "status_updated_kv"))}</span><span>{esc(fmt_ts(updated))}</span>'
         f'</div></section>'
     )
     events_section = (
@@ -1429,9 +1629,9 @@ def page_candidate(data: dict, params: dict[str, list[str]], lang: str = DEFAULT
     <div class="discovery-kv">
       <span>{esc(tr(lang, "meter_id"))}</span><span style="font-family:monospace;font-size:15px;font-weight:800;">{esc(mid)}</span>
       <span>{esc(tr(lang, "driver"))}</span><span>{esc(driver)}</span>
-      <span>{esc(tr(lang, "media"))}</span><span>{esc(media_icon(candidate.get('type',''), driver))} {esc(media_class(candidate.get('type',''), driver))}</span>
+      <span>{esc(tr(lang, "media"))}</span><span>{media_icon(candidate.get('type',''), driver)} {esc(tr_media(lang, media_class(candidate.get('type',''), driver)))}</span>
       <span>{esc(tr(lang, "encryption_label"))}</span><span class="pill {esc(enc_cls)}">{esc(enc)}</span>
-      <span>{esc(tr(lang, "last_seen_label"))}</span><span>{esc(candidate.get('last_seen'))}</span>
+      <span>{esc(tr(lang, "last_seen_label"))}</span><span>{fmt_ts(candidate.get('last_seen') or '')}</span>
       <span>{esc(tr(lang, "reception"))}</span><span>{esc(reception_line(candidate))}</span>
     </div>
     <div class="notice {'warn' if aes_required else ''}" style="margin-top:14px;">
@@ -1660,11 +1860,12 @@ class Handler(BaseHTTPRequestHandler):
             self._redirect('meters')
             return
         if path == '/add-meter':
-            meter_id  = (params.get('meter_id')  or [''])[0].strip()
-            driver    = (params.get('driver')    or ['auto'])[0].strip()
-            key       = (params.get('key')       or [''])[0].strip()
-            return_to = (params.get('return_to') or [''])[0].strip()
-            ok, msg   = add_meter_to_options(meter_id, driver, key)
+            meter_id   = (params.get('meter_id')   or [''])[0].strip()
+            driver     = (params.get('driver')     or ['auto'])[0].strip()
+            key        = (params.get('key')        or [''])[0].strip()
+            meter_name = (params.get('meter_name') or [''])[0].strip()
+            return_to  = (params.get('return_to')  or [''])[0].strip()
+            ok, msg    = add_meter_to_options(meter_id, driver, key, meter_name=meter_name)
             webui_add_event('ok' if ok else 'error', msg)
             if return_to == 'discover':
                 if ok:
