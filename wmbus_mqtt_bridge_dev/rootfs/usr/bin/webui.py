@@ -382,7 +382,7 @@ def update_options_for_search(expected: str, tolerance: str, enabled: bool = Tru
 
 
 
-def add_meter_to_options(meter_id: str, driver: str, key: str) -> tuple[bool, str]:
+def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str = "") -> tuple[bool, str]:
     """Add a meter entry to addon options via HA Supervisor API.
 
     Writing directly to /data/options.json does NOT persist across restarts —
@@ -413,8 +413,17 @@ def add_meter_to_options(meter_id: str, driver: str, key: str) -> tuple[bool, st
         if isinstance(m, dict) and m.get("meter_id") == meter_id:
             return False, f"Meter {meter_id} already exists in options."
 
+    # Build entry id: use provided name (sanitized) or fall back to meter_XXXXXXXX
+    import re as _re
+    if meter_name:
+        safe_name = _re.sub(r'[^a-zA-Z0-9_\-]', '_', meter_name.strip()).strip('_')
+        safe_name = _re.sub(r'_+', '_', safe_name)
+        entry_id = safe_name if safe_name else f"meter_{meter_id}"
+    else:
+        entry_id = f"meter_{meter_id}"
+
     entry = {
-        "id": f"meter_{meter_id}",
+        "id": entry_id,
         "meter_id": meter_id,
         "type": driver if driver and driver != "unknown" else "auto",
         "type_other": "",
@@ -853,6 +862,20 @@ def pending_meters(data: dict) -> list[dict]:
     if not isinstance(options, dict):
         options = {}
     configured = options.get("meters", []) if isinstance(options.get("meters"), list) else []
+    if not configured:
+        return []
+
+    # If bridge started AFTER options.json was last written, it already loaded the meters.
+    # Pending panel should only show when meters were added AFTER the last bridge start.
+    try:
+        options_mtime = OPTIONS_JSON.stat().st_mtime
+        status_mtime  = STATUS_JSON.stat().st_mtime
+        if status_mtime > options_mtime:
+            # bridge restarted after options were saved — no longer pending
+            return []
+    except OSError:
+        pass
+
     decoded_ids = set()
     for m in data.get("meters", []):
         mid = str(m.get("id") or "").lower()
@@ -1068,14 +1091,36 @@ def render_candidates_table(candidates: list[dict], max_items: int | None = None
             # can paste the 32-char HEX key before submitting.
             add_inline = ''
             if enc_cls != 'bad':
+                mtype = (c.get('type') or '').strip()
+                # Suggest name: "Warm Water 4159" / "Cold Water 8221" / "Electricity 9907"
+                suggested_name = f"{mtype} {mid[-4:]}" if mtype else f"meter_{mid}"
+                popup_id = f"add-popup-{esc(mid)}"
                 add_inline = (
-                    f'<form method="post" action="add-meter" style="display:inline;margin:0;">'
+                    f'<span style="position:relative;display:inline-block;">'
+                    f'<button class="small-button" type="button" '
+                    f'onclick="document.getElementById(\'{popup_id}\').style.display=\'block\';'
+                    f'this.style.display=\'none\';">'
+                    f'{esc(tr(lang, "add_meter_short_btn"))}</button>'
+                    f'<span id="{popup_id}" style="display:none;position:absolute;right:0;top:28px;'
+                    f'z-index:99;background:#1a2a35;border:1px solid #2a4555;border-radius:8px;'
+                    f'padding:10px;min-width:220px;white-space:normal;">'
+                    f'<form method="post" action="add-meter" style="margin:0;">'
                     f'<input type="hidden" name="meter_id" value="{esc(mid)}">'
                     f'<input type="hidden" name="driver" value="{esc(driver)}">'
                     f'<input type="hidden" name="key" value="">'
                     f'<input type="hidden" name="return_to" value="discover">'
-                    f'<button class="small-button" type="submit">{esc(tr(lang, "add_meter_short_btn"))}</button>'
-                    f'</form>'
+                    f'<label style="font-size:11px;color:#95adbd;display:block;margin-bottom:4px;">'
+                    f'{esc(tr(lang, "meter_name_label"))}</label>'
+                    f'<input type="text" name="meter_name" value="{esc(suggested_name)}" '
+                    f'style="width:100%;background:#0e151b;border:1px solid #2a4555;color:#e8f1f8;'
+                    f'border-radius:4px;padding:5px 7px;font-size:12px;margin-bottom:6px;box-sizing:border-box;">'
+                    f'<div style="display:flex;gap:6px;">'
+                    f'<button class="small-button" type="submit" style="flex:1;">{esc(tr(lang, "save_label"))}</button>'
+                    f'<button class="small-button" type="button" style="flex:1;" '
+                    f'onclick="document.getElementById(\'{popup_id}\').style.display=\'none\';'
+                    f'this.closest(\'span\').previousElementSibling.style.display=\'\';">'
+                    f'{esc(tr(lang, "cancel_label"))}</button>'
+                    f'</div></form></span></span>'
                 )
             actions = (
                 add_inline
@@ -1707,11 +1752,12 @@ class Handler(BaseHTTPRequestHandler):
             self._redirect('meters')
             return
         if path == '/add-meter':
-            meter_id  = (params.get('meter_id')  or [''])[0].strip()
-            driver    = (params.get('driver')    or ['auto'])[0].strip()
-            key       = (params.get('key')       or [''])[0].strip()
-            return_to = (params.get('return_to') or [''])[0].strip()
-            ok, msg   = add_meter_to_options(meter_id, driver, key)
+            meter_id   = (params.get('meter_id')   or [''])[0].strip()
+            driver     = (params.get('driver')     or ['auto'])[0].strip()
+            key        = (params.get('key')        or [''])[0].strip()
+            meter_name = (params.get('meter_name') or [''])[0].strip()
+            return_to  = (params.get('return_to')  or [''])[0].strip()
+            ok, msg    = add_meter_to_options(meter_id, driver, key, meter_name=meter_name)
             webui_add_event('ok' if ok else 'error', msg)
             if return_to == 'discover':
                 if ok:

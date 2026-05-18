@@ -234,6 +234,9 @@ I18N: dict[str, dict[str, str]] = {
         "docker_restart_hint": "No Supervisor API available — restart the container manually to apply changes:",
         "restart_to_apply_docker": "Restart the container manually to apply.",
         "add_more_before_restart": "Meter added. You can add more meters before restarting. Click RESTART ADDON when done.",
+        "meter_name_label": "Meter name",
+        "save_label": "Save",
+        "cancel_label": "Cancel",
     },
     "pl": {
         "nav_dashboard": "PANEL",
@@ -451,6 +454,9 @@ I18N: dict[str, dict[str, str]] = {
         "docker_restart_hint": "Brak Supervisor API — zrestartuj kontener ręcznie, aby zastosować zmiany:",
         "restart_to_apply_docker": "Zrestartuj kontener ręcznie, aby zastosować zmiany.",
         "add_more_before_restart": "Licznik dodany. Możesz dodać więcej liczników przed restartem. Kliknij RESTART ADDON gdy skończysz.",
+        "meter_name_label": "Nazwa licznika",
+        "save_label": "Zapisz",
+        "cancel_label": "Anuluj",
     },
     "de": {
         "nav_dashboard": "DASHBOARD",
@@ -668,6 +674,9 @@ I18N: dict[str, dict[str, str]] = {
         "docker_restart_hint": "Keine Supervisor-API verf\u00fcgbar \u2014 Container manuell neu starten, um \u00c4nderungen zu \u00fcbernehmen:",
         "restart_to_apply_docker": "Container manuell neu starten, um zu \u00fcbernehmen.",
         "add_more_before_restart": "Zähler hinzugefügt. Sie können weitere Zähler hinzufügen. Klicken Sie auf ADD-ON NEU STARTEN wenn fertig.",
+        "meter_name_label": "Zählername",
+        "save_label": "Speichern",
+        "cancel_label": "Abbrechen",
     },
     "cs": {
         "nav_dashboard": "PANEL",
@@ -885,6 +894,9 @@ I18N: dict[str, dict[str, str]] = {
         "docker_restart_hint": "Supervisor API není dostupné — restartujte kontejner ručně pro aplikování změn:",
         "restart_to_apply_docker": "Restartujte kontejner ručně pro aplikování změn.",
         "add_more_before_restart": "Měřič přidán. Můžete přidat další měřiče. Až budete hotovi klikněte na RESTARTOVAT.",
+        "meter_name_label": "Název měřiče",
+        "save_label": "Uložit",
+        "cancel_label": "Zrušit",
     },
     "sk": {
         "nav_dashboard": "PANEL",
@@ -1102,6 +1114,9 @@ I18N: dict[str, dict[str, str]] = {
         "docker_restart_hint": "Supervisor API nie je dostupn\u00e9 \u2014 re\u0161tartujte kontajner manu\u00e1lne pre aplikovanie zmien:",
         "restart_to_apply_docker": "Re\u0161tartujte kontajner manu\u00e1lne pre aplikovanie zmien.",
         "add_more_before_restart": "Merač pridaný. Môžete pridať ďalšie merače. Keď skončíte kliknite na REŠTARTOVAŤ.",
+        "meter_name_label": "Názov merača",
+        "save_label": "Uložiť",
+        "cancel_label": "Zrušiť",
     },
 }
 
