@@ -832,7 +832,14 @@ def pending_meters(data: dict) -> list[dict]:
     """
     options = data.get("options", {}) if isinstance(data.get("options"), dict) else {}
     configured = options.get("meters", []) if isinstance(options.get("meters"), list) else []
-    decoded_ids = {str(m.get("id") or "").lower() for m in data.get("meters", []) if m.get("id")}
+    decoded_ids = set()
+    for m in data.get("meters", []):
+        mid = str(m.get("id") or "").lower()
+        if mid:
+            decoded_ids.add(mid)
+            # also store the bare 8-digit ID (strip "meter_" prefix if present)
+            bare = mid[6:] if mid.startswith("meter_") else mid
+            decoded_ids.add(bare)
     out: list[dict] = []
     for entry in configured:
         if not isinstance(entry, dict):

@@ -329,7 +329,7 @@ status_meter_seen() {
   # water meters → total_m3 (no live field exists, cumulative is the reading).
   value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(_kw$|_w$|_m3h$|_l_h$)";"i")) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
   if [[ -z "${value_key}" ]]; then
-    value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(^total|_m3$|kwh|wh$|energy|volume)";"i")) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+    value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(^total|_m3$|kwh|wh$|energy|volume)";"i")) | select(.key|test("(backflow|fraud|leak|tamper|alarm)";"i")|not) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
   fi
   if [[ -n "${value_key}" ]]; then
     value="$(jq -r --arg k "${value_key}" '.[$k] // empty' <<<"${json_line}" 2>/dev/null || true)"
