@@ -64,7 +64,7 @@ jobs:
 
           for item in rootfs Dockerfile translations; do
             if [[ -e "${SRC}/${item}" ]]; then
-              rm -rf "${DST}/${item}"
+              rm -rf "${DST:?}/${item}"
               cp -r "${SRC}/${item}" "${DST}/${item}"
               echo "copied ${item}"
             fi

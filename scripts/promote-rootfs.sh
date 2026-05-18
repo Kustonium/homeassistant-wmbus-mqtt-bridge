@@ -43,7 +43,7 @@ fi
 changed=0
 for item in rootfs Dockerfile translations; do
   if [[ -e "${SRC}/${item}" ]]; then
-    rm -rf "${DST}/${item}"
+    rm -rf "${DST:?}/${item}"
     cp -r "${SRC}/${item}" "${DST}/${item}"
     echo "synced ${item}"
     changed=1
