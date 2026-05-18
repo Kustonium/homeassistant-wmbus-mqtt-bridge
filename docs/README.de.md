@@ -1,6 +1,6 @@
 > 🌐 [EN](README.en.md) | [PL](README.pl.md) | [**DE**](README.de.md) | [CS](README.cs.md) | [SK](README.sk.md)
 
-> 🤖 **Maschinelle Übersetzung** — Diese Dokumentation wurde maschinell aus dem Polnischen übersetzt. Sie kann Fehler enthalten — Korrekturen willkommen über [GitHub Issues](https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/issues).
+> 🤖 **Maschinelle Übersetzung** — Diese Dokumentation wurde maschinell aus dem Polnischen übersetzt. Sie kann Fehler enthalten.
 
 # wMBus MQTT Bridge — vollständige Dokumentation (DE)
 
@@ -43,6 +43,8 @@ Standardmäßig benötigt `wmbusmeters` einen am Host angeschlossenen Funk-Dongl
 
 Ergebnis: **Deine Zähler erscheinen als Sensoren in HA, ohne Funkhardware auf der HA-Seite.**
 
+> 🤝 **Zusammenspiel mit der ESPHome-Firmware** — Dieses Add-on wird typischerweise zusammen mit [`esphome-wmbus-bridge-rawonly`](https://github.com/Kustonium/esphome-wmbus-bridge-rawonly) verwendet, einer ESPHome-External-Component, die auf einem ESP32 mit einem **CC1101-, SX1276- oder SX1262**-Funkchip läuft. Der ESP empfängt die Funkframes und veröffentlicht rohes HEX über MQTT; dieses Add-on dekodiert sie. Beide Projekte sind **unabhängig** — das Add-on akzeptiert HEX aus jeder Quelle, die auf das konfigurierte `raw_topic` veröffentlicht.
+
 ---
 
 ## 2. Datenfluss-Architektur
@@ -53,7 +55,7 @@ Ergebnis: **Deine Zähler erscheinen als Sensoren in HA, ohne Funkhardware auf d
 %%{init: {'theme':'default'}}%%
 flowchart LR
   subgraph EXT["🛰️ Externer Empfänger (außerhalb HA)"]
-    A1["ESP32 / Gateway / Bridge<br/>mit CC1101- oder RFM69-Modul"]
+    A1["ESP32 / Gateway / Bridge<br/>mit CC1101-, SX1276- oder SX1262-Modul"]
   end
 
   subgraph BROKER["📡 MQTT-Broker"]

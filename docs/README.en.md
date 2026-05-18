@@ -41,6 +41,8 @@ By default, `wmbusmeters` requires a radio dongle plugged into the host. This pr
 
 Result: **your meters appear as sensors in HA, with no radio hardware on the HA side.**
 
+> 🤝 **Pairs with the ESPHome firmware** — This add-on is typically used together with [`esphome-wmbus-bridge-rawonly`](https://github.com/Kustonium/esphome-wmbus-bridge-rawonly), an ESPHome external component running on an ESP32 with a **CC1101, SX1276 or SX1262** radio. The ESP receives the radio frames and publishes raw HEX to MQTT; this add-on decodes them. The two projects are **independent** — this add-on accepts hex from any source publishing to the configured `raw_topic`.
+
 ---
 
 ## 2. Data flow architecture
@@ -51,7 +53,7 @@ Result: **your meters appear as sensors in HA, with no radio hardware on the HA 
 %%{init: {'theme':'default'}}%%
 flowchart LR
   subgraph EXT["🛰️ External receiver (outside HA)"]
-    A1["ESP32 / Gateway / Bridge<br/>with CC1101 or RFM69 module"]
+    A1["ESP32 / Gateway / Bridge<br/>with CC1101, SX1276 or SX1262 module"]
   end
 
   subgraph BROKER["📡 MQTT broker"]

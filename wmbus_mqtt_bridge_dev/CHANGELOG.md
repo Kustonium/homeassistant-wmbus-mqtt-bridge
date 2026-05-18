@@ -10,11 +10,12 @@ GitHub Issues.
   Backed by a Python service (`rootfs/usr/bin/webui.py`) supervised by s6
   (`rootfs/etc/services.d/wmbus_webui/run`).
 - **Multi-language UI** — translation layer in `rootfs/usr/bin/i18n.py`
-  covering Polish, English, German, Czech and Slovak (DE/CS/SK are
-  AI-generated; corrections welcome).
+  covering Polish, English, German, Czech and Slovak. All UI strings are
+  machine-generated and may contain errors in any language.
 - **Multi-language documentation** under `docs/` — full PL/EN/DE/CS/SK
-  versions of the README, linked from the main README.
-- Development-process and AI-translations notices in the README (PL/EN).
+  versions of the README, linked from the main README. All docs are
+  machine-generated.
+- Combined AI / machine-generated-text notice in the README (PL/EN).
 
 ### Changed
 - Add-on stage set to `experimental`.
