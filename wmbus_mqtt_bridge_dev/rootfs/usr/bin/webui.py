@@ -36,7 +36,7 @@ OPTIONS_JSON = BASE / "options.json"
 ZERO_AES_KEY = "00000000000000000000000000000000"
 
 VALID_ID_RE = re.compile(r"^[0-9A-Fa-f]{8}$")
-MEDIA_FILTERS = {"all", "water", "electricity", "heat", "other"}
+MEDIA_FILTERS = {"all", "water", "warm_water", "electricity", "heat", "other"}
 
 
 # ---------------------------------------------------------------------------
@@ -214,26 +214,26 @@ def media_icon(media: str, driver: str = "") -> str:
         return "⚡"
     if mc == "heat":
         return "🔥"
+    if mc == "warm_water":
+        return "🟠💧"
     if mc == "water":
         return "💧"
     return "📡"
 
 
 def media_class(media: str, driver: str = "") -> str:
-    # Check type_line (wmbusmeters self-reported device type) FIRST.
-    # Important: "Warm Water (30°C-90°C) meter" is a water meter,
-    # not a heat meter. Do not classify by the word "warm" before "water".
-    # Driver name is a fallback only.
     media_lc = (media or "").lower()
     if media_lc and media_lc not in {"listen", "search-cache"}:
-        if ("water" in media_lc or "hydro" in media_lc or "cold" in media_lc or "hot water" in media_lc or "warm water" in media_lc) and "encrypted" not in media_lc:
+        if ("warm water" in media_lc or "hot water" in media_lc) and "encrypted" not in media_lc:
+            return "warm_water"
+        if ("water" in media_lc or "hydro" in media_lc or "cold" in media_lc) and "encrypted" not in media_lc:
             return "water"
         if "electric" in media_lc:
             return "electricity"
         if "heat" in media_lc or "warm" in media_lc:
             return "heat"
 
-    # Fallback: driver name heuristics. Keep water/hydro before heat/warm.
+    # Fallback: driver name heuristics
     driver_lc = (driver or "").lower()
     if "electric" in driver_lc or "amiplus" in driver_lc or "vario" in driver_lc:
         return "electricity"
@@ -817,6 +817,8 @@ def filter_by_media(rows: list[dict], media: str) -> list[dict]:
     media = media if media in MEDIA_FILTERS else "all"
     if media == "all":
         return rows
+    if media == "water":
+        return [r for r in rows if media_class(r.get("media", "") or r.get("type", ""), r.get("driver", "")) in ("water", "warm_water")]
     return [r for r in rows if media_class(r.get("media", "") or r.get("type", ""), r.get("driver", "")) == media]
 
 
@@ -925,8 +927,8 @@ def render_pending_panel(pending: list[dict], lang: str = DEFAULT_LANG) -> str:
 def render_pending_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
     mc = media_class(m.get("media", "") or m.get("type", ""), m.get("driver", ""))
     icon = media_icon(m.get("media", "") or m.get("type", ""), m.get("driver", ""))
-    icon_bg = {"electricity": "#1a2a3b", "heat": "#3b2010", "water": "#0f2a3b"}.get(mc, "#2a2a2a")
-    icon_color = {"electricity": "#60b4f0", "heat": "#f07840", "water": "#40c0e0"}.get(mc, "#888")
+    icon_bg = {"electricity": "#1a2a3b", "heat": "#3b2010", "water": "#0f2a3b", "warm_water": "#3b2010"}.get(mc, "#2a2a2a")
+    icon_color = {"electricity": "#60b4f0", "heat": "#f07840", "water": "#40c0e0", "warm_water": "#f09040"}.get(mc, "#888")
     return f'''
     <article class="meter-card" style="opacity:0.75;border-style:dashed;border-color:#f3c84b44;">
       <div class="meter-top">
@@ -1009,8 +1011,8 @@ def _signal_bars(seen_15m: int) -> str:
 def render_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
     icon = media_icon(m.get("media", ""), m.get("driver", ""))
     mc = media_class(m.get("media", ""), m.get("driver", ""))
-    icon_bg = {"electricity": "#1a2a3b", "heat": "#3b2010", "water": "#0f2a3b"}.get(mc, "#1a2a2a")
-    icon_color = {"electricity": "#60b4f0", "heat": "#f07840", "water": "#40c0e0"}.get(mc, "#888")
+    icon_bg = {"electricity": "#1a2a3b", "heat": "#3b2010", "water": "#0f2a3b", "warm_water": "#3b2010"}.get(mc, "#1a2a2a")
+    icon_color = {"electricity": "#60b4f0", "heat": "#f07840", "water": "#40c0e0", "warm_water": "#f09040"}.get(mc, "#888")
     seen_15m = int(m.get("seen_15m") or 0)
     signal = _signal_bars(seen_15m)
     meter_id = m.get("id") or ""
