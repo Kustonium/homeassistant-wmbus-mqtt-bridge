@@ -1,7 +1,7 @@
 version: 2
 
 updates:
-  # GitHub Actions: actions/checkout, docker/login-action, docker/setup-buildx-action itd.
+  # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -14,9 +14,22 @@ updates:
       prefix: "ci"
       include: "scope"
 
-  # Główny Dockerfile w katalogu głównym repo
+  # Dockerfile — stable addon
   - package-ecosystem: "docker"
-    directory: "/"
+    directory: "/wmbus_mqtt_bridge"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:15"
+      timezone: "Europe/Warsaw"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "docker"
+      include: "scope"
+
+  # Dockerfile — dev addon
+  - package-ecosystem: "docker"
+    directory: "/wmbus_mqtt_bridge_dev"
     schedule:
       interval: "weekly"
       day: "monday"
