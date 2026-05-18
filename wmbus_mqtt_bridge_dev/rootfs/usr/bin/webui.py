@@ -1094,8 +1094,20 @@ def render_candidates_table(candidates: list[dict], max_items: int | None = None
             add_inline = ''
             if enc_cls != 'bad':
                 mtype = (c.get('type') or '').strip()
-                # Suggest name: "Warm Water 4159" / "Cold Water 8221" / "Electricity 9907"
-                suggested_name = f"{mtype} {mid[-4:]}" if mtype else f"meter_{mid}"
+                mtype_lc = mtype.lower()
+                last4 = mid[-4:]
+                if 'warm water' in mtype_lc or 'hot water' in mtype_lc:
+                    suggested_name = f"Warm_Water_{last4}"
+                elif 'cold water' in mtype_lc:
+                    suggested_name = f"Cold_Water_{last4}"
+                elif 'water' in mtype_lc or 'hydro' in mtype_lc:
+                    suggested_name = f"Cold_Water_{last4}"
+                elif 'electric' in mtype_lc:
+                    suggested_name = f"Electricity_{last4}"
+                elif 'heat' in mtype_lc:
+                    suggested_name = f"Heat_{last4}"
+                else:
+                    suggested_name = f"meter_{mid}" if not mtype else f"{mtype[:12]}_{last4}"
                 popup_id = f"add-popup-{esc(mid)}"
                 add_inline = (
                     f'<span style="position:relative;display:inline-block;">'
