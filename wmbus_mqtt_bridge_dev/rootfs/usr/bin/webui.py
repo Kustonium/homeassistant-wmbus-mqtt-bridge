@@ -601,9 +601,20 @@ def state(include_ignored: bool = False) -> dict:
         c["ignored"] = "true" if c.get("id") in ignored else "false"
         c["analysis"] = analysis.get(c.get("id") or "", {})
 
-    # Remove candidates that are already in configured meters
+    # Remove candidates that are already in configured meters (decoded)
     configured_ids = {m.get("id") for m in meters if m.get("id")}
     candidates = [c for c in candidates if c.get("id") not in configured_ids]
+
+    # Also remove candidates that are pending (in options.json but not yet decoded)
+    # so the user doesn't see them twice (once in pending panel, once in candidate table)
+    options_cfg = (data.get("options") or {}) if isinstance(data.get("options"), dict) else {}
+    options_meter_ids = {
+        str(m.get("meter_id") or "").strip().lower()
+        for m in (options_cfg.get("meters") or [])
+        if isinstance(m, dict) and m.get("meter_id")
+    }
+    if options_meter_ids:
+        candidates = [c for c in candidates if str(c.get("id") or "").lower() not in options_meter_ids]
 
     if not include_ignored:
         candidates = [c for c in candidates if c.get("ignored") != "true"]
@@ -1157,7 +1168,7 @@ def page_discover(data: dict, params: dict[str, list[str]], lang: str = DEFAULT_
     if added_msg:
         banner = (
             f'<div class="notice good" style="margin-top:14px;">&#10003; {esc(added_msg)}'
-            f'<br><b>{esc(tr(lang, "restart_to_apply" if is_supervisor_mode() else "restart_to_apply_docker"))}</b></div>'
+            f'<br><span style="font-size:13px;">{esc(tr(lang, "add_more_before_restart"))}</span></div>'
         )
     elif error_msg:
         banner = f'<div class="notice warn" style="margin-top:14px;">&#9888; {esc(error_msg)}</div>'
