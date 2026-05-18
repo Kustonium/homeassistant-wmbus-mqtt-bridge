@@ -718,10 +718,21 @@ def nav(active: str, lang: str) -> str:
     return "".join(f'<a class="{("active" if key == active else "")}" href="{href}">{label}</a>' for href, label, key in items)
 
 
-def shell(active: str, body: str, updated_at: str, refresh: bool = True, lang: str = DEFAULT_LANG) -> str:
+def shell(active: str, body: str, updated_at: str, refresh: bool = True, lang: str = DEFAULT_LANG, localize_body: bool = True) -> str:
     lang = lang if lang in SUPPORTED_LANGS else DEFAULT_LANG
-    body = localize_html(body, lang)
-    refresh_meta = '<meta http-equiv="refresh" content="15">' if refresh else ""
+    if localize_body:
+        body = localize_html(body, lang)
+    # discover: smart refresh — reload only when tab is hidden, every 60s
+    # other pages: standard 15s meta refresh
+    if refresh and active == "discover":
+        refresh_meta = ""
+        smart_refresh_js = "<script>document.addEventListener('visibilitychange',function(){if(!document.hidden)return;if(!window._discoverTimer)window._discoverTimer=setTimeout(function(){location.reload()},60000);});document.addEventListener('visibilitychange',function(){if(document.hidden)return;clearTimeout(window._discoverTimer);window._discoverTimer=null;});</script>"
+    elif refresh:
+        refresh_meta = '<meta http-equiv="refresh" content="15">'
+        smart_refresh_js = ""
+    else:
+        refresh_meta = ""
+        smart_refresh_js = ""
     return f'''<!doctype html>
 <html lang="{esc(lang)}">
 <head>
@@ -785,6 +796,7 @@ def shell(active: str, body: str, updated_at: str, refresh: bool = True, lang: s
       window.location.href = url.toString();
     }}
   </script>
+  {smart_refresh_js}
 </body>
 </html>'''
 
@@ -1178,12 +1190,14 @@ def page_discover(data: dict, params: dict[str, list[str]], lang: str = DEFAULT_
         ignored = [c for c in full_data["candidates"] if c.get("ignored") == "true"]
         list_html = render_candidates_table(filter_by_media(ignored, media), show_restore=True, lang=lang)
         title = f'{esc(tr(lang, "ignored_candidates_label"))} ({len(ignored)})'
-        ignored_link = f'<a class="filter" href="discover">{esc(tr(lang, "active_filter"))}</a>'
+        ignored_link = f'<a class="filter" href="discover">{esc(tr(lang, "active_filter"))} ({model["candidate_count"]})</a>'
     else:
+        ignored_count = model["ignored_count"]
         candidates = filter_by_media(data["candidates"], media)
         list_html = render_candidates_table(candidates, lang=lang)
         title = f'{esc(tr(lang, "detected_candidates"))} — {len(candidates)} / {model["candidate_count"]}'
-        ignored_link = f'<a class="filter" href="discover?ignored=1">{esc(tr(lang, "ignored_filter"))}</a>'
+        ignored_label = f'{esc(tr(lang, "ignored_filter"))} ({ignored_count})' if ignored_count > 0 else esc(tr(lang, "ignored_filter"))
+        ignored_link = f'<a class="filter" href="discover?ignored=1">{ignored_label}</a>'
 
     body = f'''
     <h1>{esc(tr(lang, "discover_title"))}</h1>
@@ -1203,7 +1217,7 @@ def page_discover(data: dict, params: dict[str, list[str]], lang: str = DEFAULT_
       <div style="height:10px"></div>
       {list_html}
     </section>'''
-    return shell('discover', body, model['status'].get('updated_at', ''), lang=lang)
+    return shell('discover', body, model['status'].get('updated_at', ''), refresh=True, lang=lang)
 
 
 def _search_matches_cards(matches: list[dict], lang: str = DEFAULT_LANG) -> str:
