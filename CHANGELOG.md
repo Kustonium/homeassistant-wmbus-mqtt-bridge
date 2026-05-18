@@ -1,3 +1,30 @@
+## 1.5.1
+
+Documentation-only release. No runtime / code / configuration changes.
+
+### Changed
+- Merged the AI-development note and the per-language translation
+  disclaimer into a single, vendor-neutral notice (PL + EN) clarifying
+  that this project is AI-developed with human-in-the-loop testing and
+  maintenance by Kustonium, and that **all** user-facing text — PL/EN
+  included — is machine-generated and may contain errors.
+- Removed the "native speakers welcome / submit corrections" appeal
+  from the README and from every `docs/README.<lang>.md`.
+- Added an early-section paragraph in every README explaining that the
+  add-on is normally paired with the companion firmware
+  [`esphome-wmbus-bridge-rawonly`](https://github.com/Kustonium/esphome-wmbus-bridge-rawonly)
+  running on an ESP32 with **CC1101, SX1276 or SX1262**, while staying
+  independent of any specific source of raw wMBus hex on MQTT.
+
+### Fixed
+- Mermaid radio list in every `docs/README.<lang>.md` now lists the
+  actually supported chips (CC1101, SX1276, SX1262) instead of the
+  outdated "CC1101 or RFM69".
+- Trimmed the per-language `docs/README.<de,cs,sk>.md` headers to keep
+  the machine-translation disclaimer but drop the corrections call.
+
+---
+
 ## 1.5.0
 
 Marked as **experimental** — first release of the embedded WebUI. Tested on the
