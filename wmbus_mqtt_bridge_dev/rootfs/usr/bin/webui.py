@@ -607,10 +607,9 @@ def state(include_ignored: bool = False) -> dict:
 
     # Also remove candidates that are pending (in options.json but not yet decoded)
     # so the user doesn't see them twice (once in pending panel, once in candidate table)
-    options_cfg = (data.get("options") or {}) if isinstance(data.get("options"), dict) else {}
     options_meter_ids = {
         str(m.get("meter_id") or "").strip().lower()
-        for m in (options_cfg.get("meters") or [])
+        for m in (options.get("meters") or [])
         if isinstance(m, dict) and m.get("meter_id")
     }
     if options_meter_ids:
