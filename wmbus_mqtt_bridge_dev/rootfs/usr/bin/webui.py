@@ -439,6 +439,9 @@ def add_meter_to_options(meter_id: str, driver: str, key: str) -> tuple[bool, st
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 if resp.status in (200, 201):
+                    # Also write locally so the next add_meter call reads the updated list
+                    # (Supervisor may not have written options.json yet when user adds quickly)
+                    write_json_atomic(OPTIONS_JSON, options)
                     key_info = f"key={key[:4]}..." if key else "no key"
                     msg = f"Meter {meter_id} ({driver}) added via Supervisor API. {key_info}. Restart addon to apply."
                     webui_add_event("ok", msg)
@@ -844,22 +847,17 @@ def render_restart_block(lang: str, button_label_key: str = "restart_addon", ext
 
 
 def pending_meters(data: dict) -> list[dict]:
-    """Meters saved in options.json but not yet decoded by wmbusmeters.
-
-    Decoded meters land in status_meters.tsv (bridge.sh writes there after
-    wmbusmeters parses a telegram). A meter in options.json with no matching
-    entry in status_meters.tsv is either freshly added (waiting for restart)
-    or restarted-but-no-telegram-yet. Either way, it's worth showing so the
-    user gets visible confirmation that the add landed.
-    """
-    options = data.get("options", {}) if isinstance(data.get("options"), dict) else {}
+    """Meters saved in options.json but not yet decoded by wmbusmeters."""
+    # Read directly from OPTIONS_JSON for freshness — state() may have cached stale data
+    options = read_json(OPTIONS_JSON)
+    if not isinstance(options, dict):
+        options = {}
     configured = options.get("meters", []) if isinstance(options.get("meters"), list) else []
     decoded_ids = set()
     for m in data.get("meters", []):
         mid = str(m.get("id") or "").lower()
         if mid:
             decoded_ids.add(mid)
-            # also store the bare 8-digit ID (strip "meter_" prefix if present)
             bare = mid[6:] if mid.startswith("meter_") else mid
             decoded_ids.add(bare)
     out: list[dict] = []
@@ -876,8 +874,6 @@ def pending_meters(data: dict) -> list[dict]:
             "has_key": bool((entry.get("key") or "").strip()),
         })
     return out
-
-
 def render_pending_panel(pending: list[dict], lang: str = DEFAULT_LANG) -> str:
     if not pending:
         return ''
