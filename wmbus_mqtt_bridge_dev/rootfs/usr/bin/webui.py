@@ -187,6 +187,28 @@ def safe_int(value: object) -> int:
         return 0
 
 
+def fmt_ts(iso: str) -> str:
+    """Convert ISO timestamp to human-readable: 18.05.2026 10:32:19"""
+    if not iso:
+        return ''
+    try:
+        # Handle both Z and +HH:MM timezone
+        s = str(iso).replace('Z', '+00:00')
+        # Split off timezone
+        if '+' in s[10:]:
+            s = s[:s.rindex('+')]
+        elif s.count('-') > 2:
+            s = s[:s.rindex('-')]
+        s = s.strip().replace('T', ' ')[:19]
+        if len(s) >= 19:
+            date, time = s[:10], s[11:19]
+            y, m, d = date.split('-')
+            return f'{d}.{m}.{y} {time}'
+        return iso
+    except Exception:
+        return str(iso)
+
+
 def fmt_interval(seconds: object) -> str:
     sec = safe_int(seconds)
     if sec <= 0:
@@ -215,7 +237,7 @@ def media_icon(media: str, driver: str = "") -> str:
     if mc == "heat":
         return "🔥"
     if mc == "warm_water":
-        return "🟠💧"
+        return "💧"
     if mc == "water":
         return "💧"
     return "📡"
@@ -414,10 +436,11 @@ def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str =
             return False, f"Meter {meter_id} already exists in options."
 
     # Build entry id: use provided name (sanitized) or fall back to meter_XXXXXXXX
-    import re as _re
+    import re as _re, unicodedata as _ud
     if meter_name:
-        safe_name = _re.sub(r'[^a-zA-Z0-9_\-]', '_', meter_name.strip()).strip('_')
-        safe_name = _re.sub(r'_+', '_', safe_name)
+        # Keep Unicode letters and numbers, replace everything else with _
+        safe_name = _re.sub(r'[^\w\-]', '_', meter_name.strip())
+        safe_name = _re.sub(r'_+', '_', safe_name).strip('_')
         entry_id = safe_name if safe_name else f"meter_{meter_id}"
     else:
         entry_id = f"meter_{meter_id}"
@@ -1018,7 +1041,7 @@ def render_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
     meter_id = m.get("id") or ""
     confirm_msg = tr(lang, "confirm_delete").format(mid=meter_id)
     return f'''
-    <article class="meter-card"><div class="meter-top"><div class="micon" style="background:{icon_bg};color:{icon_color};">{icon}</div><div><div class="mname">{esc(m.get('name') or m.get('id'))}</div><div class="mid">{esc(m.get('id'))}<br>{esc(m.get('driver'))}</div></div><div class="online">{esc(tr(lang, "online_label"))} {signal}<br><span class="mid">{esc(m.get('last_seen') or '')}</span></div></div>
+    <article class="meter-card"><div class="meter-top"><div class="micon" style="background:{icon_bg};color:{icon_color};">{icon}</div><div><div class="mname">{esc(m.get('name') or m.get('id'))}</div><div class="mid">{esc(m.get('id'))}<br>{esc(m.get('driver'))}</div></div><div class="online">{esc(tr(lang, "online_label"))} {signal}<br><span class="mid">{fmt_ts(m.get('last_seen') or '')}</span></div></div>
       <div><div class="value-key">{esc(m.get('value_key') or tr(lang, "value_label"))}</div><div class="value-main">{esc(m.get('value') or '—')}</div></div>
       <div><div class="meter-meta"><span>{esc(tr(lang, "media"))}<strong>{esc(m.get('media') or tr(lang, "unknown_label"))}</strong></span><span>{esc(tr(lang, "reception"))}<strong>{esc(fmt_interval(m.get('avg_interval_s')))}</strong></span><span>{esc(tr(lang, "seen_15m_label"))}<strong>{esc(m.get('seen_15m') or '0')}</strong></span><span>{esc(tr(lang, "seen_60m_label"))}<strong>{esc(m.get('seen_60m') or '0')}</strong></span></div>
       <div class="entity-row"><span class="published">{esc(m.get('discovery') or tr(lang, "state_label"))}</span>
@@ -1146,7 +1169,7 @@ def render_candidates_table(candidates: list[dict], max_items: int | None = None
             f'''<td>{esc(driver)}</td><td>{esc(media_icon(c.get('type',''), driver))} {esc(mclass)}</td>'''
             f'''<td><span class="pill {esc(enc_cls)}">{esc(enc)}</span><span class="muted">{esc(enc_note)}</span></td>'''
             f'''<td>{esc(c.get('seen_count') or '0')}<span class="muted">{esc(reception_line(c))}</span></td>'''
-            f'''<td>{esc(c.get('last_seen') or '')}</td><td>{actions}</td></tr>'''
+            f'''<td>{fmt_ts(c.get('last_seen') or '')}</td><td>{actions}</td></tr>'''
         )
     return (
         f'<div class="table-wrap"><table class="table"><thead><tr>'
@@ -1154,6 +1177,66 @@ def render_candidates_table(candidates: list[dict], max_items: int | None = None
         f'<th>{esc(tr(lang, "encryption_aes"))}</th><th>{esc(tr(lang, "reception"))}</th>'
         f'<th>{esc(tr(lang, "last_telegram"))}</th><th>{esc(tr(lang, "action"))}</th>'
         f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+    )
+
+
+def render_waiting_panel(data: dict, lang: str = DEFAULT_LANG) -> str:
+    """Show info banner after restart: meters loaded, waiting for first telegrams."""
+    try:
+        options_mtime = OPTIONS_JSON.stat().st_mtime
+        status_mtime  = STATUS_JSON.stat().st_mtime
+        if status_mtime <= options_mtime:
+            return ""  # pending panel handles this case
+    except OSError:
+        return ""
+
+    options = read_json(OPTIONS_JSON)
+    if not isinstance(options, dict):
+        return ""
+    configured = [m for m in (options.get("meters") or []) if isinstance(m, dict) and m.get("meter_id")]
+    if not configured:
+        return ""
+
+    decoded_ids = set()
+    for m in data.get("meters", []):
+        mid = str(m.get("id") or "").lower()
+        if mid:
+            decoded_ids.add(mid)
+            bare = mid[6:] if mid.startswith("meter_") else mid
+            decoded_ids.add(bare)
+
+    waiting = [m for m in configured if str(m.get("meter_id") or "").lower() not in decoded_ids]
+    if not waiting:
+        return ""
+
+    rows = []
+    for m in waiting:
+        mid = esc(m.get("meter_id", ""))
+        name = esc(m.get("id") or mid)
+        driver = esc(m.get("type") or "auto")
+        rows.append(
+            f'<div style="display:grid;grid-template-columns:130px 100px 1fr;gap:8px;'
+            f'padding:5px 0;border-bottom:0.5px solid #1e3040;font-size:12px;">'
+            f'<strong style="font-family:monospace;">{mid}</strong>'
+            f'<span style="color:#95adbd;">{name}</span>'
+            f'<span style="color:#95adbd;">{driver}</span>'
+            f'</div>'
+        )
+
+    return (
+        f'<div class="notice" style="margin-top:14px;background:#0d1f2d;border-color:#1e3a50;">'
+        f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">'
+        f'<span style="font-size:16px;">&#x23F3;</span>'
+        f'<strong>{esc(tr(lang, "waiting_for_telegrams_title"))} ({len(waiting)})</strong>'
+        f'</div>'
+        f'<div style="color:#95adbd;font-size:12px;margin-bottom:10px;">'
+        f'{esc(tr(lang, "waiting_for_telegrams_text"))}'
+        f'</div>'
+        f'{"".join(rows)}'
+        f'<div style="margin-top:8px;color:#6a8a9a;font-size:11px;">'
+        f'{esc(tr(lang, "waiting_for_telegrams_hint"))}'
+        f'</div>'
+        f'</div>'
     )
 
 
@@ -1198,6 +1281,7 @@ def page_dashboard(data: dict, params: dict[str, list[str]], lang: str = DEFAULT
       <h1>{esc(tr(lang, "dashboard_title"))}</h1><div class="sub">{esc(tr(lang, "dashboard_sub"))}</div>
       <section class="grid3">{render_system_status(model)}{render_stats(model)}{render_discovery(model)}</section>
       {render_pending_panel(pending, lang)}
+      {render_waiting_panel(data, lang)}
       <section class="card" style="margin-top:14px;"><div class="section-head"><h2>{esc(tr(lang, "configured_meters"))}</h2>{render_filter_links('.', media, lang)}</div>{render_configured_meters(meters, max_items=6, lang=lang, pending=pending)}</section>
       <section class="card" style="margin-top:14px;"><div class="section-head"><h2>{esc(tr(lang, "detected_candidates"))}</h2></div>{render_candidate_summary(data['candidates'], lang)}</section>
       <div class="footer"><span>wMBus MQTT Bridge</span><span>{esc(tr(lang, "footer_subtitle"))}</span><span>{esc(tr(lang, "footer_caption"))}</span></div>'''
@@ -1213,6 +1297,7 @@ def page_meters(data: dict, params: dict[str, list[str]], lang: str = DEFAULT_LA
     body = (
         f'<h1>{esc(tr(lang, "meters_title"))}</h1><div class="sub">{esc(tr(lang, "meters_sub"))}</div>'
         f'{render_pending_panel(pending, lang)}'
+        f'{render_waiting_panel(data, lang)}'
         f'<section class="card" style="margin-top:18px;"><div class="section-head">'
         f'<h2>{esc(tr(lang, "configured_meters"))} ({len(meters)} / {model["meter_count"]})</h2>'
         f'{render_filter_links("meters", media, lang)}</div>'
@@ -1537,7 +1622,7 @@ def page_candidate(data: dict, params: dict[str, list[str]], lang: str = DEFAULT
       <span>{esc(tr(lang, "driver"))}</span><span>{esc(driver)}</span>
       <span>{esc(tr(lang, "media"))}</span><span>{esc(media_icon(candidate.get('type',''), driver))} {esc(media_class(candidate.get('type',''), driver))}</span>
       <span>{esc(tr(lang, "encryption_label"))}</span><span class="pill {esc(enc_cls)}">{esc(enc)}</span>
-      <span>{esc(tr(lang, "last_seen_label"))}</span><span>{esc(candidate.get('last_seen'))}</span>
+      <span>{esc(tr(lang, "last_seen_label"))}</span><span>{fmt_ts(candidate.get('last_seen') or '')}</span>
       <span>{esc(tr(lang, "reception"))}</span><span>{esc(reception_line(candidate))}</span>
     </div>
     <div class="notice {'warn' if aes_required else ''}" style="margin-top:14px;">

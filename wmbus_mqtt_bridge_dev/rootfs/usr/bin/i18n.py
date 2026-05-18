@@ -237,6 +237,9 @@ I18N: dict[str, dict[str, str]] = {
         "meter_name_label": "Meter name",
         "save_label": "Save",
         "cancel_label": "Cancel",
+        "waiting_for_telegrams_title": "Waiting for first telegram",
+        "waiting_for_telegrams_text": "These meters are configured and loaded by wmbusmeters. They will appear in the meter list after receiving and decoding the first telegram. Transmission intervals vary — typically 30 to 300 seconds.",
+        "waiting_for_telegrams_hint": "This notice disappears automatically when all meters have been decoded at least once.",
     },
     "pl": {
         "nav_dashboard": "PANEL",
@@ -457,6 +460,9 @@ I18N: dict[str, dict[str, str]] = {
         "meter_name_label": "Nazwa licznika",
         "save_label": "Zapisz",
         "cancel_label": "Anuluj",
+        "waiting_for_telegrams_title": "Oczekiwanie na pierwszy telegram",
+        "waiting_for_telegrams_text": "Te liczniki są skonfigurowane i załadowane przez wmbusmeters. Pojawią się na liście po odebraniu i zdekodowaniu pierwszego telegramu. Interwały transmisji są różne — typowo 30 do 300 sekund.",
+        "waiting_for_telegrams_hint": "Ten komunikat zniknie automatycznie gdy wszystkie liczniki zostaną zdekodowane przynajmniej raz.",
     },
     "de": {
         "nav_dashboard": "DASHBOARD",
@@ -677,6 +683,9 @@ I18N: dict[str, dict[str, str]] = {
         "meter_name_label": "Zählername",
         "save_label": "Speichern",
         "cancel_label": "Abbrechen",
+        "waiting_for_telegrams_title": "Warte auf erstes Telegramm",
+        "waiting_for_telegrams_text": "Diese Zähler sind konfiguriert und von wmbusmeters geladen. Sie erscheinen in der Zählerliste nach dem Empfang und Dekodierung des ersten Telegramms. Übertragungsintervalle variieren — typisch 30 bis 300 Sekunden.",
+        "waiting_for_telegrams_hint": "Diese Meldung verschwindet automatisch, wenn alle Zähler mindestens einmal dekodiert wurden.",
     },
     "cs": {
         "nav_dashboard": "PANEL",
@@ -897,6 +906,9 @@ I18N: dict[str, dict[str, str]] = {
         "meter_name_label": "Název měřiče",
         "save_label": "Uložit",
         "cancel_label": "Zrušit",
+        "waiting_for_telegrams_title": "Čekání na první telegram",
+        "waiting_for_telegrams_text": "Tyto měřiče jsou nakonfigurovány a načteny wmbusmeters. Zobrazí se v seznamu po přijetí a dekódování prvního telegramu. Intervaly přenosu se liší — typicky 30 až 300 sekund.",
+        "waiting_for_telegrams_hint": "Toto oznámení zmizí automaticky, jakmile budou všechny měřiče alespoň jednou dekódovány.",
     },
     "sk": {
         "nav_dashboard": "PANEL",
@@ -1117,6 +1129,9 @@ I18N: dict[str, dict[str, str]] = {
         "meter_name_label": "Názov merača",
         "save_label": "Uložiť",
         "cancel_label": "Zrušiť",
+        "waiting_for_telegrams_title": "Čakanie na prvý telegram",
+        "waiting_for_telegrams_text": "Tieto merače sú nakonfigurované a načítané wmbusmeters. Objavia sa v zozname po prijatí a dekódovaní prvého telegramu. Intervaly prenosu sa líšia — typicky 30 až 300 sekúnd.",
+        "waiting_for_telegrams_hint": "Táto správa zmizí automaticky, keď všetky merače budU dekódované aspoň raz.",
     },
 }
 
