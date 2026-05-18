@@ -15,6 +15,7 @@ import html
 import json
 import os
 import re
+import unicodedata
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -413,14 +414,10 @@ def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str =
         if isinstance(m, dict) and m.get("meter_id") == meter_id:
             return False, f"Meter {meter_id} already exists in options."
 
-    # Build entry id: use provided name (sanitized) or fall back to meter_XXXXXXXX
-    import re as _re
-    if meter_name:
-        safe_name = _re.sub(r'[^a-zA-Z0-9_\-]', '_', meter_name.strip()).strip('_')
-        safe_name = _re.sub(r'_+', '_', safe_name)
-        entry_id = safe_name if safe_name else f"meter_{meter_id}"
-    else:
-        entry_id = f"meter_{meter_id}"
+    # Build entry id: use provided name (sanitized) or fall back to meter_XXXXXXXX.
+    # Polish/Czech/Slovak characters are transliterated instead of breaking the form
+    # or producing unreadable underscores.
+    entry_id = sanitize_meter_entry_id(meter_name, f"meter_{meter_id}")
 
     entry = {
         "id": entry_id,
@@ -563,6 +560,46 @@ def parse_iso_time(value: str) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except Exception:
         return None
+
+
+def fmt_datetime(value: object) -> str:
+    """Render ISO timestamps in a readable local form for the UI.
+
+    Backend/runtime files should keep machine-friendly ISO timestamps.  The web UI
+    should not show raw ISO strings like 2026-05-18T12:34:56+02:00.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return "—"
+    dt = parse_iso_time(raw)
+    if not dt:
+        return raw
+    if dt.tzinfo is not None:
+        dt = dt.astimezone()
+    now = datetime.now(dt.tzinfo or timezone.utc)
+    if dt.date() == now.date():
+        return dt.strftime("%H:%M:%S")
+    if dt.year == now.year:
+        return dt.strftime("%d.%m %H:%M:%S")
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def sanitize_meter_entry_id(value: str, fallback: str) -> str:
+    """Create a safe meter id without crashing on Polish/Czech/Slovak names."""
+    text = (value or "").strip()
+    if not text:
+        return fallback
+    text = text.translate(str.maketrans({
+        "ą": "a", "ć": "c", "ę": "e", "ł": "l", "ń": "n", "ó": "o", "ś": "s", "ź": "z", "ż": "z",
+        "Ą": "A", "Ć": "C", "Ę": "E", "Ł": "L", "Ń": "N", "Ó": "O", "Ś": "S", "Ź": "Z", "Ż": "Z",
+        "á": "a", "č": "c", "ď": "d", "é": "e", "ě": "e", "í": "i", "ľ": "l", "ĺ": "l", "ň": "n", "ř": "r", "š": "s", "ť": "t", "ú": "u", "ů": "u", "ý": "y", "ž": "z",
+        "Á": "A", "Č": "C", "Ď": "D", "É": "E", "Ě": "E", "Í": "I", "Ľ": "L", "Ĺ": "L", "Ň": "N", "Ř": "R", "Š": "S", "Ť": "T", "Ú": "U", "Ů": "U", "Ý": "Y", "Ž": "Z",
+        "ä": "a", "ö": "o", "ü": "u", "ß": "ss", "Ä": "A", "Ö": "O", "Ü": "U",
+    }))
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[^a-zA-Z0-9_-]", "_", text).strip("_")
+    text = re.sub(r"_+", "_", text)
+    return text or fallback
 
 
 def discover_stability(candidates: list[dict]) -> tuple[str, str]:
@@ -790,7 +827,7 @@ def shell(active: str, body: str, updated_at: str, refresh: bool = True, lang: s
 </head>
 <body>
   <div class="app">
-    <div class="main"><div class="topbar"><div class="top-left"><span>wMBus MQTT Bridge</span></div><nav class="tabs">{nav(active, lang)}</nav>{lang_switcher(lang)}<div class="kebab">⋮</div></div><main><div class="updated">{esc(tr(lang, "updated_label"))} {esc(updated_at or tr(lang, "unknown_value"))}</div>{body}</main></div>
+    <div class="main"><div class="topbar"><div class="top-left"><span>wMBus MQTT Bridge</span></div><nav class="tabs">{nav(active, lang)}</nav>{lang_switcher(lang)}<div class="kebab">⋮</div></div><main><div class="updated">{esc(tr(lang, "updated_label"))} {esc(fmt_datetime(updated_at) if updated_at else tr(lang, "unknown_value"))}</div>{body}</main></div>
   </div>
   <div id="toast" class="toast">{esc(tr(lang, "copied_toast"))}</div>
   <script>
@@ -997,15 +1034,13 @@ def render_discovery(model: dict) -> str:
 
 
 def _signal_bars(seen_15m: int) -> str:
-    """Return 4 signal strength bars based on seen_15m count."""
-    n = 4 if seen_15m >= 10 else 3 if seen_15m >= 5 else 2 if seen_15m >= 2 else 1
-    ok = "#4df08d"
-    off = "#2a3a3a"
-    bars = "".join(
-        f'<span style="display:inline-block;width:4px;height:{4+i*3}px;background:{"'+ ok +'" if i < n else "'+ off +'"};border-radius:1px;vertical-align:bottom;margin-right:1px;"></span>'
-        for i in range(4)
+    """Small neutral reception marker for meter cards."""
+    title = f"{seen_15m} telegrams in last 15 min"
+    return (
+        f'<span title="{esc(title)}" '
+        f'style="display:inline-block;width:8px;height:8px;border-radius:50%;'
+        f'background:#24d26f;margin-left:4px;vertical-align:middle;"></span>'
     )
-    return f'<span style="display:inline-flex;align-items:flex-end;height:16px;gap:1px;">{bars}</span>'
 
 
 def render_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
@@ -1018,7 +1053,7 @@ def render_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
     meter_id = m.get("id") or ""
     confirm_msg = tr(lang, "confirm_delete").format(mid=meter_id)
     return f'''
-    <article class="meter-card"><div class="meter-top"><div class="micon" style="background:{icon_bg};color:{icon_color};">{icon}</div><div><div class="mname">{esc(m.get('name') or m.get('id'))}</div><div class="mid">{esc(m.get('id'))}<br>{esc(m.get('driver'))}</div></div><div class="online">{esc(tr(lang, "online_label"))} {signal}<br><span class="mid">{esc(m.get('last_seen') or '')}</span></div></div>
+    <article class="meter-card"><div class="meter-top"><div class="micon" style="background:{icon_bg};color:{icon_color};">{icon}</div><div><div class="mname">{esc(m.get('name') or m.get('id'))}</div><div class="mid">{esc(m.get('id'))}<br>{esc(m.get('driver'))}</div></div><div class="online">{esc(tr(lang, "online_label"))} {signal}<br><span class="mid">{esc(fmt_datetime(m.get('last_seen')))}</span></div></div>
       <div><div class="value-key">{esc(m.get('value_key') or tr(lang, "value_label"))}</div><div class="value-main">{esc(m.get('value') or '—')}</div></div>
       <div><div class="meter-meta"><span>{esc(tr(lang, "media"))}<strong>{esc(m.get('media') or tr(lang, "unknown_label"))}</strong></span><span>{esc(tr(lang, "reception"))}<strong>{esc(fmt_interval(m.get('avg_interval_s')))}</strong></span><span>{esc(tr(lang, "seen_15m_label"))}<strong>{esc(m.get('seen_15m') or '0')}</strong></span><span>{esc(tr(lang, "seen_60m_label"))}<strong>{esc(m.get('seen_60m') or '0')}</strong></span></div>
       <div class="entity-row"><span class="published">{esc(m.get('discovery') or tr(lang, "state_label"))}</span>
@@ -1061,7 +1096,7 @@ def render_search_matches(rows: list[dict], lang: str = DEFAULT_LANG) -> str:
     body = []
     for row in rows:
         body.append(
-            f"<tr><td>{esc(row.get('time'))}</td><td><strong>{esc(row.get('id'))}</strong></td><td>{esc(row.get('driver'))}</td>"
+            f"<tr><td>{esc(fmt_datetime(row.get('time')))}</td><td><strong>{esc(row.get('id'))}</strong></td><td>{esc(row.get('driver'))}</td>"
             f"<td>{esc(row.get('field'))}</td><td>{esc(row.get('value_m3'))}</td><td>{esc(row.get('expected_m3'))}</td>"
             f"<td>{esc(row.get('diff_m3'))}</td><td>{esc(row.get('tolerance_m3'))}</td></tr>"
         )
@@ -1146,7 +1181,7 @@ def render_candidates_table(candidates: list[dict], max_items: int | None = None
             f'''<td>{esc(driver)}</td><td>{esc(media_icon(c.get('type',''), driver))} {esc(mclass)}</td>'''
             f'''<td><span class="pill {esc(enc_cls)}">{esc(enc)}</span><span class="muted">{esc(enc_note)}</span></td>'''
             f'''<td>{esc(c.get('seen_count') or '0')}<span class="muted">{esc(reception_line(c))}</span></td>'''
-            f'''<td>{esc(c.get('last_seen') or '')}</td><td>{actions}</td></tr>'''
+            f'''<td>{esc(fmt_datetime(c.get('last_seen')))}</td><td>{actions}</td></tr>'''
         )
     return (
         f'<div class="table-wrap"><table class="table"><thead><tr>'
@@ -1184,7 +1219,7 @@ def render_events(events: list[dict], max_items: int | None = None, lang: str = 
     rows = []
     for e in shown:
         css, label, message = event_level_for_ui(e)
-        rows.append(f'<div class="event-row"><span>{esc(e.get("time"))}</span><strong class="{esc(css)}">{esc(label)}</strong><em>{esc(message)}</em></div>')
+        rows.append(f'<div class="event-row"><span>{esc(fmt_datetime(e.get("time")))}</span><strong class="{esc(css)}">{esc(label)}</strong><em>{esc(message)}</em></div>')
     return ''.join(rows)
 
 
@@ -1289,7 +1324,7 @@ def _search_matches_cards(matches: list[dict], lang: str = DEFAULT_LANG) -> str:
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
             <div>
               <div style="font-size:22px;font-weight:900;color:#4df08d;">{esc(mid)}<span style="font-size:13px;font-weight:400;color:#9ed8b4;margin-left:8px;">{esc(driver)} · {esc(m.get("media") or "")}</span></div>
-              <div style="margin-top:6px;font-size:13px;color:#cfe8d8;">{esc(tr(lang, "value_label"))}: <b>{esc(m.get("value_m3"))} m³</b> · {esc(tr(lang, "expected_short").lower())}: {esc(m.get("expected_m3"))} m³ · {esc(tr(lang, "diff_label").lower())}: {esc(m.get("diff_m3"))} m³ · {esc(m.get("time"))}</div>
+              <div style="margin-top:6px;font-size:13px;color:#cfe8d8;">{esc(tr(lang, "value_label"))}: <b>{esc(m.get("value_m3"))} m³</b> · {esc(tr(lang, "expected_short").lower())}: {esc(m.get("expected_m3"))} m³ · {esc(tr(lang, "diff_label").lower())}: {esc(m.get("diff_m3"))} m³ · {esc(fmt_datetime(m.get("time")))}</div>
               <div style="margin-top:8px;font-family:monospace;font-size:12px;color:#a8d8bc;background:#060f09;padding:7px 10px;border-radius:5px;">{esc(cfg_snippet)}</div>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
@@ -1381,7 +1416,7 @@ def page_search(data: dict, params: dict[str, list[str]], lang: str = DEFAULT_LA
         f'<span>{esc(tr(lang, "last_checked_kv"))}</span>'
         f'<span>{esc(last_checked.get("id") or "")} / {esc(last_checked.get("field") or "")}={esc(last_checked.get("value") or "")}, diff={esc(last_checked.get("diff_m3") or "")}</span>'
         f'<span>{esc(tr(lang, "last_reason_kv"))}</span><span>{esc(last_reason)}</span>'
-        f'<span>{esc(tr(lang, "status_updated_kv"))}</span><span>{esc(updated)}</span>'
+        f'<span>{esc(tr(lang, "status_updated_kv"))}</span><span>{esc(fmt_datetime(updated))}</span>'
         f'</div></section>'
     )
     events_section = (
@@ -1537,7 +1572,7 @@ def page_candidate(data: dict, params: dict[str, list[str]], lang: str = DEFAULT
       <span>{esc(tr(lang, "driver"))}</span><span>{esc(driver)}</span>
       <span>{esc(tr(lang, "media"))}</span><span>{esc(media_icon(candidate.get('type',''), driver))} {esc(media_class(candidate.get('type',''), driver))}</span>
       <span>{esc(tr(lang, "encryption_label"))}</span><span class="pill {esc(enc_cls)}">{esc(enc)}</span>
-      <span>{esc(tr(lang, "last_seen_label"))}</span><span>{esc(candidate.get('last_seen'))}</span>
+      <span>{esc(tr(lang, "last_seen_label"))}</span><span>{esc(fmt_datetime(candidate.get('last_seen')))}</span>
       <span>{esc(tr(lang, "reception"))}</span><span>{esc(reception_line(candidate))}</span>
     </div>
     <div class="notice {'warn' if aes_required else ''}" style="margin-top:14px;">
