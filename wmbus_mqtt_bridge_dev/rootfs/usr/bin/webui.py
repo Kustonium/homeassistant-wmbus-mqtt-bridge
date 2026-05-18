@@ -822,7 +822,7 @@ def shell(active: str, body: str, updated_at: str, refresh: bool = True, lang: s
 </head>
 <body>
   <div class="app">
-    <div class="main"><div class="topbar"><div class="top-left"><span>wMBus MQTT Bridge</span></div><nav class="tabs">{nav(active, lang)}</nav>{lang_switcher(lang)}<div class="kebab">⋮</div></div><main><div class="updated">{esc(tr(lang, "updated_label"))} {esc(updated_at or tr(lang, "unknown_value"))}</div>{body}</main></div>
+    <div class="main"><div class="topbar"><div class="top-left"><span>wMBus MQTT Bridge</span></div><nav class="tabs">{nav(active, lang)}</nav>{lang_switcher(lang)}<div class="kebab">⋮</div></div><main><div class="updated">{esc(tr(lang, "updated_label"))} {esc(fmt_ts(updated_at) if updated_at else tr(lang, "unknown_value"))}</div>{body}</main></div>
   </div>
   <div id="toast" class="toast">{esc(tr(lang, "copied_toast"))}</div>
   <script>
@@ -1000,7 +1000,7 @@ def render_system_status(model: dict) -> str:
       <div class="status-row">{status_dot(model['decoded_ok'], warn=candidate_count > 0)}<span>Decoded JSON received</span><span class="right">{model['decoded_count']}</span></div>
       <div class="status-row">{status_dot(meter_count > 0, warn=candidate_count > 0)}<span>Configured meters</span><span class="right">{meter_count}</span></div>
       <div class="status-row">{status_dot(model['discovery_ok'], warn=candidate_count > 0)}<span>HA Discovery published</span><span class="right">{'yes' if model['discovery_ok'] else 'not yet'}</span></div>
-    </div><div class="last-line"><span>Last RAW telegram</span><span>{esc(pipe.get('last_raw_seen') or 'not seen this session')} <span class="pill raw">RAW</span></span></div></section>'''
+    </div><div class="last-line"><span>Last RAW telegram</span><span>{esc(fmt_ts(pipe.get('last_raw_seen') or '') or 'not seen this session')} <span class="pill raw">RAW</span></span></div></section>'''
 
 
 def render_stats(model: dict) -> str:
@@ -1475,7 +1475,7 @@ def page_search(data: dict, params: dict[str, list[str]], lang: str = DEFAULT_LA
         f'<span>{esc(tr(lang, "last_checked_kv"))}</span>'
         f'<span>{esc(last_checked.get("id") or "")} / {esc(last_checked.get("field") or "")}={esc(last_checked.get("value") or "")}, diff={esc(last_checked.get("diff_m3") or "")}</span>'
         f'<span>{esc(tr(lang, "last_reason_kv"))}</span><span>{esc(last_reason)}</span>'
-        f'<span>{esc(tr(lang, "status_updated_kv"))}</span><span>{esc(updated)}</span>'
+        f'<span>{esc(tr(lang, "status_updated_kv"))}</span><span>{esc(fmt_ts(updated))}</span>'
         f'</div></section>'
     )
     events_section = (
