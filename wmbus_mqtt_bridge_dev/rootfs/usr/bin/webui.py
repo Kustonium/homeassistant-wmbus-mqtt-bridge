@@ -230,17 +230,27 @@ def reception_line(row: dict) -> str:
     )
 
 
-def media_icon(media: str, driver: str = "") -> str:
+def media_icon(media: str, driver: str = "", html: bool = False) -> str:
     mc = media_class(media, driver)
     if mc == "electricity":
         return "⚡"
     if mc == "heat":
         return "🔥"
     if mc == "warm_water":
-        return "💧"
+        # Orange droplet via HTML — emoji 💧 is always blue
+        return '<span style="color:#f07840;font-size:1em;">💧</span>'
     if mc == "water":
         return "💧"
     return "📡"
+
+
+
+def tr_media(lang: str, mc: str) -> str:
+    """Translate media class name to localized string."""
+    from i18n import I18N, DEFAULT_LANG
+    lang = lang if lang in I18N else DEFAULT_LANG
+    key = f"media_{mc}"
+    return I18N[lang].get(key) or I18N["en"].get(key) or mc
 
 
 def media_class(media: str, driver: str = "") -> str:
@@ -1043,7 +1053,7 @@ def render_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
     return f'''
     <article class="meter-card"><div class="meter-top"><div class="micon" style="background:{icon_bg};color:{icon_color};">{icon}</div><div><div class="mname">{esc(m.get('name') or m.get('id'))}</div><div class="mid">{esc(m.get('id'))}<br>{esc(m.get('driver'))}</div></div><div class="online">{esc(tr(lang, "online_label"))} {signal}<br><span class="mid">{fmt_ts(m.get('last_seen') or '')}</span></div></div>
       <div><div class="value-key">{esc(m.get('value_key') or tr(lang, "value_label"))}</div><div class="value-main">{esc(m.get('value') or '—')}</div></div>
-      <div><div class="meter-meta"><span>{esc(tr(lang, "media"))}<strong>{esc(m.get('media') or tr(lang, "unknown_label"))}</strong></span><span>{esc(tr(lang, "reception"))}<strong>{esc(fmt_interval(m.get('avg_interval_s')))}</strong></span><span>{esc(tr(lang, "seen_15m_label"))}<strong>{esc(m.get('seen_15m') or '0')}</strong></span><span>{esc(tr(lang, "seen_60m_label"))}<strong>{esc(m.get('seen_60m') or '0')}</strong></span></div>
+      <div><div class="meter-meta"><span>{esc(tr(lang, "media"))}<strong>{esc(tr_media(lang, media_class(m.get('media',''), m.get('driver',''))))}</strong></span><span>{esc(tr(lang, "reception"))}<strong>{esc(fmt_interval(m.get('avg_interval_s')))}</strong></span><span>{esc(tr(lang, "seen_15m_label"))}<strong>{esc(m.get('seen_15m') or '0')}</strong></span><span>{esc(tr(lang, "seen_60m_label"))}<strong>{esc(m.get('seen_60m') or '0')}</strong></span></div>
       <div class="entity-row"><span class="published">{esc(m.get('discovery') or tr(lang, "state_label"))}</span>
         <form method="post" action="remove-meter" style="margin:0;" onsubmit="return confirm({json.dumps(confirm_msg)});">
           <input type="hidden" name="meter_id" value="{esc(meter_id)}">
@@ -1072,7 +1082,7 @@ def render_search_cache_table(rows: list[dict], max_items: int | None = None, la
         media  = row.get("media") or ""
         body.append(
             f"<tr><td><strong>{esc(row.get('id'))}</strong><span class='muted'>from /data/search_candidates.tsv</span></td>"
-            f"<td>{esc(driver)}</td><td>{esc(media_icon(media, driver))} {esc(media_class(media, driver))}</td>"
+            f"<td>{esc(driver)}</td><td>{media_icon(media, driver)} {esc(tr_media(lang, media_class(media, driver)))}</td>"
             f"<td><span class='pill ok'>{esc(tr(lang, 'used_by_search_label'))}</span><span class='muted'>{esc(tr(lang, 'loaded_as_temp_meter'))}</span></td></tr>"
         )
     return f"<div class='table-wrap'><table class='table'><thead><tr><th>{esc(tr(lang, 'meter_id'))}</th><th>{esc(tr(lang, 'driver'))}</th><th>{esc(tr(lang, 'media'))}</th><th>{esc(tr(lang, 'role_label'))}</th></tr></thead><tbody>{''.join(body)}</tbody></table></div>"
@@ -1166,7 +1176,7 @@ def render_candidates_table(candidates: list[dict], max_items: int | None = None
             )
         rows.append(
             f'''<tr><td><strong>{esc(mid)}</strong><span class="muted">{esc(c.get('type') or tr(lang, "listen_label"))}</span></td>'''
-            f'''<td>{esc(driver)}</td><td>{esc(media_icon(c.get('type',''), driver))} {esc(mclass)}</td>'''
+            f'''<td>{esc(driver)}</td><td>{media_icon(c.get('type',''), driver)} {esc(tr_media(lang, mclass))}</td>'''
             f'''<td><span class="pill {esc(enc_cls)}">{esc(enc)}</span><span class="muted">{esc(enc_note)}</span></td>'''
             f'''<td>{esc(c.get('seen_count') or '0')}<span class="muted">{esc(reception_line(c))}</span></td>'''
             f'''<td>{fmt_ts(c.get('last_seen') or '')}</td><td>{actions}</td></tr>'''
@@ -1255,7 +1265,7 @@ def render_candidate_summary(candidates: list[dict], lang: str = DEFAULT_LANG) -
     <div class="candidate-summary">
       <div class="summary-big">{count}</div>
       <div><div class="summary-title">{esc(tr(lang, "detected_candidates_lower"))}</div><div class="summary-sub">{esc(tr(lang, "full_list_in_discover"))}</div></div>
-      <div class="summary-best"><span class="muted">{esc(tr(lang, "best_candidate"))}</span><strong>{esc(best.get('id'))} / {esc(best_driver)}</strong><span>{esc(media_icon(best.get('type',''), best_driver))} {esc(best_media)} · {esc(reception_line(best))}</span></div>
+      <div class="summary-best"><span class="muted">{esc(tr(lang, "best_candidate"))}</span><strong>{esc(best.get('id'))} / {esc(best_driver)}</strong><span>{media_icon(best.get('type',''), best_driver)} {esc(tr_media(lang, best_media))} · {esc(reception_line(best))}</span></div>
       <a class="button inline" href="discover">{esc(tr(lang, "open_discover_btn"))}</a>
     </div>'''
 
@@ -1620,7 +1630,7 @@ def page_candidate(data: dict, params: dict[str, list[str]], lang: str = DEFAULT
     <div class="discovery-kv">
       <span>{esc(tr(lang, "meter_id"))}</span><span style="font-family:monospace;font-size:15px;font-weight:800;">{esc(mid)}</span>
       <span>{esc(tr(lang, "driver"))}</span><span>{esc(driver)}</span>
-      <span>{esc(tr(lang, "media"))}</span><span>{esc(media_icon(candidate.get('type',''), driver))} {esc(media_class(candidate.get('type',''), driver))}</span>
+      <span>{esc(tr(lang, "media"))}</span><span>{media_icon(candidate.get('type',''), driver)} {esc(tr_media(lang, media_class(candidate.get('type',''), driver)))}</span>
       <span>{esc(tr(lang, "encryption_label"))}</span><span class="pill {esc(enc_cls)}">{esc(enc)}</span>
       <span>{esc(tr(lang, "last_seen_label"))}</span><span>{fmt_ts(candidate.get('last_seen') or '')}</span>
       <span>{esc(tr(lang, "reception"))}</span><span>{esc(reception_line(candidate))}</span>
