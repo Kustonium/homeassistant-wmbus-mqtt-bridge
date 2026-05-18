@@ -875,11 +875,14 @@ def render_pending_panel(pending: list[dict], lang: str = DEFAULT_LANG) -> str:
 
 
 def render_pending_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
-    icon = "⏳"
+    mc = media_class(m.get("media", "") or m.get("type", ""), m.get("driver", ""))
+    icon = media_icon(m.get("media", "") or m.get("type", ""), m.get("driver", ""))
+    icon_bg = {"electricity": "#1a2a3b", "heat": "#3b2010", "water": "#0f2a3b"}.get(mc, "#2a2a2a")
+    icon_color = {"electricity": "#60b4f0", "heat": "#f07840", "water": "#40c0e0"}.get(mc, "#888")
     return f'''
-    <article class="meter-card" style="opacity:0.75;border-style:dashed;">
+    <article class="meter-card" style="opacity:0.75;border-style:dashed;border-color:#f3c84b44;">
       <div class="meter-top">
-        <div class="micon" style="background:#3b3210;color:#f3c84b;">{icon}</div>
+        <div class="micon" style="background:{icon_bg};color:{icon_color};">{icon}</div>
         <div>
           <div class="mname">{esc(m["name"])}</div>
           <div class="mid">{esc(m["id"])}<br>{esc(m["driver"])}</div>
@@ -943,12 +946,29 @@ def render_discovery(model: dict) -> str:
     </div><a class="button" href="settings">OPEN SETTINGS</a></section>'''
 
 
+def _signal_bars(seen_15m: int) -> str:
+    """Return 4 signal strength bars based on seen_15m count."""
+    n = 4 if seen_15m >= 10 else 3 if seen_15m >= 5 else 2 if seen_15m >= 2 else 1
+    ok = "#4df08d"
+    off = "#2a3a3a"
+    bars = "".join(
+        f'<span style="display:inline-block;width:4px;height:{4+i*3}px;background:{"'+ ok +'" if i < n else "'+ off +'"};border-radius:1px;vertical-align:bottom;margin-right:1px;"></span>'
+        for i in range(4)
+    )
+    return f'<span style="display:inline-flex;align-items:flex-end;height:16px;gap:1px;">{bars}</span>'
+
+
 def render_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
     icon = media_icon(m.get("media", ""), m.get("driver", ""))
+    mc = media_class(m.get("media", ""), m.get("driver", ""))
+    icon_bg = {"electricity": "#1a2a3b", "heat": "#3b2010", "water": "#0f2a3b"}.get(mc, "#1a2a2a")
+    icon_color = {"electricity": "#60b4f0", "heat": "#f07840", "water": "#40c0e0"}.get(mc, "#888")
+    seen_15m = int(m.get("seen_15m") or 0)
+    signal = _signal_bars(seen_15m)
     meter_id = m.get("id") or ""
     confirm_msg = tr(lang, "confirm_delete").format(mid=meter_id)
     return f'''
-    <article class="meter-card"><div class="meter-top"><div class="micon">{icon}</div><div><div class="mname">{esc(m.get('name') or m.get('id'))}</div><div class="mid">{esc(m.get('id'))}<br>{esc(m.get('driver'))}</div></div><div class="online">{esc(tr(lang, "online_label"))}<br><span class="mid">{esc(m.get('last_seen') or '')}</span></div></div>
+    <article class="meter-card"><div class="meter-top"><div class="micon" style="background:{icon_bg};color:{icon_color};">{icon}</div><div><div class="mname">{esc(m.get('name') or m.get('id'))}</div><div class="mid">{esc(m.get('id'))}<br>{esc(m.get('driver'))}</div></div><div class="online">{esc(tr(lang, "online_label"))} {signal}<br><span class="mid">{esc(m.get('last_seen') or '')}</span></div></div>
       <div><div class="value-key">{esc(m.get('value_key') or tr(lang, "value_label"))}</div><div class="value-main">{esc(m.get('value') or '—')}</div></div>
       <div><div class="meter-meta"><span>{esc(tr(lang, "media"))}<strong>{esc(m.get('media') or tr(lang, "unknown_label"))}</strong></span><span>{esc(tr(lang, "reception"))}<strong>{esc(fmt_interval(m.get('avg_interval_s')))}</strong></span><span>{esc(tr(lang, "seen_15m_label"))}<strong>{esc(m.get('seen_15m') or '0')}</strong></span><span>{esc(tr(lang, "seen_60m_label"))}<strong>{esc(m.get('seen_60m') or '0')}</strong></span></div>
       <div class="entity-row"><span class="published">{esc(m.get('discovery') or tr(lang, "state_label"))}</span>
