@@ -15,7 +15,6 @@ import html
 import json
 import os
 import re
-import unicodedata
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -210,35 +209,22 @@ def reception_line(row: dict) -> str:
 
 
 def media_icon(media: str, driver: str = "") -> str:
-    """Plain-text media icon fallback. UI should prefer media_icon_html()."""
     mc = media_class(media, driver)
     if mc == "electricity":
         return "⚡"
     if mc == "heat":
         return "🔥"
-    if mc in {"warm_water", "water"}:
+    if mc == "warm_water":
+        return "🟠💧"
+    if mc == "water":
         return "💧"
     return "📡"
-
-
-def media_icon_html(media: str, driver: str = "") -> str:
-    """HTML media icon. Water uses real colored droplet markers, not token hacks.
-
-    Cold water: blue droplet.
-    Warm water: orange droplet.
-    """
-    mc = media_class(media, driver)
-    if mc == "warm_water":
-        return '<span class="drop-icon drop-warm" aria-label="Warm water" title="Warm water"></span>'
-    if mc == "water":
-        return '<span class="drop-icon drop-cold" aria-label="Water" title="Water"></span>'
-    return esc(media_icon(media, driver))
 
 
 def media_class(media: str, driver: str = "") -> str:
     media_lc = (media or "").lower()
     if media_lc and media_lc not in {"listen", "search-cache"}:
-        if ("warm_water" in media_lc or "warm water" in media_lc or "hot water" in media_lc) and "encrypted" not in media_lc:
+        if ("warm water" in media_lc or "hot water" in media_lc) and "encrypted" not in media_lc:
             return "warm_water"
         if ("water" in media_lc or "hydro" in media_lc or "cold" in media_lc) and "encrypted" not in media_lc:
             return "water"
@@ -256,25 +242,6 @@ def media_class(media: str, driver: str = "") -> str:
     if "warm" in driver_lc or "heat" in driver_lc or "hca" in driver_lc:
         return "heat"
     return "other"
-
-
-def media_label(media: str, driver: str = "", lang: str = DEFAULT_LANG) -> str:
-    """Human label for media class; never expose internal tokens like warm_water."""
-    mc = media_class(media, driver)
-    if mc == "warm_water":
-        return {
-            "pl": "Ciepła woda",
-            "de": "Warmwasser",
-            "cs": "Teplá voda",
-            "sk": "Teplá voda",
-        }.get(lang, "Warm water")
-    if mc == "water":
-        return tr(lang, "water")
-    if mc == "electricity":
-        return tr(lang, "electricity")
-    if mc == "heat":
-        return tr(lang, "heat")
-    return tr(lang, "other")
 
 
 def candidate_config(candidate: dict, key: str = "") -> dict:
@@ -446,10 +413,14 @@ def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str =
         if isinstance(m, dict) and m.get("meter_id") == meter_id:
             return False, f"Meter {meter_id} already exists in options."
 
-    # Build entry id: use provided name (sanitized) or fall back to meter_XXXXXXXX.
-    # Polish/Czech/Slovak characters are transliterated instead of breaking the form
-    # or producing unreadable underscores.
-    entry_id = sanitize_meter_entry_id(meter_name, f"meter_{meter_id}")
+    # Build entry id: use provided name (sanitized) or fall back to meter_XXXXXXXX
+    import re as _re
+    if meter_name:
+        safe_name = _re.sub(r'[^a-zA-Z0-9_\-]', '_', meter_name.strip()).strip('_')
+        safe_name = _re.sub(r'_+', '_', safe_name)
+        entry_id = safe_name if safe_name else f"meter_{meter_id}"
+    else:
+        entry_id = f"meter_{meter_id}"
 
     entry = {
         "id": entry_id,
@@ -592,46 +563,6 @@ def parse_iso_time(value: str) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except Exception:
         return None
-
-
-def fmt_datetime(value: object) -> str:
-    """Render ISO timestamps in a readable local form for the UI.
-
-    Backend/runtime files should keep machine-friendly ISO timestamps.  The web UI
-    should not show raw ISO strings like 2026-05-18T12:34:56+02:00.
-    """
-    raw = str(value or "").strip()
-    if not raw:
-        return "—"
-    dt = parse_iso_time(raw)
-    if not dt:
-        return raw
-    if dt.tzinfo is not None:
-        dt = dt.astimezone()
-    now = datetime.now(dt.tzinfo or timezone.utc)
-    if dt.date() == now.date():
-        return dt.strftime("%H:%M:%S")
-    if dt.year == now.year:
-        return dt.strftime("%d.%m %H:%M:%S")
-    return dt.strftime("%Y-%m-%d %H:%M:%S")
-
-
-def sanitize_meter_entry_id(value: str, fallback: str) -> str:
-    """Create a safe meter id without crashing on Polish/Czech/Slovak names."""
-    text = (value or "").strip()
-    if not text:
-        return fallback
-    text = text.translate(str.maketrans({
-        "ą": "a", "ć": "c", "ę": "e", "ł": "l", "ń": "n", "ó": "o", "ś": "s", "ź": "z", "ż": "z",
-        "Ą": "A", "Ć": "C", "Ę": "E", "Ł": "L", "Ń": "N", "Ó": "O", "Ś": "S", "Ź": "Z", "Ż": "Z",
-        "á": "a", "č": "c", "ď": "d", "é": "e", "ě": "e", "í": "i", "ľ": "l", "ĺ": "l", "ň": "n", "ř": "r", "š": "s", "ť": "t", "ú": "u", "ů": "u", "ý": "y", "ž": "z",
-        "Á": "A", "Č": "C", "Ď": "D", "É": "E", "Ě": "E", "Í": "I", "Ľ": "L", "Ĺ": "L", "Ň": "N", "Ř": "R", "Š": "S", "Ť": "T", "Ú": "U", "Ů": "U", "Ý": "Y", "Ž": "Z",
-        "ä": "a", "ö": "o", "ü": "u", "ß": "ss", "Ä": "A", "Ö": "O", "Ü": "U",
-    }))
-    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
-    text = re.sub(r"[^a-zA-Z0-9_-]", "_", text).strip("_")
-    text = re.sub(r"_+", "_", text)
-    return text or fallback
 
 
 def discover_stability(candidates: list[dict]) -> tuple[str, str]:
@@ -848,7 +779,7 @@ def shell(active: str, body: str, updated_at: str, refresh: bool = True, lang: s
     .form-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }} .field label {{ display:block; color:#9fb4c1; font-size:12px; margin-bottom:6px; }} .field input {{ width:100%; background:#0f1a21; border:1px solid #2b4656; color:#e8f1f8; border-radius:6px; padding:10px; font-size:14px; }} .notice {{ border:1px solid #2d5368; background:#102532; border-radius:8px; padding:12px; color:#cfe1eb; margin-top:12px; }} .notice.warn {{ border-color:#6d5b1c; background:#2b2715; }} .notice.good {{ border-color:#23633c; background:#102819; }}
     .button.inline {{ margin-top:0; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; white-space:nowrap; }}
     .section-head {{ display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:12px; }} .section-head h2 {{ margin:0; font-size:16px; }} .filters {{ display:flex; gap:8px; align-items:center; color:#9eafba; font-size:12px; flex-wrap:wrap; }} .filter {{ padding:5px 10px; border:1px solid #2b4656; border-radius:999px; color:#cbd9e1; text-decoration:none; }} .filter.active {{ background:#113349; color:#32cfff; border-color:#176b8c; }}
-    .meter-grid {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px; }} .meter-card {{ background:#121b22; border:1px solid #243744; border-radius:8px; padding:16px; min-height:188px; display:grid; grid-template-rows:auto 1fr auto; }} .meter-top {{ display:grid; grid-template-columns:42px 1fr auto; gap:12px; align-items:start; }} .micon {{ width:38px; height:38px; display:grid; place-items:center; font-size:27px; border-radius:10px; background:#102d3d; }} .drop-icon {{ display:inline-block; width:.86em; height:.86em; border-radius:65% 65% 65% 0; transform:rotate(-45deg); vertical-align:-.08em; background:#40c0ff; box-shadow:0 0 9px rgba(64,192,255,.28); }} .drop-icon.drop-cold {{ background:#40c0ff; box-shadow:0 0 9px rgba(64,192,255,.30); }} .drop-icon.drop-warm {{ background:#ff8a45; box-shadow:0 0 9px rgba(255,138,69,.32); }} .micon .drop-icon {{ width:24px; height:24px; }} .mname {{ font-weight:800; }} .mid {{ color:#b5c9d4; font-size:12px; line-height:1.45; }} .online {{ color:#2de36f; font-size:12px; font-weight:800; text-align:right; }} .value-main {{ font-size:30px; font-weight:800; margin:16px 0 6px; }} .value-key {{ color:#a9bac5; font-size:12px; }} .meter-meta {{ display:grid; grid-template-columns:1fr 1fr; gap:8px 16px; border-top:1px solid #253946; padding-top:12px; color:#c9d7df; font-size:12px; }} .meter-meta strong {{ display:block; color:#fff; font-size:13px; margin-top:3px; }} .entity-row {{ border-top:1px solid #253946; margin:12px -16px -16px; padding:10px 16px; display:flex; justify-content:space-between; align-items:center; color:#b8c8d2; font-size:12px; }} .published {{ background:#0f3f21; color:#36dc73; border-radius:4px; padding:7px 18px; font-weight:800; }}
+    .meter-grid {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px; }} .meter-card {{ background:#121b22; border:1px solid #243744; border-radius:8px; padding:16px; min-height:188px; display:grid; grid-template-rows:auto 1fr auto; }} .meter-top {{ display:grid; grid-template-columns:42px 1fr auto; gap:12px; align-items:start; }} .micon {{ width:38px; height:38px; display:grid; place-items:center; font-size:27px; border-radius:10px; background:#102d3d; }} .mname {{ font-weight:800; }} .mid {{ color:#b5c9d4; font-size:12px; line-height:1.45; }} .online {{ color:#2de36f; font-size:12px; font-weight:800; text-align:right; }} .value-main {{ font-size:30px; font-weight:800; margin:16px 0 6px; }} .value-key {{ color:#a9bac5; font-size:12px; }} .meter-meta {{ display:grid; grid-template-columns:1fr 1fr; gap:8px 16px; border-top:1px solid #253946; padding-top:12px; color:#c9d7df; font-size:12px; }} .meter-meta strong {{ display:block; color:#fff; font-size:13px; margin-top:3px; }} .entity-row {{ border-top:1px solid #253946; margin:12px -16px -16px; padding:10px 16px; display:flex; justify-content:space-between; align-items:center; color:#b8c8d2; font-size:12px; }} .published {{ background:#0f3f21; color:#36dc73; border-radius:4px; padding:7px 18px; font-weight:800; }}
     .table-wrap {{ overflow:auto; }} .table {{ width:100%; border-collapse:collapse; font-size:13px; min-width:860px; }} .table th,.table td {{ padding:11px 10px; border-bottom:1px solid #273944; text-align:left; vertical-align:middle; }} .table th {{ color:#8fa3af; font-weight:700; }} .table td {{ color:#dce8ef; }} .table .muted {{ color:#90a7b5; font-size:12px; display:block; margin-top:3px; }} .small-button {{ display:inline-block; border:1px solid #087aa8; color:#19c4ff; background:#102b3b; border-radius:4px; padding:7px 10px; margin:2px 4px 2px 0; font-size:11px; font-weight:800; text-decoration:none; cursor:pointer; }} .small-button.danger {{ border-color:#974554; color:#ff8c98; }}
     .candidate-summary {{ display:grid; grid-template-columns:auto 1fr minmax(260px,.9fr) auto; align-items:center; gap:18px; }} .summary-big {{ font-size:42px; font-weight:900; color:#fff; line-height:1; }} .summary-title {{ font-size:16px; font-weight:800; }} .summary-sub {{ color:var(--muted); font-size:13px; margin-top:4px; }} .summary-best {{ display:grid; gap:3px; color:#cfe1eb; font-size:12px; }} .summary-best strong {{ font-size:15px; color:#fff; }}
     .event-row {{ display:grid; grid-template-columns:180px 82px 1fr; gap:10px; padding:9px 0; border-bottom:1px solid #273944; font-size:13px; }} .event-row strong.ok {{ color:var(--ok); }} .event-row strong.candidate,.event-row strong.warn {{ color:var(--warn); }} .event-row strong.error {{ color:var(--bad); }} .legend {{ margin:8px 0 12px; padding:10px 12px; border:1px dashed var(--line2); border-radius:8px; color:var(--muted); font-size:12px; display:grid; gap:4px; }} .legend b {{ color:var(--text); }} .empty {{ padding:20px; border:1px dashed #2c4555; border-radius:8px; color:#91a7b4; }}
@@ -859,7 +790,7 @@ def shell(active: str, body: str, updated_at: str, refresh: bool = True, lang: s
 </head>
 <body>
   <div class="app">
-    <div class="main"><div class="topbar"><div class="top-left"><span>wMBus MQTT Bridge</span></div><nav class="tabs">{nav(active, lang)}</nav>{lang_switcher(lang)}<div class="kebab">⋮</div></div><main><div class="updated">{esc(tr(lang, "updated_label"))} {esc(fmt_datetime(updated_at) if updated_at else tr(lang, "unknown_value"))}</div>{body}</main></div>
+    <div class="main"><div class="topbar"><div class="top-left"><span>wMBus MQTT Bridge</span></div><nav class="tabs">{nav(active, lang)}</nav>{lang_switcher(lang)}<div class="kebab">⋮</div></div><main><div class="updated">{esc(tr(lang, "updated_label"))} {esc(updated_at or tr(lang, "unknown_value"))}</div>{body}</main></div>
   </div>
   <div id="toast" class="toast">{esc(tr(lang, "copied_toast"))}</div>
   <script>
@@ -995,7 +926,7 @@ def render_pending_panel(pending: list[dict], lang: str = DEFAULT_LANG) -> str:
 
 def render_pending_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
     mc = media_class(m.get("media", "") or m.get("type", ""), m.get("driver", ""))
-    icon = media_icon_html(m.get("media", "") or m.get("type", ""), m.get("driver", ""))
+    icon = media_icon(m.get("media", "") or m.get("type", ""), m.get("driver", ""))
     icon_bg = {"electricity": "#1a2a3b", "heat": "#3b2010", "water": "#0f2a3b", "warm_water": "#3b2010"}.get(mc, "#2a2a2a")
     icon_color = {"electricity": "#60b4f0", "heat": "#f07840", "water": "#40c0e0", "warm_water": "#f09040"}.get(mc, "#888")
     return f'''
@@ -1066,17 +997,19 @@ def render_discovery(model: dict) -> str:
 
 
 def _signal_bars(seen_15m: int) -> str:
-    """Small neutral reception marker for meter cards."""
-    title = f"{seen_15m} telegrams in last 15 min"
-    return (
-        f'<span title="{esc(title)}" '
-        f'style="display:inline-block;width:8px;height:8px;border-radius:50%;'
-        f'background:#24d26f;margin-left:4px;vertical-align:middle;"></span>'
+    """Return 4 signal strength bars based on seen_15m count."""
+    n = 4 if seen_15m >= 10 else 3 if seen_15m >= 5 else 2 if seen_15m >= 2 else 1
+    ok = "#4df08d"
+    off = "#2a3a3a"
+    bars = "".join(
+        f'<span style="display:inline-block;width:4px;height:{4+i*3}px;background:{"'+ ok +'" if i < n else "'+ off +'"};border-radius:1px;vertical-align:bottom;margin-right:1px;"></span>'
+        for i in range(4)
     )
+    return f'<span style="display:inline-flex;align-items:flex-end;height:16px;gap:1px;">{bars}</span>'
 
 
 def render_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
-    icon = media_icon_html(m.get("media", ""), m.get("driver", ""))
+    icon = media_icon(m.get("media", ""), m.get("driver", ""))
     mc = media_class(m.get("media", ""), m.get("driver", ""))
     icon_bg = {"electricity": "#1a2a3b", "heat": "#3b2010", "water": "#0f2a3b", "warm_water": "#3b2010"}.get(mc, "#1a2a2a")
     icon_color = {"electricity": "#60b4f0", "heat": "#f07840", "water": "#40c0e0", "warm_water": "#f09040"}.get(mc, "#888")
@@ -1085,9 +1018,9 @@ def render_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
     meter_id = m.get("id") or ""
     confirm_msg = tr(lang, "confirm_delete").format(mid=meter_id)
     return f'''
-    <article class="meter-card"><div class="meter-top"><div class="micon" style="background:{icon_bg};color:{icon_color};">{icon}</div><div><div class="mname">{esc(m.get('name') or m.get('id'))}</div><div class="mid">{esc(m.get('id'))}<br>{esc(m.get('driver'))}</div></div><div class="online">{esc(tr(lang, "online_label"))} {signal}<br><span class="mid">{esc(fmt_datetime(m.get('last_seen')))}</span></div></div>
+    <article class="meter-card"><div class="meter-top"><div class="micon" style="background:{icon_bg};color:{icon_color};">{icon}</div><div><div class="mname">{esc(m.get('name') or m.get('id'))}</div><div class="mid">{esc(m.get('id'))}<br>{esc(m.get('driver'))}</div></div><div class="online">{esc(tr(lang, "online_label"))} {signal}<br><span class="mid">{esc(m.get('last_seen') or '')}</span></div></div>
       <div><div class="value-key">{esc(m.get('value_key') or tr(lang, "value_label"))}</div><div class="value-main">{esc(m.get('value') or '—')}</div></div>
-      <div><div class="meter-meta"><span>{esc(tr(lang, "media"))}<strong>{esc(media_label(m.get('media', ''), m.get('driver', ''), lang))}</strong></span><span>{esc(tr(lang, "reception"))}<strong>{esc(fmt_interval(m.get('avg_interval_s')))}</strong></span><span>{esc(tr(lang, "seen_15m_label"))}<strong>{esc(m.get('seen_15m') or '0')}</strong></span><span>{esc(tr(lang, "seen_60m_label"))}<strong>{esc(m.get('seen_60m') or '0')}</strong></span></div>
+      <div><div class="meter-meta"><span>{esc(tr(lang, "media"))}<strong>{esc(m.get('media') or tr(lang, "unknown_label"))}</strong></span><span>{esc(tr(lang, "reception"))}<strong>{esc(fmt_interval(m.get('avg_interval_s')))}</strong></span><span>{esc(tr(lang, "seen_15m_label"))}<strong>{esc(m.get('seen_15m') or '0')}</strong></span><span>{esc(tr(lang, "seen_60m_label"))}<strong>{esc(m.get('seen_60m') or '0')}</strong></span></div>
       <div class="entity-row"><span class="published">{esc(m.get('discovery') or tr(lang, "state_label"))}</span>
         <form method="post" action="remove-meter" style="margin:0;" onsubmit="return confirm({json.dumps(confirm_msg)});">
           <input type="hidden" name="meter_id" value="{esc(meter_id)}">
@@ -1116,7 +1049,7 @@ def render_search_cache_table(rows: list[dict], max_items: int | None = None, la
         media  = row.get("media") or ""
         body.append(
             f"<tr><td><strong>{esc(row.get('id'))}</strong><span class='muted'>from /data/search_candidates.tsv</span></td>"
-            f"<td>{esc(driver)}</td><td>{media_icon_html(media, driver)} {esc(media_label(media, driver, lang))}</td>"
+            f"<td>{esc(driver)}</td><td>{esc(media_icon(media, driver))} {esc(media_class(media, driver))}</td>"
             f"<td><span class='pill ok'>{esc(tr(lang, 'used_by_search_label'))}</span><span class='muted'>{esc(tr(lang, 'loaded_as_temp_meter'))}</span></td></tr>"
         )
     return f"<div class='table-wrap'><table class='table'><thead><tr><th>{esc(tr(lang, 'meter_id'))}</th><th>{esc(tr(lang, 'driver'))}</th><th>{esc(tr(lang, 'media'))}</th><th>{esc(tr(lang, 'role_label'))}</th></tr></thead><tbody>{''.join(body)}</tbody></table></div>"
@@ -1128,7 +1061,7 @@ def render_search_matches(rows: list[dict], lang: str = DEFAULT_LANG) -> str:
     body = []
     for row in rows:
         body.append(
-            f"<tr><td>{esc(fmt_datetime(row.get('time')))}</td><td><strong>{esc(row.get('id'))}</strong></td><td>{esc(row.get('driver'))}</td>"
+            f"<tr><td>{esc(row.get('time'))}</td><td><strong>{esc(row.get('id'))}</strong></td><td>{esc(row.get('driver'))}</td>"
             f"<td>{esc(row.get('field'))}</td><td>{esc(row.get('value_m3'))}</td><td>{esc(row.get('expected_m3'))}</td>"
             f"<td>{esc(row.get('diff_m3'))}</td><td>{esc(row.get('tolerance_m3'))}</td></tr>"
         )
@@ -1210,10 +1143,10 @@ def render_candidates_table(candidates: list[dict], max_items: int | None = None
             )
         rows.append(
             f'''<tr><td><strong>{esc(mid)}</strong><span class="muted">{esc(c.get('type') or tr(lang, "listen_label"))}</span></td>'''
-            f'''<td>{esc(driver)}</td><td>{media_icon_html(c.get('type',''), driver)} {esc(media_label(c.get('type',''), driver, lang))}</td>'''
+            f'''<td>{esc(driver)}</td><td>{esc(media_icon(c.get('type',''), driver))} {esc(mclass)}</td>'''
             f'''<td><span class="pill {esc(enc_cls)}">{esc(enc)}</span><span class="muted">{esc(enc_note)}</span></td>'''
             f'''<td>{esc(c.get('seen_count') or '0')}<span class="muted">{esc(reception_line(c))}</span></td>'''
-            f'''<td>{esc(fmt_datetime(c.get('last_seen')))}</td><td>{actions}</td></tr>'''
+            f'''<td>{esc(c.get('last_seen') or '')}</td><td>{actions}</td></tr>'''
         )
     return (
         f'<div class="table-wrap"><table class="table"><thead><tr>'
@@ -1234,12 +1167,12 @@ def render_candidate_summary(candidates: list[dict], lang: str = DEFAULT_LANG) -
         </div>'''
     best = candidates[0]
     best_driver = best.get("driver") or "auto"
-    best_media = media_label(best.get("type", ""), best_driver, lang)
+    best_media = media_class(best.get("type", ""), best_driver)
     return f'''
     <div class="candidate-summary">
       <div class="summary-big">{count}</div>
       <div><div class="summary-title">{esc(tr(lang, "detected_candidates_lower"))}</div><div class="summary-sub">{esc(tr(lang, "full_list_in_discover"))}</div></div>
-      <div class="summary-best"><span class="muted">{esc(tr(lang, "best_candidate"))}</span><strong>{esc(best.get('id'))} / {esc(best_driver)}</strong><span>{media_icon_html(best.get('type',''), best_driver)} {esc(best_media)} · {esc(reception_line(best))}</span></div>
+      <div class="summary-best"><span class="muted">{esc(tr(lang, "best_candidate"))}</span><strong>{esc(best.get('id'))} / {esc(best_driver)}</strong><span>{esc(media_icon(best.get('type',''), best_driver))} {esc(best_media)} · {esc(reception_line(best))}</span></div>
       <a class="button inline" href="discover">{esc(tr(lang, "open_discover_btn"))}</a>
     </div>'''
 
@@ -1251,7 +1184,7 @@ def render_events(events: list[dict], max_items: int | None = None, lang: str = 
     rows = []
     for e in shown:
         css, label, message = event_level_for_ui(e)
-        rows.append(f'<div class="event-row"><span>{esc(fmt_datetime(e.get("time")))}</span><strong class="{esc(css)}">{esc(label)}</strong><em>{esc(message)}</em></div>')
+        rows.append(f'<div class="event-row"><span>{esc(e.get("time"))}</span><strong class="{esc(css)}">{esc(label)}</strong><em>{esc(message)}</em></div>')
     return ''.join(rows)
 
 
@@ -1356,7 +1289,7 @@ def _search_matches_cards(matches: list[dict], lang: str = DEFAULT_LANG) -> str:
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
             <div>
               <div style="font-size:22px;font-weight:900;color:#4df08d;">{esc(mid)}<span style="font-size:13px;font-weight:400;color:#9ed8b4;margin-left:8px;">{esc(driver)} · {esc(m.get("media") or "")}</span></div>
-              <div style="margin-top:6px;font-size:13px;color:#cfe8d8;">{esc(tr(lang, "value_label"))}: <b>{esc(m.get("value_m3"))} m³</b> · {esc(tr(lang, "expected_short").lower())}: {esc(m.get("expected_m3"))} m³ · {esc(tr(lang, "diff_label").lower())}: {esc(m.get("diff_m3"))} m³ · {esc(fmt_datetime(m.get("time")))}</div>
+              <div style="margin-top:6px;font-size:13px;color:#cfe8d8;">{esc(tr(lang, "value_label"))}: <b>{esc(m.get("value_m3"))} m³</b> · {esc(tr(lang, "expected_short").lower())}: {esc(m.get("expected_m3"))} m³ · {esc(tr(lang, "diff_label").lower())}: {esc(m.get("diff_m3"))} m³ · {esc(m.get("time"))}</div>
               <div style="margin-top:8px;font-family:monospace;font-size:12px;color:#a8d8bc;background:#060f09;padding:7px 10px;border-radius:5px;">{esc(cfg_snippet)}</div>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
@@ -1448,7 +1381,7 @@ def page_search(data: dict, params: dict[str, list[str]], lang: str = DEFAULT_LA
         f'<span>{esc(tr(lang, "last_checked_kv"))}</span>'
         f'<span>{esc(last_checked.get("id") or "")} / {esc(last_checked.get("field") or "")}={esc(last_checked.get("value") or "")}, diff={esc(last_checked.get("diff_m3") or "")}</span>'
         f'<span>{esc(tr(lang, "last_reason_kv"))}</span><span>{esc(last_reason)}</span>'
-        f'<span>{esc(tr(lang, "status_updated_kv"))}</span><span>{esc(fmt_datetime(updated))}</span>'
+        f'<span>{esc(tr(lang, "status_updated_kv"))}</span><span>{esc(updated)}</span>'
         f'</div></section>'
     )
     events_section = (
@@ -1602,9 +1535,9 @@ def page_candidate(data: dict, params: dict[str, list[str]], lang: str = DEFAULT
     <div class="discovery-kv">
       <span>{esc(tr(lang, "meter_id"))}</span><span style="font-family:monospace;font-size:15px;font-weight:800;">{esc(mid)}</span>
       <span>{esc(tr(lang, "driver"))}</span><span>{esc(driver)}</span>
-      <span>{esc(tr(lang, "media"))}</span><span>{media_icon_html(candidate.get('type',''), driver)} {esc(media_label(candidate.get('type',''), driver, lang))}</span>
+      <span>{esc(tr(lang, "media"))}</span><span>{esc(media_icon(candidate.get('type',''), driver))} {esc(media_class(candidate.get('type',''), driver))}</span>
       <span>{esc(tr(lang, "encryption_label"))}</span><span class="pill {esc(enc_cls)}">{esc(enc)}</span>
-      <span>{esc(tr(lang, "last_seen_label"))}</span><span>{esc(fmt_datetime(candidate.get('last_seen')))}</span>
+      <span>{esc(tr(lang, "last_seen_label"))}</span><span>{esc(candidate.get('last_seen'))}</span>
       <span>{esc(tr(lang, "reception"))}</span><span>{esc(reception_line(candidate))}</span>
     </div>
     <div class="notice {'warn' if aes_required else ''}" style="margin-top:14px;">
