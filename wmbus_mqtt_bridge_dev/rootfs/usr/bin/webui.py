@@ -237,8 +237,7 @@ def media_icon(media: str, driver: str = "", html: bool = False) -> str:
     if mc == "heat":
         return "🔥"
     if mc == "warm_water":
-        # Orange droplet via HTML — emoji 💧 is always blue
-        return '<span style="color:#f07840;font-size:1em;">💧</span>'
+        return "🔶"
     if mc == "water":
         return "💧"
     return "📡"
@@ -1044,7 +1043,7 @@ def _signal_bars(seen_15m: int) -> str:
 def render_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
     icon = media_icon(m.get("media", ""), m.get("driver", ""))
     mc = media_class(m.get("media", ""), m.get("driver", ""))
-    icon_bg = {"electricity": "#1a2a3b", "heat": "#3b2010", "water": "#0f2a3b", "warm_water": "#3b2010"}.get(mc, "#1a2a2a")
+    icon_bg = {"electricity": "#1a2a3b", "heat": "#3b2010", "water": "#0f2a3b", "warm_water": "#2a1f0a"}.get(mc, "#1a2a2a")
     icon_color = {"electricity": "#60b4f0", "heat": "#f07840", "water": "#40c0e0", "warm_water": "#f09040"}.get(mc, "#888")
     seen_15m = int(m.get("seen_15m") or 0)
     signal = _signal_bars(seen_15m)
