@@ -1,6 +1,6 @@
 > 🌐 [EN](README.en.md) | [PL](README.pl.md) | [DE](README.de.md) | [**CS**](README.cs.md) | [SK](README.sk.md)
 
-> 🤖 **Strojový překlad** — Tato dokumentace byla strojově přeložena z polštiny. Může obsahovat chyby — opravy vítány přes [GitHub Issues](https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/issues).
+> 🤖 **Strojový překlad** — Tato dokumentace byla strojově přeložena z polštiny. Může obsahovat chyby.
 
 # wMBus MQTT Bridge — kompletní dokumentace (CS)
 
@@ -43,6 +43,8 @@ Standardně `wmbusmeters` vyžaduje radiový dongl připojený k hostiteli. Tent
 
 Výsledek: **Tvoje měřiče se objeví jako senzory v HA, bez jakéhokoli radiového hardwaru na straně HA.**
 
+> 🤝 **Spolupráce s ESPHome firmwarem** — Tento add-on se typicky používá společně s [`esphome-wmbus-bridge-rawonly`](https://github.com/Kustonium/esphome-wmbus-bridge-rawonly), ESPHome komponentou běžící na ESP32 s rádiovým čipem **CC1101, SX1276 nebo SX1262**. ESP přijímá rádiové rámce a publikuje surové HEX do MQTT; tento add-on je dekóduje. Oba projekty jsou **nezávislé** — add-on přijímá HEX z libovolného zdroje publikujícího do nakonfigurovaného `raw_topic`.
+
 ---
 
 ## 2. Architektura toku dat
@@ -53,7 +55,7 @@ Výsledek: **Tvoje měřiče se objeví jako senzory v HA, bez jakéhokoli radio
 %%{init: {'theme':'default'}}%%
 flowchart LR
   subgraph EXT["🛰️ Externí přijímač (mimo HA)"]
-    A1["ESP32 / Gateway / Bridge<br/>s modulem CC1101 nebo RFM69"]
+    A1["ESP32 / Gateway / Bridge<br/>s modulem CC1101, SX1276 nebo SX1262"]
   end
 
   subgraph BROKER["📡 MQTT broker"]
