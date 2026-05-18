@@ -1,0 +1,108 @@
+name: sync-rootfs
+
+# Keeps the stable addon's runtime in lockstep with the dev addon's runtime.
+#
+# Trigger: any push to dev that changes the dev addon's rootfs, Dockerfile
+# or translations. We then mirror those into the stable addon folder and
+# push a follow-up commit back to dev.
+#
+# Why this exists:
+#   The repo has two addon folders (wmbus_mqtt_bridge_dev/ and
+#   wmbus_mqtt_bridge/) that need to ship the SAME runtime files but
+#   different per-channel manifests (config.yaml, README, CHANGELOG).
+#   Without this job, edits made only in the dev folder silently never
+#   reach the stable image, even after merging dev -> main.
+#
+# Loop avoidance:
+#   This workflow's path filter only matches changes in
+#   wmbus_mqtt_bridge_dev/{rootfs,Dockerfile,translations}. The follow-up
+#   commit we push only changes wmbus_mqtt_bridge/{rootfs,Dockerfile,
+#   translations}, which does NOT match the trigger, so the workflow is
+#   not retriggered.
+#
+# Manual escape hatch: scripts/promote-rootfs.sh does the same thing
+# locally if you ever need to bypass CI.
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - 'wmbus_mqtt_bridge_dev/rootfs/**'
+      - 'wmbus_mqtt_bridge_dev/Dockerfile'
+      - 'wmbus_mqtt_bridge_dev/translations/**'
+      - 'scripts/promote-rootfs.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-rootfs-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout dev
+        uses: actions/checkout@v6
+        with:
+          ref: dev
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Promote dev runtime to stable
+        id: promote
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SRC=wmbus_mqtt_bridge_dev
+          DST=wmbus_mqtt_bridge
+
+          for item in rootfs Dockerfile translations; do
+            if [[ -e "${SRC}/${item}" ]]; then
+              rm -rf "${DST}/${item}"
+              cp -r "${SRC}/${item}" "${DST}/${item}"
+              echo "copied ${item}"
+            fi
+          done
+
+          # Drop bytecode caches if any leaked in.
+          find "${DST}/rootfs" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+          # Restore +x on scripts that need it inside the image.
+          for f in \
+            "${DST}/rootfs/etc/services.d/wmbus_mqtt_bridge/run" \
+            "${DST}/rootfs/etc/services.d/wmbus_webui/run" \
+            "${DST}/rootfs/usr/bin/run.sh" \
+            "${DST}/rootfs/usr/bin/bridge.sh" \
+            "${DST}/rootfs/usr/bin/webui.py"
+          do
+            if [[ -e "${f}" ]]; then
+              chmod +x "${f}"
+              git update-index --add --chmod=+x "${f}" 2>/dev/null || true
+            fi
+          done
+
+          if git diff --quiet -- "${DST}/"; then
+            echo "stable folder already matches dev — nothing to commit"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push sync
+        if: steps.promote.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add wmbus_mqtt_bridge/
+          git commit -m "ci(sync-rootfs): promote dev runtime to stable
+
+Triggered by ${{ github.sha }} on dev."
+          git push origin dev

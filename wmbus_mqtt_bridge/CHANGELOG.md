@@ -1,6 +1,24 @@
 ## 1.5.1
 
-Documentation-only release. No runtime / code / configuration changes.
+First stable release that ships the full WebUI as developed and tested on
+the dev addon. The previous 1.5.0 stable image was frozen at the time of
+the multi-addon repo split and missed every dev-side WebUI improvement
+made since. This release brings stable's runtime in lockstep with dev.
+
+### Added
+- Sync of `rootfs/` and `Dockerfile` from `wmbus_mqtt_bridge_dev/`,
+  bringing in the accumulated WebUI work: media icons and signal bars,
+  warm-water media type, bare-meter-ID handling, candidate counts,
+  smart refresh, meter-name input, localized media labels, suggested
+  meter names, restart i18n message, hidden pending meters, alarm-field
+  exclusion, options.json read/write paths, waiting panel, timestamp
+  formatting, sanitization and other fixes. See dev addon commit log
+  for individual entries.
+- `scripts/promote-rootfs.sh` — manual sync from dev to stable.
+- `.github/workflows/sync-rootfs.yaml` — automatic sync on every push
+  to `dev` whose changes land in `wmbus_mqtt_bridge_dev/rootfs`,
+  `Dockerfile` or `translations`. Prevents future drift between the
+  two addons.
 
 ### Changed
 - Merged the AI-development note and the per-language translation
