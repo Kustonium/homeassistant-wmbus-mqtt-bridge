@@ -581,6 +581,7 @@ guess_unit() {
 guess_device_class() {
   local key_lc="$1"
   local unit="$2"
+  local media="${3:-}"
   case "${unit}" in
     "°C") echo "temperature";;
     "%") echo "humidity";;
@@ -590,7 +591,19 @@ guess_device_class() {
     "A") echo "current";;
     "Hz") echo "frequency";;
     "m³")
-      if [[ "${key_lc}" == *gas* ]]; then echo "gas"; else echo "water"; fi
+      # Prefer the media reported by wmbusmeters — it knows the meter's
+      # nature better than a keyword match against the field name. Heat
+      # meters carry volume too, but HA has no "heat-volume" class, so
+      # we deliberately leave device_class empty for them.
+      case "${media}" in
+        water|warm_water|hot_water|cold_water) echo "water";;
+        gas) echo "gas";;
+        heat|cooling) echo "";;
+        *)
+          # Unknown media → fall back to old keyword heuristic.
+          if [[ "${key_lc}" == *gas* ]]; then echo "gas"; else echo "water"; fi
+          ;;
+      esac
       ;;
     *)
       if [[ "${key_lc}" == *battery* ]]; then echo "battery"; else echo ""; fi
@@ -602,6 +615,7 @@ guess_state_class() {
   local key_lc="$1"
   local device_class="$2"
 
+  # total_increasing — cumulative counters that only go up
   if [[ "${key_lc}" == total_* || "${key_lc}" == *_total* || "${key_lc}" == *total_* ]]; then
     if [[ "${device_class}" == "energy" || "${device_class}" == "water" || "${device_class}" == "gas" ]]; then
       echo "total_increasing"; return 0
@@ -618,7 +632,17 @@ guess_state_class() {
     fi
   fi
 
-  echo "measurement"
+  # measurement — only for fields where a long-term statistic actually
+  # makes sense. Unknown numeric fields (error codes, status flags,
+  # index numbers, version strings cast to int) get no state_class so
+  # HA doesn't graph them as time series.
+  case "${device_class}" in
+    temperature|humidity|power|voltage|current|frequency|battery|water|gas|energy)
+      echo "measurement"; return 0
+      ;;
+  esac
+
+  echo ""
 }
 
 
@@ -1055,7 +1079,7 @@ emit_discovery_from_json() {
   local json_line="$1"
   [[ "${DISCOVERY_ENABLED}" == "true" ]] || return 0
 
-  local id name meter
+  local id name meter media
   id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
   [[ -n "${id}" ]] || return 0
 
@@ -1063,6 +1087,7 @@ emit_discovery_from_json() {
 
   name="$(jq -r '.name // .id // "wmbus"' <<<"${json_line}" 2>/dev/null || true)"
   meter="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
+  media="$(jq -r '.media // empty' <<<"${json_line}" 2>/dev/null || true)"
 
   local uniq="wmbus_${id}"
   local state_topic="${STATE_PREFIX}/${id}/state"
@@ -1080,7 +1105,7 @@ emit_discovery_from_json() {
 
     key_lc="$(echo "${key}" | tr '[:upper:]' '[:lower:]')"
     unit="$(guess_unit "${key}")"
-    device_class="$(guess_device_class "${key_lc}" "${unit}")"
+    device_class="$(guess_device_class "${key_lc}" "${unit}" "${media}")"
     state_class="$(guess_state_class "${key_lc}" "${device_class}")"
 
     cfg_topic="${DISCOVERY_PREFIX}/sensor/${uniq}/${obj}/config"

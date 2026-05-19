@@ -567,17 +567,17 @@ mosquitto_pub -h broker -t 'wmbus/esp32-attic/telegram' \
 #### State (decoded values)
 
 ```
-<state_prefix>/<id>/<field>
+<state_prefix>/<id>/state
 ```
 
 E.g. for a meter `id=cold_water_bathroom`:
 
 ```
-wmbusmeters/cold_water_bathroom/total_m3      →  "123.456"
-wmbusmeters/cold_water_bathroom/target_m3     →  "100.000"
-wmbusmeters/cold_water_bathroom/last_seen     →  "2026-05-17T10:00:00+02:00"
-wmbusmeters/cold_water_bathroom/json          →  <full JSON>
+wmbusmeters/cold_water_bathroom/state
+  →  {"id":"cold_water_bathroom","name":"...","media":"water","total_m3":123.456,"flow_m3h":0.0,"timestamp":"2026-05-17T10:00:00+02:00"}
 ```
+
+The entire decoded telegram is published as a JSON payload on a single state topic per meter; HA picks individual fields from it via `value_template` in Discovery.
 
 #### Home Assistant Discovery
 
@@ -588,11 +588,15 @@ wmbusmeters/cold_water_bathroom/json          →  <full JSON>
 E.g.:
 
 ```
-homeassistant/sensor/cold_water_bathroom_total_m3/config
-  →  {"name":"cold_water_bathroom total m³",
-      "state_topic":"wmbusmeters/cold_water_bathroom/total_m3",
+homeassistant/sensor/wmbus_cold_water_bathroom/total_m3/config
+  →  {"name":"cold_water_bathroom total_m3",
+      "state_topic":"wmbusmeters/cold_water_bathroom/state",
+      "value_template":"{{ value_json.get('total_m3') | default(none) }}",
+      "json_attributes_topic":"wmbusmeters/cold_water_bathroom/state",
+      "expire_after":3600,
       "unit_of_measurement":"m³",
       "device_class":"water",
+      "state_class":"total_increasing",
       "unique_id":"wmbus_cold_water_bathroom_total_m3",
       ...}
 ```
