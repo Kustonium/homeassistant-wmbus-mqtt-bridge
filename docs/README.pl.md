@@ -567,17 +567,17 @@ mosquitto_pub -h broker -t 'wmbus/esp32-strych/telegram' \
 #### State (zdekodowane wartości)
 
 ```
-<state_prefix>/<id>/<field>
+<state_prefix>/<id>/state
 ```
 
 Np. dla licznika `id=woda_zimna_lazienka`:
 
 ```
-wmbusmeters/woda_zimna_lazienka/total_m3      →  "123.456"
-wmbusmeters/woda_zimna_lazienka/target_m3     →  "100.000"
-wmbusmeters/woda_zimna_lazienka/last_seen     →  "2026-05-17T10:00:00+02:00"
-wmbusmeters/woda_zimna_lazienka/json          →  <pełny JSON>
+wmbusmeters/woda_zimna_lazienka/state
+  →  {"id":"woda_zimna_lazienka","name":"...","media":"water","total_m3":123.456,"flow_m3h":0.0,"timestamp":"2026-05-17T10:00:00+02:00"}
 ```
+
+Cały zdekodowany telegram jest publikowany jako payload JSON na jednym temacie state na licznik; HA wybiera poszczególne pola z niego przez `value_template` w Discovery.
 
 #### Home Assistant Discovery
 
@@ -588,11 +588,15 @@ wmbusmeters/woda_zimna_lazienka/json          →  <pełny JSON>
 Np.:
 
 ```
-homeassistant/sensor/woda_zimna_lazienka_total_m3/config
-  →  {"name":"woda_zimna_lazienka total m³",
-      "state_topic":"wmbusmeters/woda_zimna_lazienka/total_m3",
+homeassistant/sensor/wmbus_woda_zimna_lazienka/total_m3/config
+  →  {"name":"woda_zimna_lazienka total_m3",
+      "state_topic":"wmbusmeters/woda_zimna_lazienka/state",
+      "value_template":"{{ value_json.get('total_m3') | default(none) }}",
+      "json_attributes_topic":"wmbusmeters/woda_zimna_lazienka/state",
+      "expire_after":3600,
       "unit_of_measurement":"m³",
       "device_class":"water",
+      "state_class":"total_increasing",
       "unique_id":"wmbus_woda_zimna_lazienka_total_m3",
       ...}
 ```
