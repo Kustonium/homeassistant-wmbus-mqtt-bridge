@@ -5,12 +5,20 @@ on:
     branches:
       - main
       - dev
-    # Workflow-level path filter: docs-only / repo-root-only commits skip
-    # the run entirely. Per-job filtering below decides which addon(s)
-    # to rebuild when only one channel changed.
+    # Workflow-level path filter: only build for changes that actually
+    # affect the image. README.md / CHANGELOG.md / docs/ / repo root are
+    # intentionally NOT listed — text-only commits skip the build.
+    # Per-job filtering below then decides which addon(s) to rebuild
+    # when only one channel changed.
     paths:
-      - 'wmbus_mqtt_bridge/**'
-      - 'wmbus_mqtt_bridge_dev/**'
+      - 'wmbus_mqtt_bridge/rootfs/**'
+      - 'wmbus_mqtt_bridge/Dockerfile'
+      - 'wmbus_mqtt_bridge/config.yaml'
+      - 'wmbus_mqtt_bridge/translations/**'
+      - 'wmbus_mqtt_bridge_dev/rootfs/**'
+      - 'wmbus_mqtt_bridge_dev/Dockerfile'
+      - 'wmbus_mqtt_bridge_dev/config.yaml'
+      - 'wmbus_mqtt_bridge_dev/translations/**'
       - '.github/workflows/build.yaml'
   workflow_dispatch:
 
@@ -94,7 +102,9 @@ jobs:
           fi
 
           # Per-job path filter: only build if files in this addon's
-          # folder OR the workflow itself changed in this push.
+          # image-affecting paths (rootfs/, Dockerfile, config.yaml,
+          # translations/) OR the workflow itself changed. README and
+          # CHANGELOG inside the subfolder are intentionally excluded.
           CHANGED="$(git diff --name-only HEAD~1 HEAD 2>/dev/null || true)"
           if [[ -z "${CHANGED}" ]]; then
             # Likely first commit on this branch — cannot diff. Build to be safe.
@@ -106,11 +116,13 @@ jobs:
           echo "Files changed in this push:"
           echo "${CHANGED}" | sed 's/^/  /'
 
-          if echo "${CHANGED}" | grep -qE "^(${{ matrix.addon }}/|\.github/workflows/build\.yaml$)"; then
-            echo "match in ${{ matrix.addon }}/ or workflow file — building"
+          ADDON="${{ matrix.addon }}"
+          PATTERN="^(${ADDON}/(rootfs/|Dockerfile|config\.yaml|translations/)|\.github/workflows/build\.yaml$)"
+          if echo "${CHANGED}" | grep -qE "${PATTERN}"; then
+            echo "image-affecting change in ${ADDON}/ or workflow file — building"
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
-            echo "no relevant changes for ${{ matrix.addon }} — skipping (avoids phantom HA updates)"
+            echo "no image-affecting changes for ${ADDON} (README/CHANGELOG/etc only) — skipping"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
