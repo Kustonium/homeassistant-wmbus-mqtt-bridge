@@ -1,3 +1,55 @@
+## 1.5.2
+
+Defensive MQTT Discovery — closes a class of issues equivalent to
+upstream wmbusmeters issue
+[#1922](https://github.com/wmbusmeters/wmbusmeters/issues/1922).
+Telegrams from a single meter often carry only a subset of all fields
+the meter can report. Until now, every missing field in a freshly
+received telegram raised a Jinja warning in Home Assistant
+(`'dict object' has no attribute '<field>'`), easily producing
+thousands of warnings per day, and a stopped meter would still appear
+"alive" with stale values forever.
+
+### Fixed
+- `value_template` in Discovery payloads is now defensive:
+  `{{ value_json.get('<field>') | default(none) }}`. Missing field
+  returns `None`, HA treats it as "no state update" and the entity
+  keeps its last known value without raising a Jinja warning.
+- `expire_after` is now emitted per sensor and equals
+  `2 * avg_interval_s` of the meter (rounded down to the nearest
+  minute), with a 3600 s floor for fresh installs without history.
+  HA marks the entire meter unavailable when it actually stops
+  talking; the value self-tunes as telegram-interval statistics
+  stabilize (the Discovery cache key includes the rounded
+  `expire_after`, so updated configs are re-published automatically).
+- `state_class: measurement` is now emitted only for fields whose
+  `device_class` is one of the statistically meaningful kinds
+  (`temperature`, `humidity`, `power`, `voltage`, `current`,
+  `frequency`, `battery`, `water`, `gas`, `energy`). Error codes,
+  status flags, version numbers and similar numeric metadata no
+  longer pollute Home Assistant long-term statistics.
+- `device_class` for `m³` readings is now derived primarily from the
+  meter's reported `media` (water / warm_water / hot_water /
+  cold_water → `water`; gas → `gas`; heat / cooling → no
+  `device_class`, since HA has no heat-volume class and `water`
+  would be wrong). The previous keyword heuristic stays only as a
+  fallback for unknown media.
+
+### Changed
+- Docs (`docs/README.{pl,en,de,cs,sk}.md`) now describe the actual
+  MQTT topology — one JSON state topic per meter
+  (`<state_prefix>/<id>/state`) and Discovery payloads using
+  `value_template` / `json_attributes_topic` / `expire_after` — and
+  no longer claim that the bridge publishes a separate topic per
+  field, which never matched the implementation.
+
+### Notes
+- No changes to the WebUI, MQTT topology, broker connection or
+  add-on options. This release only tunes how Home Assistant
+  Discovery describes the existing data stream.
+
+---
+
 ## 1.5.1
 
 First stable release that ships the full WebUI as developed and tested on
