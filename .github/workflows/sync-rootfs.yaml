@@ -102,7 +102,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add wmbus_mqtt_bridge/
-          git commit -m "ci(sync-rootfs): promote dev runtime to stable
-
-Triggered by ${{ github.sha }} on dev."
+          git commit -m "ci(sync-rootfs): promote dev runtime to stable (triggered by ${{ github.sha }})"
           git push origin dev
