@@ -1078,9 +1078,6 @@ emit_discovery_from_json() {
     obj="$(sanitize_obj_id "${key}")"
     [[ -n "${obj}" ]] || continue
 
-    cache_key="${id}|${obj}"
-    [[ -n "${DISCOVERY_SENT_FIELD[${cache_key}]+x}" ]] && continue
-
     key_lc="$(echo "${key}" | tr '[:upper:]' '[:lower:]')"
     unit="$(guess_unit "${key}")"
     device_class="$(guess_device_class "${key_lc}" "${unit}")"
@@ -1089,6 +1086,31 @@ emit_discovery_from_json() {
     cfg_topic="${DISCOVERY_PREFIX}/sensor/${uniq}/${obj}/config"
     unique_id="${uniq}_${obj}"
     sensor_name="${name} ${key}"
+
+    # expire_after lets HA mark the entity unavailable once the meter
+    # stops talking. Base it on the meter's observed average telegram
+    # interval, multiplied by 2 for safety. Fall back to 3600s (1h)
+    # before we have enough history — most consumer wMBus meters
+    # transmit at intervals of 30s..1h, so 1h is a safe floor that
+    # won't false-positive on fresh installs.
+    local _seen_for_expire _avg_for_expire _s15_for_expire _s60_for_expire
+    IFS=$'\t' read -r _seen_for_expire _avg_for_expire _s15_for_expire _s60_for_expire \
+      < <(status_seen_stats "${id}" "meter")
+    local expire_after=3600
+    if [[ "${_avg_for_expire}" =~ ^[0-9]+$ ]]; then
+      local _double=$(( _avg_for_expire * 2 ))
+      if (( _double > expire_after )); then
+        expire_after=${_double}
+      fi
+    fi
+    # Round to nearest minute so small avg fluctuations don't churn
+    # the discovery cache. Cache key includes the rounded value so
+    # when expire_after changes (e.g. stats stabilize) HA gets an
+    # updated config and the offline detection self-tunes.
+    expire_after=$(( (expire_after / 60) * 60 ))
+
+    cache_key="${id}|${obj}|${expire_after}"
+    [[ -n "${DISCOVERY_SENT_FIELD[${cache_key}]+x}" ]] && continue
 
     payload="$(jq -c -n \
       --arg name "${sensor_name}" \
@@ -1102,13 +1124,15 @@ emit_discovery_from_json() {
       --arg unit "${unit}" \
       --arg dc "${device_class}" \
       --arg sc "${state_class}" \
+      --argjson expire "${expire_after}" \
       '(
         {
           name: $name,
           unique_id: $uniq,
           state_topic: $st,
-          value_template: "{{ value_json['\''\($key)'\'' ] }}",
+          value_template: "{{ value_json.get('\''\($key)'\'') | default(none) }}",
           json_attributes_topic: $st,
+          expire_after: $expire,
           device: {
             identifiers: [$did],
             name: $dname,
