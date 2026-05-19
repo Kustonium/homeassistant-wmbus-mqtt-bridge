@@ -1,5 +1,7 @@
 # Home Assistant Add-on: wMBus MQTT Bridge
 
+![wMBus MQTT Bridge WebUI dashboard](docs/screenshots/screenshot_masked.png)
+
 > 📚 **Pełna dokumentacja po polsku** (architektura, WebUI, workflow, troubleshooting, opis kodu) → **[docs/README.pl.md](docs/README.pl.md)**
 
 ## 🇵🇱 Opis (PL)
