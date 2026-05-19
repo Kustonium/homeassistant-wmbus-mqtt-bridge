@@ -1,6 +1,14 @@
 # Home Assistant Add-on: wMBus MQTT Bridge
 
-> 📚 **Pełna dokumentacja po polsku** (architektura, WebUI, workflow, troubleshooting, opis kodu) → **[docs/README.pl.md](docs/README.pl.md)**
+**Szybka nawigacja / Quick navigation:**
+[🇵🇱 PL (poniżej)](#-opis-pl) · [🇬🇧 EN (below)](#-description-en)
+
+**Pełna dokumentacja / Full documentation:**
+[🇵🇱 PL](https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/blob/main/docs/README.pl.md) · [🇬🇧 EN](https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/blob/main/docs/README.en.md) · [🇩🇪 DE](https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/blob/main/docs/README.de.md) · [🇨🇿 CS](https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/blob/main/docs/README.cs.md) · [🇸🇰 SK](https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/blob/main/docs/README.sk.md)
+
+> ⚠️ Tłumaczenia maszynowe — mogą zawierać błędy w dowolnym języku, w tym PL i EN. / Machine-generated translations — may contain errors in any language, including PL and EN.
+
+---
 
 ## 🇵🇱 Opis (PL)
 

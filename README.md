@@ -2,7 +2,15 @@
 
 ![wMBus MQTT Bridge WebUI dashboard](docs/screenshots/screenshot_masked.png)
 
-> 📚 **Pełna dokumentacja po polsku** (architektura, WebUI, workflow, troubleshooting, opis kodu) → **[docs/README.pl.md](docs/README.pl.md)**
+**Szybka nawigacja / Quick navigation:**
+[🇵🇱 PL (poniżej)](#-opis-pl) · [🇬🇧 EN (below)](#-description-en)
+
+**Pełna dokumentacja / Full documentation:**
+[🇵🇱 PL](docs/README.pl.md) · [🇬🇧 EN](docs/README.en.md) · [🇩🇪 DE](docs/README.de.md) · [🇨🇿 CS](docs/README.cs.md) · [🇸🇰 SK](docs/README.sk.md)
+
+> ⚠️ Tłumaczenia maszynowe — mogą zawierać błędy w dowolnym języku, w tym PL i EN. / Machine-generated translations — may contain errors in any language, including PL and EN.
+
+---
 
 ## 🇵🇱 Opis (PL)
 
