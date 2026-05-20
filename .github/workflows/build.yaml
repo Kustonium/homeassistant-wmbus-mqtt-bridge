@@ -170,6 +170,29 @@ jobs:
 
           echo "OK: version ${CURRENT} is new."
 
+      - name: Bump dev version in config.yaml and push
+        if: steps.gate.outputs.skip != 'true' && matrix.channel == 'dev' && matrix.arch == 'amd64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          CFG="${{ matrix.addon }}/config.yaml"
+          BASE_VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' "${CFG}" | head -n1)"
+          # Strip any previous run_number suffix (e.g. 1.5.4-dev.241 → 1.5.4-dev)
+          BASE_VER="${BASE_VER%%.*.*.*.*}"
+          # Rebuild: keep only X.Y.Z-dev part
+          BASE_VER="$(echo "${BASE_VER}" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+-dev).*/\1/')"
+          NEW_VER="${BASE_VER}.${{ github.run_number }}"
+          echo "Bumping dev version: ${BASE_VER} → ${NEW_VER}"
+          sed -i -E "s/^(version:[[:space:]]*\").*\"/\1${NEW_VER}\"/" "${CFG}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${CFG}"
+          git commit -m "ci(dev): bump version to ${NEW_VER} [skip ci]"
+          git pull --rebase origin dev
+          git push origin dev
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Prepare build variables
         if: steps.gate.outputs.skip != 'true'
         shell: bash
@@ -195,6 +218,14 @@ jobs:
           fi
           echo "IMAGE_BASE=${IMAGE_BASE}" >> "$GITHUB_ENV"
           echo "Building ${{ matrix.channel }} version ${VER} from ${CFG}"
+
+          # For dev: version was already bumped and committed in previous step
+          # Re-read config.yaml to get the updated version with run_number
+          if [[ "${{ matrix.channel }}" == "dev" ]]; then
+            VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' "${CFG}" | head -n1)"
+            echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
+            echo "Dev version: ${VER}"
+          fi
 
       - name: Check GHCR token
         if: steps.gate.outputs.skip != 'true'
@@ -227,6 +258,7 @@ jobs:
             --progress=plain \
             --platform ${{ matrix.platform }} \
             --build-arg BUILD_FROM=${{ matrix.base_image }} \
+            --build-arg ADDON_VERSION=${ADDON_VERSION} \
             --push \
             -t ghcr.io/${OWNER_LC}/${{ matrix.arch }}-${IMAGE_BASE}:${{ matrix.channel }} \
             -t ghcr.io/${OWNER_LC}/${{ matrix.arch }}-${IMAGE_BASE}:${ADDON_VERSION} \
