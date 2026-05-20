@@ -1046,11 +1046,21 @@ def render_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
     icon_bg = {"electricity": "#1a2a3b", "heat": "#3b2010", "water": "#0f2a3b", "warm_water": "#2a1f0a"}.get(mc, "#1a2a2a")
     icon_color = {"electricity": "#60b4f0", "heat": "#f07840", "water": "#40c0e0", "warm_water": "#f09040"}.get(mc, "#888")
     seen_15m = int(m.get("seen_15m") or 0)
+    seen_60m = int(m.get("seen_60m") or 0)
+    if seen_15m > 0:
+        status_label = tr(lang, "online_label")
+        status_color = "#2de36f"
+    elif seen_60m > 0:
+        status_label = tr(lang, "silent_label")
+        status_color = "#f3c84b"
+    else:
+        status_label = tr(lang, "offline_label")
+        status_color = "#ff646b"
     signal = _signal_bars(seen_15m)
     meter_id = m.get("id") or ""
     confirm_msg = tr(lang, "confirm_delete").format(mid=meter_id)
     return f'''
-    <article class="meter-card"><div class="meter-top"><div class="micon" style="background:{icon_bg};color:{icon_color};">{icon}</div><div><div class="mname">{esc(m.get('name') or m.get('id'))}</div><div class="mid">{esc(m.get('id'))}<br>{esc(m.get('driver'))}</div></div><div class="online">{esc(tr(lang, "online_label"))} {signal}<br><span class="mid">{fmt_ts(m.get('last_seen') or '')}</span></div></div>
+    <article class="meter-card"><div class="meter-top"><div class="micon" style="background:{icon_bg};color:{icon_color};">{icon}</div><div><div class="mname">{esc(m.get('name') or m.get('id'))}</div><div class="mid">{esc(m.get('id'))}<br>{esc(m.get('driver'))}</div></div><div class="online" style="color:{status_color};">{esc(status_label)} {signal}<br><span class="mid">{fmt_ts(m.get('last_seen') or '')}</span></div></div>
       <div><div class="value-key">{esc(m.get('value_key') or tr(lang, "value_label"))}</div><div class="value-main">{esc(m.get('value') or '—')}</div></div>
       <div><div class="meter-meta"><span>{esc(tr(lang, "media"))}<strong>{esc(tr_media(lang, media_class(m.get('media',''), m.get('driver',''))))}</strong></span><span>{esc(tr(lang, "reception"))}<strong>{esc(fmt_interval(m.get('avg_interval_s')))}</strong></span><span>{esc(tr(lang, "seen_15m_label"))}<strong>{esc(m.get('seen_15m') or '0')}</strong></span><span>{esc(tr(lang, "seen_60m_label"))}<strong>{esc(m.get('seen_60m') or '0')}</strong></span></div>
       <div class="entity-row"><span class="published">{esc(m.get('discovery') or tr(lang, "state_label"))}</span>
