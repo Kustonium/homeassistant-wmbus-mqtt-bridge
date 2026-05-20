@@ -27,6 +27,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Kustonium/homeassistant-wmbus-mqtt-bridge-dev
+          token: ''
           path: _dev
 
       - name: Detect and validate version from dev
