@@ -1,0 +1,103 @@
+name: promote-to-stable
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'New stable version (e.g. 1.5.5)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: promote-to-stable
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout stable repo
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Checkout dev repo
+        uses: actions/checkout@v6
+        with:
+          repository: Kustonium/homeassistant-wmbus-mqtt-bridge-dev
+          token: ${{ secrets.PROMOTE_TOKEN }}
+          path: _dev
+
+      - name: Validate version format
+        shell: bash
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: version '${VERSION}' is not in X.Y.Z format."
+            exit 1
+          fi
+          git fetch --tags --quiet 2>/dev/null || true
+          if git tag | grep -qx "${VERSION}"; then
+            echo "ERROR: tag ${VERSION} already exists."
+            exit 1
+          fi
+          echo "Version ${VERSION} looks good."
+
+      - name: Copy runtime files from dev to stable
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="_dev"
+          DST="wmbus_mqtt_bridge"
+
+          for item in rootfs Dockerfile translations; do
+            if [[ -e "${SRC}/${item}" ]]; then
+              rm -rf "${DST:?}/${item}"
+              cp -r "${SRC}/${item}" "${DST}/${item}"
+              echo "synced: ${item}"
+            fi
+          done
+
+          find "${DST}/rootfs" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+          for f in \
+            "${DST}/rootfs/usr/bin/run.sh" \
+            "${DST}/rootfs/usr/bin/bridge.sh" \
+            "${DST}/rootfs/usr/bin/webui.py"
+          do
+            if [[ -e "${f}" ]]; then
+              chmod +x "${f}"
+              git update-index --add --chmod=+x "${f}" 2>/dev/null || true
+            fi
+          done
+
+      - name: Set stable version in config.yaml
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.event.inputs.version }}"
+          CFG="wmbus_mqtt_bridge/config.yaml"
+          sed -i -E "s/^(version:[[:space:]]*\").*\"/\1${VERSION}\"/" "${CFG}"
+          grep '^version:' "${CFG}"
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add wmbus_mqtt_bridge/
+          git diff --staged --stat
+          if git diff --staged --quiet; then
+            echo "No changes — stable already matches dev."
+          else
+            git commit -m "release: ${{ github.event.inputs.version }}"
+            git push origin main
+          fi
