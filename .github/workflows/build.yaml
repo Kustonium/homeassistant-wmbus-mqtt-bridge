@@ -23,7 +23,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 concurrency:
@@ -232,3 +232,15 @@ jobs:
             -t ghcr.io/${OWNER_LC}/${{ matrix.arch }}-${IMAGE_BASE}:${ADDON_VERSION} \
             -f ${{ matrix.addon }}/Dockerfile \
             ${{ matrix.addon }}
+
+      - name: Create git tag for stable release
+        if: steps.gate.outputs.skip != 'true' && matrix.channel == 'stable' && matrix.arch == 'amd64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${ADDON_VERSION}"
+          git push origin "${ADDON_VERSION}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
