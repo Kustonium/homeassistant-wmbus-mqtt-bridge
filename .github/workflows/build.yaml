@@ -4,21 +4,11 @@ on:
   push:
     branches:
       - main
-      - dev
-    # Workflow-level path filter: only build for changes that actually
-    # affect the image. README.md / CHANGELOG.md / docs/ / repo root are
-    # intentionally NOT listed — text-only commits skip the build.
-    # Per-job filtering below then decides which addon(s) to rebuild
-    # when only one channel changed.
     paths:
       - 'wmbus_mqtt_bridge/rootfs/**'
       - 'wmbus_mqtt_bridge/Dockerfile'
       - 'wmbus_mqtt_bridge/config.yaml'
       - 'wmbus_mqtt_bridge/translations/**'
-      - 'wmbus_mqtt_bridge_dev/rootfs/**'
-      - 'wmbus_mqtt_bridge_dev/Dockerfile'
-      - 'wmbus_mqtt_bridge_dev/config.yaml'
-      - 'wmbus_mqtt_bridge_dev/translations/**'
       - '.github/workflows/build.yaml'
   workflow_dispatch:
 
@@ -35,41 +25,18 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.addon }} (${{ matrix.arch }})
+    name: Build wmbus_mqtt_bridge (${{ matrix.arch }})
     runs-on: ${{ matrix.runs_on }}
 
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Stable addon — built only from main branch
-          - addon: wmbus_mqtt_bridge
-            channel: stable
-            branch: main
-            arch: amd64
+          - arch: amd64
             platform: linux/amd64
             base_image: ghcr.io/home-assistant/amd64-base:3.20
             runs_on: ubuntu-latest
-          - addon: wmbus_mqtt_bridge
-            channel: stable
-            branch: main
-            arch: aarch64
-            platform: linux/arm64
-            base_image: ghcr.io/home-assistant/aarch64-base:3.20
-            runs_on: ubuntu-24.04-arm
-
-          # Dev addon — built only from dev branch
-          - addon: wmbus_mqtt_bridge_dev
-            channel: dev
-            branch: dev
-            arch: amd64
-            platform: linux/amd64
-            base_image: ghcr.io/home-assistant/amd64-base:3.20
-            runs_on: ubuntu-latest
-          - addon: wmbus_mqtt_bridge_dev
-            channel: dev
-            branch: dev
-            arch: aarch64
+          - arch: aarch64
             platform: linux/arm64
             base_image: ghcr.io/home-assistant/aarch64-base:3.20
             runs_on: ubuntu-24.04-arm
@@ -80,34 +47,20 @@ jobs:
         with:
           fetch-depth: 2
 
-      - name: Gate (branch + path-aware)
+      - name: Gate (path-aware)
         id: gate
         shell: bash
         run: |
           set -euo pipefail
 
-          # workflow_dispatch always builds, regardless of branch / paths
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "manual dispatch — building ${{ matrix.addon }} (${{ matrix.channel }})"
+            echo "manual dispatch — building"
             echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Branch must match the channel this matrix row owns
-          REF_BRANCH="${GITHUB_REF#refs/heads/}"
-          if [[ "${REF_BRANCH}" != "${{ matrix.branch }}" ]]; then
-            echo "branch ${REF_BRANCH} != ${{ matrix.branch }} for channel ${{ matrix.channel }} — skipping"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Per-job path filter: only build if files in this addon's
-          # image-affecting paths (rootfs/, Dockerfile, config.yaml,
-          # translations/) OR the workflow itself changed. README and
-          # CHANGELOG inside the subfolder are intentionally excluded.
           CHANGED="$(git diff --name-only HEAD~1 HEAD 2>/dev/null || true)"
           if [[ -z "${CHANGED}" ]]; then
-            # Likely first commit on this branch — cannot diff. Build to be safe.
             echo "cannot determine changed files — building defensively"
             echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -116,13 +69,12 @@ jobs:
           echo "Files changed in this push:"
           echo "${CHANGED}" | sed 's/^/  /'
 
-          ADDON="${{ matrix.addon }}"
-          PATTERN="^(${ADDON}/(rootfs/|Dockerfile|config\.yaml|translations/)|\.github/workflows/build\.yaml$)"
+          PATTERN="^(wmbus_mqtt_bridge/(rootfs/|Dockerfile|config\.yaml|translations/)|\.github/workflows/build\.yaml$)"
           if echo "${CHANGED}" | grep -qE "${PATTERN}"; then
-            echo "image-affecting change in ${ADDON}/ or workflow file — building"
+            echo "image-affecting change — building"
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
-            echo "no image-affecting changes for ${ADDON} (README/CHANGELOG/etc only) — skipping"
+            echo "no image-affecting changes (README/CHANGELOG/etc only) — skipping"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -133,16 +85,15 @@ jobs:
           echo "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
           echo "GITHUB_REPOSITORY_OWNER=${GITHUB_REPOSITORY_OWNER}"
           echo "GITHUB_REF=${GITHUB_REF}"
-          echo "GITHUB_ACTOR=${GITHUB_ACTOR}"
-          echo "addon=${{ matrix.addon }} channel=${{ matrix.channel }} arch=${{ matrix.arch }}"
+          echo "arch=${{ matrix.arch }}"
 
-      - name: Enforce version bump (stable only)
-        if: steps.gate.outputs.skip != 'true' && matrix.channel == 'stable'
+      - name: Enforce version bump
+        if: steps.gate.outputs.skip != 'true'
         shell: bash
         run: |
           set -euo pipefail
 
-          CFG="${{ matrix.addon }}/config.yaml"
+          CFG="wmbus_mqtt_bridge/config.yaml"
           CURRENT="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' "${CFG}" | head -n1)"
 
           if [[ -z "${CURRENT}" ]]; then
@@ -155,7 +106,6 @@ jobs:
             exit 1
           fi
 
-          # Fetch all tags to compare
           git fetch --tags --quiet 2>/dev/null || true
           LAST_TAG="$(git tag --sort=-v:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
 
@@ -170,29 +120,6 @@ jobs:
 
           echo "OK: version ${CURRENT} is new."
 
-      - name: Bump dev version in config.yaml and push
-        if: steps.gate.outputs.skip != 'true' && matrix.channel == 'dev' && matrix.arch == 'amd64'
-        shell: bash
-        run: |
-          set -euo pipefail
-          CFG="${{ matrix.addon }}/config.yaml"
-          BASE_VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' "${CFG}" | head -n1)"
-          # Strip any previous run_number suffix (e.g. 1.5.4-dev.241 → 1.5.4-dev)
-          BASE_VER="${BASE_VER%%.*.*.*.*}"
-          # Rebuild: keep only X.Y.Z-dev part
-          BASE_VER="$(echo "${BASE_VER}" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+-dev).*/\1/')"
-          NEW_VER="${BASE_VER}.${{ github.run_number }}"
-          echo "Bumping dev version: ${BASE_VER} → ${NEW_VER}"
-          sed -i -E "s/^(version:[[:space:]]*\").*\"/\1${NEW_VER}\"/" "${CFG}"
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${CFG}"
-          git commit -m "ci(dev): bump version to ${NEW_VER} [skip ci]"
-          git pull --rebase origin dev
-          git push origin dev
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Prepare build variables
         if: steps.gate.outputs.skip != 'true'
         shell: bash
@@ -200,32 +127,14 @@ jobs:
           set -euo pipefail
           echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
 
-          CFG="${{ matrix.addon }}/config.yaml"
+          CFG="wmbus_mqtt_bridge/config.yaml"
           VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' "${CFG}" | head -n1)"
           if [[ -z "${VER}" ]]; then
             echo "ERROR: cannot read version from ${CFG}"
             exit 1
           fi
           echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
-
-          # Image base name comes from the addon folder name.
-          # Stable: wmbus_mqtt_bridge       -> ghcr.io/<owner>/<arch>-addon-wmbus_mqtt_bridge
-          # Dev:    wmbus_mqtt_bridge_dev   -> ghcr.io/<owner>/<arch>-addon-wmbus_mqtt_bridge-dev
-          if [[ "${{ matrix.channel }}" == "dev" ]]; then
-            IMAGE_BASE="addon-wmbus_mqtt_bridge-dev"
-          else
-            IMAGE_BASE="addon-wmbus_mqtt_bridge"
-          fi
-          echo "IMAGE_BASE=${IMAGE_BASE}" >> "$GITHUB_ENV"
-          echo "Building ${{ matrix.channel }} version ${VER} from ${CFG}"
-
-          # For dev: version was already bumped and committed in previous step
-          # Re-read config.yaml to get the updated version with run_number
-          if [[ "${{ matrix.channel }}" == "dev" ]]; then
-            VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' "${CFG}" | head -n1)"
-            echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
-            echo "Dev version: ${VER}"
-          fi
+          echo "Building stable version ${VER}"
 
       - name: Check GHCR token
         if: steps.gate.outputs.skip != 'true'
@@ -260,13 +169,13 @@ jobs:
             --build-arg BUILD_FROM=${{ matrix.base_image }} \
             --build-arg ADDON_VERSION=${ADDON_VERSION} \
             --push \
-            -t ghcr.io/${OWNER_LC}/${{ matrix.arch }}-${IMAGE_BASE}:${{ matrix.channel }} \
-            -t ghcr.io/${OWNER_LC}/${{ matrix.arch }}-${IMAGE_BASE}:${ADDON_VERSION} \
-            -f ${{ matrix.addon }}/Dockerfile \
-            ${{ matrix.addon }}
+            -t ghcr.io/${OWNER_LC}/${{ matrix.arch }}-addon-wmbus_mqtt_bridge:latest \
+            -t ghcr.io/${OWNER_LC}/${{ matrix.arch }}-addon-wmbus_mqtt_bridge:${ADDON_VERSION} \
+            -f wmbus_mqtt_bridge/Dockerfile \
+            wmbus_mqtt_bridge
 
-      - name: Create git tag for stable release
-        if: steps.gate.outputs.skip != 'true' && matrix.channel == 'stable' && matrix.arch == 'amd64'
+      - name: Create git tag
+        if: steps.gate.outputs.skip != 'true' && matrix.arch == 'amd64'
         shell: bash
         run: |
           set -euo pipefail
@@ -278,7 +187,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create GitHub Release
-        if: steps.gate.outputs.skip != 'true' && matrix.channel == 'stable' && matrix.arch == 'amd64'
+        if: steps.gate.outputs.skip != 'true' && matrix.arch == 'amd64'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.ADDON_VERSION }}
