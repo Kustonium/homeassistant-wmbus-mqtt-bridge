@@ -36,6 +36,8 @@ RUN apk add --no-cache \
   libusb librtlsdr
 
 COPY --from=builder /out/wmbusmeters /usr/bin/wmbusmeters
+ARG ADDON_VERSION=dev
+ENV ADDON_VERSION=${ADDON_VERSION}
 COPY rootfs /
 # Bake the addon manifest next to webui.py so read_addon_version()
 # can pick up the real version at runtime (HA does not mount
