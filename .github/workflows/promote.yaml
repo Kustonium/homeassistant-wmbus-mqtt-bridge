@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Checkout stable repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           ref: main
           token: ${{ secrets.PROMOTE_TOKEN }}
