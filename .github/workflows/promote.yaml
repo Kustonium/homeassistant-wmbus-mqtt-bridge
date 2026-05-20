@@ -25,7 +25,7 @@ jobs:
 
       - name: Checkout dev repo
         shell: bash
-        run: git clone --depth 1 https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge-dev.git _dev
+        run: git -c credential.helper= clone --depth 1 https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge-dev.git _dev
 
       - name: Detect and validate version from dev
         id: version
