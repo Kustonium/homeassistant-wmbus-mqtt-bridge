@@ -951,6 +951,7 @@ def render_pending_panel(pending: list[dict], lang: str = DEFAULT_LANG) -> str:
         f'<thead><tr><th>{esc(tr(lang, "meter_id"))}</th>'
         f'<th>{esc(tr(lang, "driver"))}</th><th>AES</th></tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table></div>'
+        f'{render_restart_block(lang)}'
         f'</section>'
     )
 
