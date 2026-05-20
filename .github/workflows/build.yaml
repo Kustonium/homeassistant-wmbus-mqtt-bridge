@@ -199,7 +199,7 @@ jobs:
           # For dev channel: append git short SHA to version so HA always sees a newer build
           if [[ "${{ matrix.channel }}" == "dev" ]]; then
             SHORT_SHA="$(git rev-parse --short HEAD)"
-            ADDON_VERSION="${ADDON_VERSION}.${SHORT_SHA}"
+            ADDON_VERSION="${VER}.${SHORT_SHA}"
             echo "ADDON_VERSION=${ADDON_VERSION}" >> "$GITHUB_ENV"
             echo "Dev version with SHA: ${ADDON_VERSION}"
           fi
