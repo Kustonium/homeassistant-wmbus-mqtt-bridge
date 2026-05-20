@@ -244,3 +244,15 @@ jobs:
           git push origin "${ADDON_VERSION}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        if: steps.gate.outputs.skip != 'true' && matrix.channel == 'stable' && matrix.arch == 'amd64'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.ADDON_VERSION }}
+          name: ${{ env.ADDON_VERSION }}
+          body_path: wmbus_mqtt_bridge/CHANGELOG.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
