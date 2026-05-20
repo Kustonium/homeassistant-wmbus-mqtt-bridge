@@ -28,6 +28,7 @@ jobs:
 
           mapfile -t files < <(find . -type f -name '*.sh' \
             -not -path './.git/*' \
+            -not -path './.claude/*' \
             -not -path './docker/config/*' \
             -not -path './wmbusmeters-mqtt-stdin/*' \
             | sort)
