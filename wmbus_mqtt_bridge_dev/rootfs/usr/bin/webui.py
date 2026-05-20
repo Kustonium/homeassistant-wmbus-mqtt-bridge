@@ -1040,6 +1040,19 @@ def _signal_bars(seen_15m: int) -> str:
     return f'<span style="display:inline-flex;align-items:flex-end;height:16px;gap:1px;">{bars}</span>'
 
 
+def unit_from_key(value_key: str) -> str:
+    """Extract display unit from wmbusmeters field name suffix."""
+    k = (value_key or "").lower()
+    if k.endswith("_kwh"):  return "kWh"
+    if k.endswith("_kw"):   return "kW"
+    if k.endswith("_wh"):   return "Wh"
+    if k.endswith("_w"):    return "W"
+    if k.endswith("_m3"):   return "m³"
+    if k.endswith("_l"):    return "L"
+    if k.endswith("_c"):    return "°C"
+    return ""
+
+
 def render_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
     icon = media_icon(m.get("media", ""), m.get("driver", ""))
     mc = media_class(m.get("media", ""), m.get("driver", ""))
@@ -1058,10 +1071,13 @@ def render_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
         status_color = "#ff646b"
     signal = _signal_bars(seen_15m)
     meter_id = m.get("id") or ""
+    unit = unit_from_key(m.get("value_key") or "")
+    value_str = m.get('value') or '—'
+    value_display = f"{value_str} {unit}" if unit and value_str != '—' else value_str
     confirm_msg = tr(lang, "confirm_delete").format(mid=meter_id)
     return f'''
     <article class="meter-card"><div class="meter-top"><div class="micon" style="background:{icon_bg};color:{icon_color};">{icon}</div><div><div class="mname">{esc(m.get('name') or m.get('id'))}</div><div class="mid">{esc(m.get('id'))}<br>{esc(m.get('driver'))}</div></div><div class="online" style="color:{status_color};">{esc(status_label)} {signal}<br><span class="mid">{fmt_ts(m.get('last_seen') or '')}</span></div></div>
-      <div><div class="value-key">{esc(m.get('value_key') or tr(lang, "value_label"))}</div><div class="value-main">{esc(m.get('value') or '—')}</div></div>
+      <div><div class="value-key">{esc(m.get('value_key') or tr(lang, "value_label"))}</div><div class="value-main">{esc(value_display)}</div></div>
       <div><div class="meter-meta"><span>{esc(tr(lang, "media"))}<strong>{esc(tr_media(lang, media_class(m.get('media',''), m.get('driver',''))))}</strong></span><span>{esc(tr(lang, "reception"))}<strong>{esc(fmt_interval(m.get('avg_interval_s')))}</strong></span><span>{esc(tr(lang, "seen_15m_label"))}<strong>{esc(m.get('seen_15m') or '0')}</strong></span><span>{esc(tr(lang, "seen_60m_label"))}<strong>{esc(m.get('seen_60m') or '0')}</strong></span></div>
       <div class="entity-row"><span class="published">{esc(m.get('discovery') or tr(lang, "state_label"))}</span>
         <form method="post" action="remove-meter" style="margin:0;" onsubmit="return confirm({json.dumps(confirm_msg)});">
