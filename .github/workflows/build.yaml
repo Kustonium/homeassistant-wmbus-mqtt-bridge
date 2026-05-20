@@ -172,9 +172,9 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag "${ADDON_VERSION}"
-          git push origin "${ADDON_VERSION}"
+          git push "https://x-access-token:${PROMOTE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${ADDON_VERSION}"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROMOTE_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
 
       - name: Create GitHub Release
         if: steps.gate.outputs.skip != 'true' && matrix.arch == 'amd64'
