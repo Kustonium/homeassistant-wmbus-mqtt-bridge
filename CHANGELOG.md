@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.5.4] - 2026-05-21
+
+### Added
+- WebUI **System status** panel now shows the MQTT `raw_topic` the
+  bridge subscribes to (as a small monospace pill) and a "Telegramy
+  RAW (15 min)" row that goes amber/green based on the freshness of
+  `pipe.last_raw_seen` from `status.json`.
+- Every meter card now prints its per-meter MQTT topic
+  (`raw_topic` with `+` substituted by the meter ID) as a one-line
+  monospace strip under the main value, so the topic can be copied
+  straight into `mosquitto_sub`.
+- `Bump dev version in config.yaml and push` step in `build-addon`
+  workflow: on every dev push from amd64 row, the addon's
+  `config.yaml` version is rewritten to `<X.Y.Z>-dev.<run_number>`,
+  committed back to `dev` and pushed (with a `git pull --rebase`
+  immediately before to avoid lost-race conflicts).
+- `Create GitHub Release` step now publishes a GitHub Release on every
+  successful stable build, using `wmbus_mqtt_bridge/CHANGELOG.md` as
+  the release body.
+
+### Fixed
+- `read_addon_version()` in `webui.py` now reads the `ADDON_VERSION`
+  environment variable first and only falls back to the baked-in
+  `config.yaml`. The `Dockerfile` declares
+  `ARG ADDON_VERSION=dev` / `ENV ADDON_VERSION=${ADDON_VERSION}` and
+  the `Build and push` step passes the live CI-resolved value via
+  `--build-arg`. Net result: the topbar shows the actual built
+  version (including the `.<run_number>` suffix on dev), not a stale
+  value from a file copied earlier in the build.
+- `raw_15m` counter is now derived from `pipe.last_raw_seen` in
+  `status.json` (single freshness check) instead of scanning
+  `status_seen.tsv`. Previously the scan could miss telegrams that
+  were never persisted to TSV; the freshness-based counter matches
+  what the rest of the dashboard already shows.
+
+### Changed
+- Permissions for the `build-addon` workflow widened from
+  `contents: read` to `contents: write` so the auto-tag, auto-release
+  and dev-bump steps can push tags/commits back to origin.
+
 ## [1.5.3] - 2026-05-20
 
 ### Added
