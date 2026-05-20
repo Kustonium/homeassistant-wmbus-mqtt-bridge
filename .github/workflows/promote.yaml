@@ -127,6 +127,11 @@ jobs:
           VERSION="${{ steps.version.outputs.VERSION }}"
           BRANCH="release/${VERSION}"
 
+          # DEBUG: verify token presence and identity
+          echo "PROMOTE_TOKEN length: ${#GH_TOKEN}"
+          echo "Token authenticates as:"
+          gh api user --jq '.login' || { echo "ERROR: gh api user failed — token invalid or empty"; exit 1; }
+
           # Configure remote with PROMOTE_TOKEN so all git operations authenticate properly
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/Kustonium/homeassistant-wmbus-mqtt-bridge.git"
 
