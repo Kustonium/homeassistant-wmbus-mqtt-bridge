@@ -127,6 +127,9 @@ jobs:
           VERSION="${{ steps.version.outputs.VERSION }}"
           BRANCH="release/${VERSION}"
 
+          # Configure remote with PROMOTE_TOKEN so all git operations authenticate properly
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/Kustonium/homeassistant-wmbus-mqtt-bridge.git"
+
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add rootfs/ Dockerfile config.yaml CHANGELOG.md
@@ -140,8 +143,8 @@ jobs:
 
           git commit -m "release: ${VERSION}"
 
-          # Push to release branch (unprotected) using PROMOTE_TOKEN
-          git push "https://x-access-token:${GH_TOKEN}@github.com/Kustonium/homeassistant-wmbus-mqtt-bridge.git" "HEAD:${BRANCH}"
+          # Push to release branch (unprotected)
+          git push origin "HEAD:${BRANCH}"
 
           # Create PR
           gh pr create \
