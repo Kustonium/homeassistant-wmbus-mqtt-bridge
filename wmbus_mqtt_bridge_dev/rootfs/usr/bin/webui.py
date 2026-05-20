@@ -734,6 +734,14 @@ def status_model(data: dict) -> dict:
     wmbus_ok = bool(pipe.get("wmbusmeters_running")) or candidate_count > 0 or decoded_count > 0
     decoded_ok = decoded_count > 0
     discovery_ok = bool(pipe.get("discovery_published"))
+    import time as _time
+    raw_15m = 0
+    try:
+        now_ts = int(_time.time())
+        lines = read_tsv(BASE / "status_seen.tsv", ["id", "kind", "ts"])
+        raw_15m = sum(1 for r in lines if r.get("kind") == "raw" and safe_int(r.get("ts")) >= now_ts - 900)
+    except Exception:
+        pass
     return {
         "status": status,
         "cfg": cfg,
@@ -751,6 +759,7 @@ def status_model(data: dict) -> dict:
         "wmbus_ok": wmbus_ok,
         "decoded_ok": decoded_ok,
         "discovery_ok": discovery_ok,
+        "raw_15m": raw_15m,
     }
 
 
@@ -1011,6 +1020,7 @@ def render_filter_links(base: str, active: str, lang: str = DEFAULT_LANG) -> str
 def render_system_status(model: dict) -> str:
     mqtt = model["mqtt"]
     pipe = model["pipe"]
+    cfg = model["cfg"]
     meter_count = model["meter_count"]
     candidate_count = model["candidate_count"]
     return f'''
@@ -1021,6 +1031,8 @@ def render_system_status(model: dict) -> str:
       <div class="status-row">{status_dot(model['decoded_ok'], warn=candidate_count > 0)}<span>Decoded JSON received</span><span class="right">{model['decoded_count']}</span></div>
       <div class="status-row">{status_dot(meter_count > 0, warn=candidate_count > 0)}<span>Configured meters</span><span class="right">{meter_count}</span></div>
       <div class="status-row">{status_dot(model['discovery_ok'], warn=candidate_count > 0)}<span>HA Discovery published</span><span class="right">{'yes' if model['discovery_ok'] else 'not yet'}</span></div>
+      <div class="status-row"><span style="width:14px;display:inline-block;"></span><span>MQTT topic</span><span class="right"><code style="font-size:11px;background:#0e151b;padding:2px 6px;border-radius:4px;">{esc(cfg.get("raw_topic") or "—")}</code></span></div>
+      <div class="status-row">{status_dot(model["raw_15m"] > 0)}<span>Telegramy RAW (15 min)</span><span class="right">{model["raw_15m"]}</span></div>
     </div><div class="last-line"><span>Last RAW telegram</span><span>{esc(fmt_ts(pipe.get('last_raw_seen') or '') or 'not seen this session')} <span class="pill raw">RAW</span></span></div></section>'''
 
 
@@ -1114,7 +1126,7 @@ def unit_from_key(value_key: str) -> str:
     return ""
 
 
-def render_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
+def render_meter_card(m: dict, lang: str = DEFAULT_LANG, cfg: dict = {}) -> str:
     icon = media_icon(m.get("media", ""), m.get("driver", ""))
     mc = media_class(m.get("media", ""), m.get("driver", ""))
     icon_bg = {"electricity": "#1a2a3b", "heat": "#3b2010", "water": "#0f2a3b", "warm_water": "#2a1f0a"}.get(mc, "#1a2a2a")
@@ -1135,11 +1147,12 @@ def render_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
     unit = unit_from_key(m.get("value_key") or "")
     value_str = m.get('value') or '—'
     value_display = f"{value_str} {unit}" if unit and value_str != '—' else value_str
+    raw_topic = (cfg.get("raw_topic") or "").replace("+", esc(meter_id))
     confirm_msg = tr(lang, "confirm_delete").format(mid=meter_id)
     return f'''
     <article class="meter-card"><div class="meter-top"><div class="micon" style="background:{icon_bg};color:{icon_color};">{icon}</div><div><div class="mname">{esc(m.get('name') or m.get('id'))}</div><div class="mid">{esc(m.get('id'))}<br>{esc(m.get('driver'))}</div></div><div class="online" style="color:{status_color};">{esc(status_label)} {signal}<br><span class="mid">{fmt_ts(m.get('last_seen') or '')}</span></div></div>
       <div><div class="value-key">{esc(m.get('value_key') or tr(lang, "value_label"))}</div><div class="value-main">{esc(value_display)}</div></div>
-      <div><div class="meter-meta"><span>{esc(tr(lang, "media"))}<strong>{esc(tr_media(lang, media_class(m.get('media',''), m.get('driver',''))))}</strong></span><span>{esc(tr(lang, "reception"))}<strong>{esc(fmt_interval(m.get('avg_interval_s')))}</strong></span><span>{esc(tr(lang, "seen_15m_label"))}<strong>{esc(m.get('seen_15m') or '0')}</strong></span><span>{esc(tr(lang, "seen_60m_label"))}<strong>{esc(m.get('seen_60m') or '0')}</strong></span></div>
+      <div><div style="font-size:10px;color:#607a88;margin-bottom:6px;font-family:monospace;">{esc(raw_topic)}</div><div class="meter-meta"><span>{esc(tr(lang, "media"))}<strong>{esc(tr_media(lang, media_class(m.get('media',''), m.get('driver',''))))}</strong></span><span>{esc(tr(lang, "reception"))}<strong>{esc(fmt_interval(m.get('avg_interval_s')))}</strong></span><span>{esc(tr(lang, "seen_15m_label"))}<strong>{esc(m.get('seen_15m') or '0')}</strong></span><span>{esc(tr(lang, "seen_60m_label"))}<strong>{esc(m.get('seen_60m') or '0')}</strong></span></div>
       <div class="entity-row"><span class="published">{esc(m.get('discovery') or tr(lang, "state_label"))}</span>
         <form method="post" action="remove-meter" style="margin:0;" onsubmit="return confirm({json.dumps(confirm_msg)});">
           <input type="hidden" name="meter_id" value="{esc(meter_id)}">
@@ -1148,12 +1161,12 @@ def render_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
       </div></div></article>'''
 
 
-def render_configured_meters(meters: list[dict], max_items: int | None = None, lang: str = DEFAULT_LANG, pending: list[dict] | None = None) -> str:
+def render_configured_meters(meters: list[dict], max_items: int | None = None, lang: str = DEFAULT_LANG, pending: list[dict] | None = None, cfg: dict = {}) -> str:
     shown = meters if max_items is None else meters[:max_items]
     pending = pending or []
     if not shown and not pending:
         return f'<div class="empty">{esc(tr(lang, "no_configured_meters_yet"))}</div>'
-    cards = [render_meter_card(m, lang) for m in shown]
+    cards = [render_meter_card(m, lang, cfg) for m in shown]
     cards += [render_pending_meter_card(m, lang) for m in pending]
     return '<div class="meter-grid">' + ''.join(cards) + '</div>'
 
@@ -1378,7 +1391,7 @@ def page_dashboard(data: dict, params: dict[str, list[str]], lang: str = DEFAULT
       <section class="grid3">{render_system_status(model)}{render_stats(model)}{render_discovery(model)}</section>
       {render_pending_panel(pending, lang)}
       {render_waiting_panel(data, lang)}
-      <section class="card" style="margin-top:14px;"><div class="section-head"><h2>{esc(tr(lang, "configured_meters"))}</h2>{render_filter_links('.', media, lang)}</div>{render_configured_meters(meters, max_items=6, lang=lang, pending=pending)}</section>
+      <section class="card" style="margin-top:14px;"><div class="section-head"><h2>{esc(tr(lang, "configured_meters"))}</h2>{render_filter_links('.', media, lang)}</div>{render_configured_meters(meters, max_items=6, lang=lang, pending=pending, cfg=model["cfg"])}</section>
       <section class="card" style="margin-top:14px;"><div class="section-head"><h2>{esc(tr(lang, "detected_candidates"))}</h2></div>{render_candidate_summary(data['candidates'], lang)}</section>
       <div class="footer"><span>wMBus MQTT Bridge</span><span>{esc(tr(lang, "footer_subtitle"))}</span><span>{esc(tr(lang, "footer_caption"))}</span></div>'''
     return shell('dashboard', body, model['status'].get('updated_at', ''), lang=lang)
@@ -1397,7 +1410,7 @@ def page_meters(data: dict, params: dict[str, list[str]], lang: str = DEFAULT_LA
         f'<section class="card" style="margin-top:18px;"><div class="section-head">'
         f'<h2>{esc(tr(lang, "configured_meters"))} ({len(meters)} / {model["meter_count"]})</h2>'
         f'{render_filter_links("meters", media, lang)}</div>'
-        f'{render_configured_meters(meters, lang=lang, pending=pending)}</section>'
+        f'{render_configured_meters(meters, lang=lang, pending=pending, cfg=model["cfg"])}</section>'
     )
     return shell('meters', body, model['status'].get('updated_at', ''), lang=lang)
 
