@@ -131,5 +131,5 @@ jobs:
             echo "No changes — stable already matches dev."
           else
             git commit -m "release: ${{ steps.version.outputs.VERSION }}"
-            git push origin main
+            git push https://x-access-token:${{ secrets.PROMOTE_TOKEN }}@github.com/Kustonium/homeassistant-wmbus-mqtt-bridge.git main
           fi
