@@ -1136,6 +1136,14 @@ def render_meter_card(m: dict, lang: str = DEFAULT_LANG, cfg: dict = {}) -> str:
     icon_color = {"electricity": "#60b4f0", "heat": "#f07840", "water": "#40c0e0", "warm_water": "#f09040"}.get(mc, "#888")
     seen_15m = int(m.get("seen_15m") or 0)
     seen_60m = int(m.get("seen_60m") or 0)
+    last_seen_dt = parse_iso_time(m.get("last_seen") or "")
+    if last_seen_dt:
+        now = datetime.now(last_seen_dt.tzinfo or timezone.utc)
+        age_s = (now - last_seen_dt).total_seconds()
+        if age_s > 15 * 60:
+            seen_15m = 0
+        if age_s > 60 * 60:
+            seen_60m = 0
     if seen_15m > 0:
         status_label = tr(lang, "online_label")
         status_color = "#2de36f"

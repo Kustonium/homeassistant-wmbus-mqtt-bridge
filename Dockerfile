@@ -45,4 +45,9 @@ COPY rootfs /
 COPY config.yaml /usr/bin/config.yaml
 
 RUN sed -i 's/\r$//' /usr/bin/run.sh /usr/bin/bridge.sh \
-  && chmod a+x /usr/bin/run.sh /usr/bin/bridge.sh /usr/bin/webui.py
+  && chmod a+x \
+       /usr/bin/run.sh \
+       /usr/bin/bridge.sh \
+       /usr/bin/webui.py \
+       /etc/services.d/wmbus_mqtt_bridge/run \
+       /etc/services.d/wmbus_webui/run

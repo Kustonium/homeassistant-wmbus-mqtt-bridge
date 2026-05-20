@@ -2,11 +2,6 @@ name: promote-to-stable
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'New stable version (e.g. 1.5.5)'
-        required: true
-        type: string
 
 permissions:
   contents: write
@@ -35,12 +30,18 @@ jobs:
           token: ${{ secrets.PROMOTE_TOKEN }}
           path: _dev
 
-      - name: Validate version format
+      - name: Detect and validate version from dev
+        id: version
         shell: bash
         run: |
-          VERSION="${{ github.event.inputs.version }}"
-          if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "ERROR: version '${VERSION}' is not in X.Y.Z format."
+          DEV_VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' _dev/config.yaml | head -n1)"
+          if [[ -z "${DEV_VER}" ]]; then
+            echo "ERROR: cannot read version from _dev/config.yaml"
+            exit 1
+          fi
+          VERSION="$(echo "${DEV_VER}" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')"
+          if [[ -z "${VERSION}" ]]; then
+            echo "ERROR: cannot extract X.Y.Z from dev version '${DEV_VER}'"
             exit 1
           fi
           git fetch --tags --quiet 2>/dev/null || true
@@ -48,7 +49,47 @@ jobs:
             echo "ERROR: tag ${VERSION} already exists."
             exit 1
           fi
-          echo "Version ${VERSION} looks good."
+          echo "Dev version: ${DEV_VER} → stable: ${VERSION}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog from dev commits
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.VERSION }}"
+
+          MAJOR="$(echo "${VERSION}" | cut -d. -f1)"
+          MINOR="$(echo "${VERSION}" | cut -d. -f2)"
+          PATCH="$(echo "${VERSION}" | cut -d. -f3)"
+          PREV_BASE="${MAJOR}.${MINOR}.$((PATCH - 1))"
+
+          # Find the last commit in dev where the previous base version was present
+          BOUNDARY_SHA=""
+          while IFS= read -r sha; do
+            if git -C _dev show "${sha}:config.yaml" 2>/dev/null | grep -qE "^version:.*${PREV_BASE}"; then
+              BOUNDARY_SHA="${sha}"
+              break
+            fi
+          done < <(git -C _dev log --pretty=format:"%H" -- config.yaml)
+
+          # Collect meaningful commits since that boundary
+          if [[ -n "${BOUNDARY_SHA}" ]]; then
+            CHANGES="$(git -C _dev log "${BOUNDARY_SHA}..HEAD" --pretty=format:"- %s" \
+              | grep -vE "^- ci\(dev\): |^- Merge " || true)"
+          else
+            CHANGES="$(git -C _dev log -50 --pretty=format:"- %s" \
+              | grep -vE "^- ci\(dev\): |^- Merge " || true)"
+          fi
+
+          if [[ -z "${CHANGES}" ]]; then
+            CHANGES="- Minor improvements and bug fixes"
+          fi
+
+          DATE="$(date +%Y-%m-%d)"
+          printf "## %s (%s)\n\n%s\n" "${VERSION}" "${DATE}" "${CHANGES}" > CHANGELOG.md
+
+          echo "--- CHANGELOG.md ---"
+          cat CHANGELOG.md
 
       - name: Copy runtime files from dev to stable
         shell: bash
@@ -76,7 +117,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${{ github.event.inputs.version }}"
+          VERSION="${{ steps.version.outputs.VERSION }}"
           sed -i -E "s/^(version:[[:space:]]*\").*\"/\1${VERSION}\"/" config.yaml
           grep '^version:' config.yaml
 
@@ -86,12 +127,12 @@ jobs:
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add rootfs/ Dockerfile config.yaml
+          git add rootfs/ Dockerfile config.yaml CHANGELOG.md
           [[ -d translations ]] && git add translations/ || true
           git diff --staged --stat
           if git diff --staged --quiet; then
             echo "No changes — stable already matches dev."
           else
-            git commit -m "release: ${{ github.event.inputs.version }}"
+            git commit -m "release: ${{ steps.version.outputs.VERSION }}"
             git push origin main
           fi
