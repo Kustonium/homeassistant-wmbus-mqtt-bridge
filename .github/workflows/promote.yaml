@@ -24,11 +24,8 @@ jobs:
           fetch-depth: 0
 
       - name: Checkout dev repo
-        uses: actions/checkout@v6
-        with:
-          repository: Kustonium/homeassistant-wmbus-mqtt-bridge-dev
-          token: ''
-          path: _dev
+        shell: bash
+        run: git clone --depth 1 https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge-dev.git _dev
 
       - name: Detect and validate version from dev
         id: version
