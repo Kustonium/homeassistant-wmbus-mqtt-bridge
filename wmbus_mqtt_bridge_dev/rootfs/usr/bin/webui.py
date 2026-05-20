@@ -35,6 +35,27 @@ CANDIDATE_ANALYSIS_TSV = BASE / "status_candidate_analysis.tsv"
 OPTIONS_JSON = BASE / "options.json"
 ZERO_AES_KEY = "00000000000000000000000000000000"
 
+
+def read_addon_version() -> tuple[str, bool]:
+    """Read version from config.yaml next to this script.
+    Returns (version_string, is_dev).
+    is_dev = True when version contains '-' (e.g. '1.5.3-dev').
+    """
+    import re as _re
+    try:
+        cfg_path = Path(__file__).parent / "config.yaml"
+        text = cfg_path.read_text(encoding="utf-8")
+        m = _re.search(r'^version:\s*["\']?([^\s"\']+)["\']?', text, _re.MULTILINE)
+        if m:
+            v = m.group(1).strip()
+            return v, "-" in v
+    except Exception:
+        pass
+    return "dev", True
+
+
+ADDON_VERSION, ADDON_IS_DEV = read_addon_version()
+
 VALID_ID_RE = re.compile(r"^[0-9A-Fa-f]{8}$")
 MEDIA_FILTERS = {"all", "water", "warm_water", "electricity", "heat", "other"}
 
@@ -822,7 +843,7 @@ def shell(active: str, body: str, updated_at: str, refresh: bool = True, lang: s
 </head>
 <body>
   <div class="app">
-    <div class="main"><div class="topbar"><div class="top-left"><span>wMBus MQTT Bridge</span></div><nav class="tabs">{nav(active, lang)}</nav>{lang_switcher(lang)}<div class="kebab">⋮</div></div><main><div class="updated">{esc(tr(lang, "updated_label"))} {esc(fmt_ts(updated_at) if updated_at else tr(lang, "unknown_value"))}</div>{body}</main></div>
+    <div class="main"><div class="topbar"><div class="top-left"><span>wMBus MQTT Bridge <span style="font-size:11px;color:#8ea4b1;">v{esc(ADDON_VERSION)}</span>{"<span style='font-size:10px;font-weight:800;background:#3b2010;color:#f3c84b;border-radius:4px;padding:2px 6px;margin-left:5px;'>DEV</span>" if ADDON_IS_DEV else ""}</span></div><nav class="tabs">{nav(active, lang)}</nav>{lang_switcher(lang)}<div class="kebab">⋮</div></div><main><div class="updated">{esc(tr(lang, "updated_label"))} {esc(fmt_ts(updated_at) if updated_at else tr(lang, "unknown_value"))}</div>{body}</main></div>
   </div>
   <div id="toast" class="toast">{esc(tr(lang, "copied_toast"))}</div>
   <script>

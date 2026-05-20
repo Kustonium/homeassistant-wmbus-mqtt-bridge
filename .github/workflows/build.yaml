@@ -136,6 +136,40 @@ jobs:
           echo "GITHUB_ACTOR=${GITHUB_ACTOR}"
           echo "addon=${{ matrix.addon }} channel=${{ matrix.channel }} arch=${{ matrix.arch }}"
 
+      - name: Enforce version bump (stable only)
+        if: steps.gate.outputs.skip != 'true' && matrix.channel == 'stable'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CFG="${{ matrix.addon }}/config.yaml"
+          CURRENT="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' "${CFG}" | head -n1)"
+
+          if [[ -z "${CURRENT}" ]]; then
+            echo "ERROR: cannot read version from ${CFG}"
+            exit 1
+          fi
+
+          if [[ "${CURRENT}" == *"-"* ]]; then
+            echo "ERROR: version '${CURRENT}' still contains '-' — strip '-dev' before merging to main."
+            exit 1
+          fi
+
+          # Fetch all tags to compare
+          git fetch --tags --quiet 2>/dev/null || true
+          LAST_TAG="$(git tag --sort=-v:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
+
+          echo "Current version in config.yaml : ${CURRENT}"
+          echo "Last published git tag          : ${LAST_TAG:-none}"
+
+          if [[ -n "${LAST_TAG}" && "${CURRENT}" == "${LAST_TAG}" ]]; then
+            echo "ERROR: version ${CURRENT} already exists as a git tag."
+            echo "Bump version in ${CFG} before merging to main."
+            exit 1
+          fi
+
+          echo "OK: version ${CURRENT} is new."
+
       - name: Prepare build variables
         if: steps.gate.outputs.skip != 'true'
         shell: bash

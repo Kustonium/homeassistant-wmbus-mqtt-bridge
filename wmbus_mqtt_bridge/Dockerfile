@@ -37,6 +37,10 @@ RUN apk add --no-cache \
 
 COPY --from=builder /out/wmbusmeters /usr/bin/wmbusmeters
 COPY rootfs /
+# Bake the addon manifest next to webui.py so read_addon_version()
+# can pick up the real version at runtime (HA does not mount
+# config.yaml into the container).
+COPY config.yaml /usr/bin/config.yaml
 
 RUN sed -i 's/\r$//' /usr/bin/run.sh /usr/bin/bridge.sh \
   && chmod a+x /usr/bin/run.sh /usr/bin/bridge.sh /usr/bin/webui.py
