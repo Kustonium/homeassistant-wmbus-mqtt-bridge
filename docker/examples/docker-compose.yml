@@ -12,9 +12,9 @@ services:
 
   wmbus:
     build:
-      context: ../..
+      context: ../../wmbus_mqtt_bridge
       dockerfile: Dockerfile
-      target: docker
+      target: addon
     container_name: wmbus
     depends_on:
       - mosquitto

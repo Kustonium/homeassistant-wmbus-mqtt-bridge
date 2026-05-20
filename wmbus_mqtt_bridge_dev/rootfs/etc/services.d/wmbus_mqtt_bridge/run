@@ -1,5 +1,0 @@
-#!/usr/bin/with-contenv bashio
-set -e
-
-# twardo uruchamiaj nasz skrypt w bashio środowisku
-exec /usr/bin/run.sh
