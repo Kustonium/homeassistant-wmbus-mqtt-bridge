@@ -37,11 +37,12 @@ ZERO_AES_KEY = "00000000000000000000000000000000"
 
 
 def read_addon_version() -> tuple[str, bool]:
-    """Read version from config.yaml next to this script.
-    Returns (version_string, is_dev).
-    is_dev = True when version contains '-' (e.g. '1.5.3-dev').
-    """
-    import re as _re
+    import re as _re, os as _os
+    # 1. Env var injected by CI build-arg (most accurate for dev builds)
+    env_ver = _os.environ.get("ADDON_VERSION", "").strip()
+    if env_ver:
+        return env_ver, "-" in env_ver
+    # 2. Fallback: read from config.yaml next to this script
     try:
         cfg_path = Path(__file__).parent / "config.yaml"
         text = cfg_path.read_text(encoding="utf-8")

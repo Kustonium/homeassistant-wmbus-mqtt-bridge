@@ -257,6 +257,7 @@ jobs:
             --progress=plain \
             --platform ${{ matrix.platform }} \
             --build-arg BUILD_FROM=${{ matrix.base_image }} \
+            --build-arg ADDON_VERSION=${ADDON_VERSION} \
             --push \
             -t ghcr.io/${OWNER_LC}/${{ matrix.arch }}-${IMAGE_BASE}:${{ matrix.channel }} \
             -t ghcr.io/${OWNER_LC}/${{ matrix.arch }}-${IMAGE_BASE}:${ADDON_VERSION} \
