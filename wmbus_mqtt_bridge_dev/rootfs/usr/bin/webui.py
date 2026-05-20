@@ -15,7 +15,7 @@ import html
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -734,12 +734,14 @@ def status_model(data: dict) -> dict:
     wmbus_ok = bool(pipe.get("wmbusmeters_running")) or candidate_count > 0 or decoded_count > 0
     decoded_ok = decoded_count > 0
     discovery_ok = bool(pipe.get("discovery_published"))
-    import time as _time
     raw_15m = 0
     try:
-        now_ts = int(_time.time())
-        lines = read_tsv(BASE / "status_seen.tsv", ["id", "kind", "ts"])
-        raw_15m = sum(1 for r in lines if r.get("kind") == "raw" and safe_int(r.get("ts")) >= now_ts - 900)
+        last_raw = pipe.get("last_raw_seen") or ""
+        if last_raw:
+            last_raw_dt = datetime.fromisoformat(last_raw.replace("Z", "+00:00"))
+            age = datetime.now(timezone.utc) - last_raw_dt
+            if age <= timedelta(minutes=15):
+                raw_15m = raw_count
     except Exception:
         pass
     return {
