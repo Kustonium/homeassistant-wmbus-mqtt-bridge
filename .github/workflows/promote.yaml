@@ -118,18 +118,37 @@ jobs:
           sed -i -E "s/^(version:[[:space:]]*\").*\"/\1${VERSION}\"/" config.yaml
           grep '^version:' config.yaml
 
-      - name: Commit and push
+      - name: Commit, create PR, and auto-merge
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
         run: |
           set -euo pipefail
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          BRANCH="release/${VERSION}"
+
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add rootfs/ Dockerfile config.yaml CHANGELOG.md
           [[ -d translations ]] && git add translations/ || true
           git diff --staged --stat
+
           if git diff --staged --quiet; then
             echo "No changes — stable already matches dev."
-          else
-            git commit -m "release: ${{ steps.version.outputs.VERSION }}"
-            git push https://x-access-token:${{ secrets.PROMOTE_TOKEN }}@github.com/Kustonium/homeassistant-wmbus-mqtt-bridge.git main
+            exit 0
           fi
+
+          git commit -m "release: ${VERSION}"
+
+          # Push to release branch (unprotected) using PROMOTE_TOKEN
+          git push "https://x-access-token:${GH_TOKEN}@github.com/Kustonium/homeassistant-wmbus-mqtt-bridge.git" "HEAD:${BRANCH}"
+
+          # Create PR
+          gh pr create \
+            --base main \
+            --head "${BRANCH}" \
+            --title "release: ${VERSION}" \
+            --body "Automated promote of ${VERSION} to stable."
+
+          # Force-merge with admin bypass (Kustonium is admin + in bypass list)
+          gh pr merge "${BRANCH}" --squash --admin --delete-branch
