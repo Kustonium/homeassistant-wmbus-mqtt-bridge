@@ -14,7 +14,7 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile
-      target: docker
+      target: addon
     container_name: wmbus
     depends_on:
       - mosquitto

@@ -54,24 +54,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          SRC="_dev"
-          DST="wmbus_mqtt_bridge"
 
           for item in rootfs Dockerfile translations; do
-            if [[ -e "${SRC}/${item}" ]]; then
-              rm -rf "${DST:?}/${item}"
-              cp -r "${SRC}/${item}" "${DST}/${item}"
+            if [[ -e "_dev/${item}" ]]; then
+              rm -rf "${item}"
+              cp -r "_dev/${item}" "${item}"
               echo "synced: ${item}"
             fi
           done
 
-          find "${DST}/rootfs" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+          find rootfs -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
-          for f in \
-            "${DST}/rootfs/usr/bin/run.sh" \
-            "${DST}/rootfs/usr/bin/bridge.sh" \
-            "${DST}/rootfs/usr/bin/webui.py"
-          do
+          for f in rootfs/usr/bin/run.sh rootfs/usr/bin/bridge.sh rootfs/usr/bin/webui.py; do
             if [[ -e "${f}" ]]; then
               chmod +x "${f}"
               git update-index --add --chmod=+x "${f}" 2>/dev/null || true
@@ -83,9 +77,8 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ github.event.inputs.version }}"
-          CFG="wmbus_mqtt_bridge/config.yaml"
-          sed -i -E "s/^(version:[[:space:]]*\").*\"/\1${VERSION}\"/" "${CFG}"
-          grep '^version:' "${CFG}"
+          sed -i -E "s/^(version:[[:space:]]*\").*\"/\1${VERSION}\"/" config.yaml
+          grep '^version:' config.yaml
 
       - name: Commit and push
         shell: bash
@@ -93,7 +86,8 @@ jobs:
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add wmbus_mqtt_bridge/
+          git add rootfs/ Dockerfile config.yaml
+          [[ -d translations ]] && git add translations/ || true
           git diff --staged --stat
           if git diff --staged --quiet; then
             echo "No changes — stable already matches dev."

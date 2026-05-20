@@ -5,10 +5,10 @@ on:
     branches:
       - main
     paths:
-      - 'wmbus_mqtt_bridge/rootfs/**'
-      - 'wmbus_mqtt_bridge/Dockerfile'
-      - 'wmbus_mqtt_bridge/config.yaml'
-      - 'wmbus_mqtt_bridge/translations/**'
+      - 'rootfs/**'
+      - 'Dockerfile'
+      - 'config.yaml'
+      - 'translations/**'
       - '.github/workflows/build.yaml'
   workflow_dispatch:
 
@@ -69,23 +69,14 @@ jobs:
           echo "Files changed in this push:"
           echo "${CHANGED}" | sed 's/^/  /'
 
-          PATTERN="^(wmbus_mqtt_bridge/(rootfs/|Dockerfile|config\.yaml|translations/)|\.github/workflows/build\.yaml$)"
+          PATTERN="^(rootfs/|Dockerfile|config\.yaml|translations/|\.github/workflows/build\.yaml$)"
           if echo "${CHANGED}" | grep -qE "${PATTERN}"; then
             echo "image-affecting change — building"
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
-            echo "no image-affecting changes (README/CHANGELOG/etc only) — skipping"
+            echo "no image-affecting changes — skipping"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Debug GitHub context
-        if: steps.gate.outputs.skip != 'true'
-        shell: bash
-        run: |
-          echo "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
-          echo "GITHUB_REPOSITORY_OWNER=${GITHUB_REPOSITORY_OWNER}"
-          echo "GITHUB_REF=${GITHUB_REF}"
-          echo "arch=${{ matrix.arch }}"
 
       - name: Enforce version bump
         if: steps.gate.outputs.skip != 'true'
@@ -93,7 +84,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          CFG="wmbus_mqtt_bridge/config.yaml"
+          CFG="config.yaml"
           CURRENT="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' "${CFG}" | head -n1)"
 
           if [[ -z "${CURRENT}" ]]; then
@@ -102,19 +93,18 @@ jobs:
           fi
 
           if [[ "${CURRENT}" == *"-"* ]]; then
-            echo "ERROR: version '${CURRENT}' still contains '-' — strip '-dev' before merging to main."
+            echo "ERROR: version '${CURRENT}' contains '-' — strip the suffix before releasing."
             exit 1
           fi
 
           git fetch --tags --quiet 2>/dev/null || true
           LAST_TAG="$(git tag --sort=-v:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
 
-          echo "Current version in config.yaml : ${CURRENT}"
-          echo "Last published git tag          : ${LAST_TAG:-none}"
+          echo "Current version : ${CURRENT}"
+          echo "Last tag        : ${LAST_TAG:-none}"
 
           if [[ -n "${LAST_TAG}" && "${CURRENT}" == "${LAST_TAG}" ]]; then
-            echo "ERROR: version ${CURRENT} already exists as a git tag."
-            echo "Bump version in ${CFG} before merging to main."
+            echo "ERROR: version ${CURRENT} already exists as a git tag. Bump version before pushing."
             exit 1
           fi
 
@@ -127,7 +117,7 @@ jobs:
           set -euo pipefail
           echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
 
-          CFG="wmbus_mqtt_bridge/config.yaml"
+          CFG="config.yaml"
           VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' "${CFG}" | head -n1)"
           if [[ -z "${VER}" ]]; then
             echo "ERROR: cannot read version from ${CFG}"
@@ -171,8 +161,8 @@ jobs:
             --push \
             -t ghcr.io/${OWNER_LC}/${{ matrix.arch }}-addon-wmbus_mqtt_bridge:latest \
             -t ghcr.io/${OWNER_LC}/${{ matrix.arch }}-addon-wmbus_mqtt_bridge:${ADDON_VERSION} \
-            -f wmbus_mqtt_bridge/Dockerfile \
-            wmbus_mqtt_bridge
+            -f Dockerfile \
+            .
 
       - name: Create git tag
         if: steps.gate.outputs.skip != 'true' && matrix.arch == 'amd64'
@@ -180,7 +170,7 @@ jobs:
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag "${ADDON_VERSION}"
           git push origin "${ADDON_VERSION}"
         env:
@@ -192,7 +182,7 @@ jobs:
         with:
           tag_name: ${{ env.ADDON_VERSION }}
           name: ${{ env.ADDON_VERSION }}
-          body_path: wmbus_mqtt_bridge/CHANGELOG.md
+          body_path: CHANGELOG.md
           draft: false
           prerelease: false
         env:
