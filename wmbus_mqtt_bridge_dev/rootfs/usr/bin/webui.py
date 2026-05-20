@@ -951,6 +951,7 @@ def render_pending_panel(pending: list[dict], lang: str = DEFAULT_LANG) -> str:
         f'<thead><tr><th>{esc(tr(lang, "meter_id"))}</th>'
         f'<th>{esc(tr(lang, "driver"))}</th><th>AES</th></tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table></div>'
+        f'{render_restart_block(lang)}'
         f'</section>'
     )
 
@@ -1039,18 +1040,84 @@ def _signal_bars(seen_15m: int) -> str:
     return f'<span style="display:inline-flex;align-items:flex-end;height:16px;gap:1px;">{bars}</span>'
 
 
+def unit_from_key(value_key: str) -> str:
+    """Extract display unit (with icon) from wmbusmeters field name suffix.
+    Longest suffixes checked first to avoid false matches (e.g. _kwh before _kw).
+    """
+    k = (value_key or "").lower()
+    if k.endswith("_kvarh"):   return "kVARh ⚡"
+    if k.endswith("_kvah"):    return "kVAh ⚡"
+    if k.endswith("_m3c"):     return "m³°C 🌡"
+    if k.endswith("_m3ch"):    return "m³°C/h 🌡"
+    if k.endswith("_m3h"):     return "m³/h 💧"
+    if k.endswith("_mjh"):     return "MJ/h 🔥"
+    if k.endswith("_kvar"):    return "kVAR ⚡"
+    if k.endswith("_kva"):     return "kVA ⚡"
+    if k.endswith("_kwh"):     return "kWh ⚡"
+    if k.endswith("_kw"):      return "kW ⚡"
+    if k.endswith("_wh"):      return "Wh ⚡"
+    if k.endswith("_w"):       return "W ⚡"
+    if k.endswith("_lh"):      return "l/h 💧"
+    if k.endswith("_jh"):      return "J/h 🔥"
+    if k.endswith("_gj"):      return "GJ 🔥"
+    if k.endswith("_mj"):      return "MJ 🔥"
+    if k.endswith("_dbm"):     return "dBm 📡"
+    if k.endswith("_hca"):     return "hca 🔥"
+    if k.endswith("_pct"):     return "% 📊"
+    if k.endswith("_ppm"):     return "ppm 📊"
+    if k.endswith("_rh"):      return "RH% 💧"
+    if k.endswith("_hz"):      return "Hz ⚡"
+    if k.endswith("_bar"):     return "bar 🌡"
+    if k.endswith("_pa"):      return "Pa 🌡"
+    if k.endswith("_m3"):      return "m³ 💧"
+    if k.endswith("_mol"):     return "mol 🧪"
+    if k.endswith("_min"):     return "min ⏱"
+    if k.endswith("_rad"):     return "rad 📐"
+    if k.endswith("_deg"):     return "° 📐"
+    if k.endswith("_counter"): return "cnt 📊"
+    if k.endswith("_factor"):  return "× 📊"
+    if k.endswith("_nr"):      return "nr 📊"
+    if k.endswith("_kg"):      return "kg ⚖"
+    if k.endswith("_cd"):      return "cd 💡"
+    if k.endswith("_v"):       return "V ⚡"
+    if k.endswith("_a"):       return "A ⚡"
+    if k.endswith("_k"):       return "K 🌡"
+    if k.endswith("_c"):       return "°C 🌡"
+    if k.endswith("_f"):       return "°F 🌡"
+    if k.endswith("_l"):       return "l 💧"
+    if k.endswith("_m"):       return "m 📏"
+    if k.endswith("_s"):       return "s ⏱"
+    if k.endswith("_h"):       return "h ⏱"
+    if k.endswith("_d"):       return "d 📅"
+    if k.endswith("_y"):       return "y 📅"
+    return ""
+
+
 def render_meter_card(m: dict, lang: str = DEFAULT_LANG) -> str:
     icon = media_icon(m.get("media", ""), m.get("driver", ""))
     mc = media_class(m.get("media", ""), m.get("driver", ""))
     icon_bg = {"electricity": "#1a2a3b", "heat": "#3b2010", "water": "#0f2a3b", "warm_water": "#2a1f0a"}.get(mc, "#1a2a2a")
     icon_color = {"electricity": "#60b4f0", "heat": "#f07840", "water": "#40c0e0", "warm_water": "#f09040"}.get(mc, "#888")
     seen_15m = int(m.get("seen_15m") or 0)
+    seen_60m = int(m.get("seen_60m") or 0)
+    if seen_15m > 0:
+        status_label = tr(lang, "online_label")
+        status_color = "#2de36f"
+    elif seen_60m > 0:
+        status_label = tr(lang, "silent_label")
+        status_color = "#f3c84b"
+    else:
+        status_label = tr(lang, "offline_label")
+        status_color = "#ff646b"
     signal = _signal_bars(seen_15m)
     meter_id = m.get("id") or ""
+    unit = unit_from_key(m.get("value_key") or "")
+    value_str = m.get('value') or '—'
+    value_display = f"{value_str} {unit}" if unit and value_str != '—' else value_str
     confirm_msg = tr(lang, "confirm_delete").format(mid=meter_id)
     return f'''
-    <article class="meter-card"><div class="meter-top"><div class="micon" style="background:{icon_bg};color:{icon_color};">{icon}</div><div><div class="mname">{esc(m.get('name') or m.get('id'))}</div><div class="mid">{esc(m.get('id'))}<br>{esc(m.get('driver'))}</div></div><div class="online">{esc(tr(lang, "online_label"))} {signal}<br><span class="mid">{fmt_ts(m.get('last_seen') or '')}</span></div></div>
-      <div><div class="value-key">{esc(m.get('value_key') or tr(lang, "value_label"))}</div><div class="value-main">{esc(m.get('value') or '—')}</div></div>
+    <article class="meter-card"><div class="meter-top"><div class="micon" style="background:{icon_bg};color:{icon_color};">{icon}</div><div><div class="mname">{esc(m.get('name') or m.get('id'))}</div><div class="mid">{esc(m.get('id'))}<br>{esc(m.get('driver'))}</div></div><div class="online" style="color:{status_color};">{esc(status_label)} {signal}<br><span class="mid">{fmt_ts(m.get('last_seen') or '')}</span></div></div>
+      <div><div class="value-key">{esc(m.get('value_key') or tr(lang, "value_label"))}</div><div class="value-main">{esc(value_display)}</div></div>
       <div><div class="meter-meta"><span>{esc(tr(lang, "media"))}<strong>{esc(tr_media(lang, media_class(m.get('media',''), m.get('driver',''))))}</strong></span><span>{esc(tr(lang, "reception"))}<strong>{esc(fmt_interval(m.get('avg_interval_s')))}</strong></span><span>{esc(tr(lang, "seen_15m_label"))}<strong>{esc(m.get('seen_15m') or '0')}</strong></span><span>{esc(tr(lang, "seen_60m_label"))}<strong>{esc(m.get('seen_60m') or '0')}</strong></span></div>
       <div class="entity-row"><span class="published">{esc(m.get('discovery') or tr(lang, "state_label"))}</span>
         <form method="post" action="remove-meter" style="margin:0;" onsubmit="return confirm({json.dumps(confirm_msg)});">

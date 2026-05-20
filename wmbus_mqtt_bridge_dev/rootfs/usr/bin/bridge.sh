@@ -563,18 +563,54 @@ guess_unit() {
   local k
   k="$(echo "$1" | tr '[:upper:]' '[:lower:]')"
   case "${k}" in
-    *_kw) echo "kW";;
-    *_w) echo "W";;
-    *_kwh) echo "kWh";;
-    *_wh) echo "Wh";;
-    *_v) echo "V";;
-    *_a) echo "A";;
-    *_hz) echo "Hz";;
-    *_m3|*volume*|*m3*) echo "m³";;
+    *_kvarh)   echo "kVARh";;
+    *_kvah)    echo "kVAh";;
+    *_m3c)     echo "m³°C";;
+    *_m3ch)    echo "m³°C/h";;
+    *_m3h)     echo "m³/h";;
+    *_mjh)     echo "MJ/h";;
+    *_kvar)    echo "kVAR";;
+    *_kva)     echo "kVA";;
+    *_kwh)     echo "kWh";;
+    *_kw)      echo "kW";;
+    *_wh)      echo "Wh";;
+    *_w)       echo "W";;
+    *_lh)      echo "l/h";;
+    *_jh)      echo "J/h";;
+    *_gj)      echo "GJ";;
+    *_mj)      echo "MJ";;
+    *_dbm)     echo "dBm";;
+    *_hca)     echo "hca";;
+    *_pct)     echo "%";;
+    *_ppm)     echo "ppm";;
+    *_rh|*humidity*|*hum*) echo "%";;
+    *_hz)      echo "Hz";;
+    *_bar)     echo "bar";;
+    *_pa|*pressure*|*_hpa) echo "hPa";;
+    *_m3|*volume*|*m3*)    echo "m³";;
+    *_mol)     echo "mol";;
+    *_min)     echo "min";;
+    *_rad)     echo "rad";;
+    *_deg)     echo "°";;
+    *_utc|*_ut|*_datetime|*_date|*_time|*_month) echo "";;
+    *_counter) echo "";;
+    *_factor)  echo "";;
+    *_txt)     echo "";;
+    *_nr)      echo "";;
+    *_kg)      echo "kg";;
+    *_cd)      echo "cd";;
+    *_v)       echo "V";;
+    *_a)       echo "A";;
+    *_k)       echo "K";;
     *temperature*|*temp*|*_c) echo "°C";;
-    *humidity*|*hum*|*_rh) echo "%";;
-    *pressure*|*_hpa) echo "hPa";;
-    *) echo "";;
+    *_f)       echo "°F";;
+    *_l)       echo "l";;
+    *_m)       echo "m";;
+    *_s)       echo "s";;
+    *_h)       echo "h";;
+    *_d)       echo "d";;
+    *_y)       echo "y";;
+    *)         echo "";;
   esac
 }
 
