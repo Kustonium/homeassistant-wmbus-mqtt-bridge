@@ -158,3 +158,36 @@ jobs:
 
           # Force-merge with admin bypass (Kustonium is admin + in bypass list)
           gh pr merge "${BRANCH}" --squash --admin --delete-branch
+
+      - name: Bump dev base version for next cycle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          MAJOR="$(echo "${VERSION}" | cut -d. -f1)"
+          MINOR="$(echo "${VERSION}" | cut -d. -f2)"
+          PATCH="$(echo "${VERSION}" | cut -d. -f3)"
+          NEXT_BASE="${MAJOR}.${MINOR}.$((PATCH + 1))-dev"
+
+          TMPDIR="$(mktemp -d)"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/Kustonium/homeassistant-wmbus-mqtt-bridge-dev.git" "${TMPDIR}"
+          cd "${TMPDIR}"
+
+          CURRENT="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' config.yaml | head -n1)"
+          CURRENT_BASE="$(echo "${CURRENT}" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+-dev).*/\1/')"
+
+          if [[ "${CURRENT_BASE}" == "${NEXT_BASE}" ]]; then
+            echo "Dev base already at ${NEXT_BASE} — nothing to bump."
+            exit 0
+          fi
+
+          echo "Bumping dev base: ${CURRENT_BASE} → ${NEXT_BASE}"
+          sed -i -E "s/^(version:[[:space:]]*\").*\"/\1${NEXT_BASE}\"/" config.yaml
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add config.yaml
+          git commit -m "chore: bump dev base to ${NEXT_BASE} after ${VERSION} release [skip ci]"
+          git push origin main
