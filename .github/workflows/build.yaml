@@ -79,7 +79,7 @@ jobs:
           fi
 
       - name: Enforce version bump
-        if: steps.gate.outputs.skip != 'true'
+        if: steps.gate.outputs.skip != 'true' && github.event_name != 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
@@ -169,6 +169,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git fetch --tags --quiet 2>/dev/null || true
+          if git rev-parse -q --verify "refs/tags/${ADDON_VERSION}" >/dev/null; then
+            echo "Tag ${ADDON_VERSION} already exists — skipping."
+            exit 0
+          fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag "${ADDON_VERSION}"
