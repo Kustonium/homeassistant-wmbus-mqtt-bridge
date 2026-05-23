@@ -523,6 +523,24 @@ def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str =
 
 
 
+def _remove_meter_from_tsv(meter_id: str) -> None:
+    """Remove a row from status_meters.tsv so the meter disappears from the WebGUI immediately.
+
+    bridge.sh only appends/updates TSV rows when a decoded telegram arrives.
+    Without this cleanup the deleted meter would remain visible until the next
+    addon restart (when bridge.sh stops receiving telegrams for the removed meter
+    and the row naturally ages out — which can take hours).
+    """
+    try:
+        if not METERS_TSV.exists():
+            return
+        lines = METERS_TSV.read_text(encoding="utf-8", errors="replace").splitlines()
+        new_lines = [l for l in lines if l.split("\t")[0] != meter_id]
+        write_lines_atomic(METERS_TSV, new_lines)
+    except Exception:
+        pass  # non-fatal — worst case the row disappears after restart
+
+
 def remove_meter_from_options(meter_id: str) -> tuple[bool, str]:
     """Remove a meter from options via HA Supervisor API."""
     import urllib.request
@@ -560,6 +578,10 @@ def remove_meter_from_options(meter_id: str) -> tuple[bool, str]:
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 if resp.status in (200, 201):
+                    # Also write locally so subsequent reads see the updated list
+                    write_json_atomic(OPTIONS_JSON, options)
+                    # Remove from TSV immediately — bridge.sh won't clean it on its own
+                    _remove_meter_from_tsv(meter_id)
                     msg = f"Meter {meter_id} removed. Restart addon to apply."
                     webui_add_event("ok", msg)
                     return True, msg
@@ -571,6 +593,7 @@ def remove_meter_from_options(meter_id: str) -> tuple[bool, str]:
 
     # Fallback
     write_json_atomic(OPTIONS_JSON, options)
+    _remove_meter_from_tsv(meter_id)
     msg = f"Meter {meter_id} removed (file only — no SUPERVISOR_TOKEN)."
     webui_add_event("warn", msg)
     return True, msg
@@ -646,6 +669,24 @@ def event_level_for_ui(event: dict) -> tuple[str, str, str]:
     return level, level, message
 
 
+def _sync_meters_tsv(valid_ids: set[str]) -> None:
+    """Rewrite status_meters.tsv keeping only rows whose id is in valid_ids.
+
+    Called from state() whenever options.json has a 'meters' key so that rows
+    deleted via the HA options UI (not the WebGUI DELETE button) are cleaned up
+    from disk on the next page load — no manual restart required.
+    """
+    try:
+        if not METERS_TSV.exists():
+            return
+        lines = METERS_TSV.read_text(encoding="utf-8", errors="replace").splitlines()
+        new_lines = [l for l in lines if l.split("\t")[0].lower() in valid_ids]
+        if len(new_lines) != len(lines):
+            write_lines_atomic(METERS_TSV, new_lines)
+    except Exception:
+        pass  # non-fatal
+
+
 def state(include_ignored: bool = False) -> dict:
     status = read_json(STATUS_JSON)
     options = read_options()
@@ -667,17 +708,32 @@ def state(include_ignored: bool = False) -> dict:
         c["ignored"] = "true" if c.get("id") in ignored else "false"
         c["analysis"] = analysis.get(c.get("id") or "", {})
 
+    # Build options_meter_ids early — used both for TSV filtering and candidate dedup.
+    # options.get("meters") may be None (key absent) or [] (all removed).
+    # We only filter when the key is present so we don't hide everything on a fresh install
+    # where options.json might not have been written yet.
+    options_meters_list = options.get("meters") if isinstance(options, dict) and "meters" in options else None
+    options_meter_ids = {
+        str(m.get("meter_id") or "").strip().lower()
+        for m in (options_meters_list or [])
+        if isinstance(m, dict) and m.get("meter_id")
+    }
+
+    # Filter status_meters.tsv to only show meters still present in options.json.
+    # This handles meters deleted via the HA options UI (not through the WebGUI
+    # DELETE button) — without this filter, stale TSV rows would keep appearing
+    # until the next addon restart.
+    if options_meters_list is not None:
+        meters = [m for m in meters if str(m.get("id") or "").lower() in options_meter_ids]
+        # Also clean up the TSV on disk so stale rows don't accumulate.
+        _sync_meters_tsv(options_meter_ids)
+
     # Remove candidates that are already in configured meters (decoded)
     configured_ids = {m.get("id") for m in meters if m.get("id")}
     candidates = [c for c in candidates if c.get("id") not in configured_ids]
 
     # Also remove candidates that are pending (in options.json but not yet decoded)
     # so the user doesn't see them twice (once in pending panel, once in candidate table)
-    options_meter_ids = {
-        str(m.get("meter_id") or "").strip().lower()
-        for m in (options.get("meters") or [])
-        if isinstance(m, dict) and m.get("meter_id")
-    }
     if options_meter_ids:
         candidates = [c for c in candidates if str(c.get("id") or "").lower() not in options_meter_ids]
 

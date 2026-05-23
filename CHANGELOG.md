@@ -1,3 +1,3 @@
-## 1.5.5 (2026-05-20)
+## 1.5.6 (2026-05-23)
 
 - Minor improvements and bug fixes
