@@ -626,6 +626,7 @@ guess_device_class() {
     "V") echo "voltage";;
     "A") echo "current";;
     "Hz") echo "frequency";;
+    "dBm") echo "signal_strength";;
     "m³")
       # Prefer the media reported by wmbusmeters — it knows the meter's
       # nature better than a keyword match against the field name. Heat
@@ -642,7 +643,14 @@ guess_device_class() {
       esac
       ;;
     *)
-      if [[ "${key_lc}" == *battery* ]]; then echo "battery"; else echo ""; fi
+      # battery device_class requires 0-100 % in HA.
+      # Only apply when unit is empty or % — fields like battery_v (volts)
+      # or battery_y (years) must NOT get device_class: battery.
+      if [[ "${key_lc}" == *battery* && ( -z "${unit}" || "${unit}" == "%" ) ]]; then
+        echo "battery"
+      else
+        echo ""
+      fi
       ;;
   esac
 }
@@ -673,7 +681,7 @@ guess_state_class() {
   # index numbers, version strings cast to int) get no state_class so
   # HA doesn't graph them as time series.
   case "${device_class}" in
-    temperature|humidity|power|voltage|current|frequency|battery|water|gas|energy)
+    temperature|humidity|power|voltage|current|frequency|signal_strength|battery|water|gas|energy)
       echo "measurement"; return 0
       ;;
   esac

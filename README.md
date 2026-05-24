@@ -1,5 +1,10 @@
 # Home Assistant Add-on: wMBus MQTT Bridge
 
+> **ℹ️ Co to jest / What this is:**
+> Ten add-on to **bridge** — nie zastępuje `wmbusmeters`, lecz go używa wewnętrznie. Odbiera surowe ramki wM-Bus z MQTT (np. z ESP32/CC1101), przekazuje do `wmbusmeters stdin:hex`, a wynik publikuje do MQTT i HA Discovery. Potrzebujesz zewnętrznego odbiornika radiowego — add-on nie obsługuje bezpośrednio USB/RTL-SDR.
+>
+> This add-on is a **bridge** — it does not replace `wmbusmeters`, it uses it internally. It receives raw wM-Bus frames from MQTT (e.g. from ESP32/CC1101), feeds them to `wmbusmeters stdin:hex`, and publishes decoded JSON back to MQTT and HA Discovery. You need an external radio receiver — the add-on does not support USB/RTL-SDR directly.
+
 **Szybka nawigacja / Quick navigation:**
 [🇵🇱 PL (poniżej)](#-opis-pl) · [🇬🇧 EN (below)](#-description-en)
 
