@@ -71,6 +71,25 @@ Wszystkie pliki tekstowe widoczne dla użytkownika — README, dokumentacja w `d
 
 ---
 
+### Instalacja w Home Assistant
+
+#### Krok 0 — Dodaj repozytorium do HA
+
+1. W Home Assistant przejdź do **Ustawienia → Dodatki → Sklep z dodatkami**
+2. Kliknij menu **⋮** (trzy kropki, prawy górny róg) → **Repozytoria**
+3. Wklej adres repozytorium:
+   ```
+   https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge
+   ```
+4. Kliknij **Dodaj** → **Zamknij**
+5. Odśwież stronę — addon **wMBus MQTT Bridge** pojawi się w sklepie
+6. Kliknij addon → **Zainstaluj**
+
+> ℹ️ To repozytorium zawiera **stabilną** wersję addona. Jeśli chcesz wersję deweloperską, użyj:
+> `https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge-dev`
+
+---
+
 ### Konfiguracja w Home Assistant (GUI)
 
 Konfiguracja odbywa się przez interfejs graficzny dodatku — nie trzeba edytować plików ręcznie.
@@ -293,6 +312,25 @@ ESP32 / Gateway / Bridge
 This project is **AI-developed**. The human role (**Kustonium**) is testing, validation and architectural decisions (human-in-the-loop) — not writing code character by character.
 
 All user-facing text files — READMEs, the documentation under `docs/`, the WebUI translations in [`rootfs/usr/bin/i18n.py`](rootfs/usr/bin/i18n.py), the CHANGELOG, log messages — are machine-generated. They may contain errors or unnatural phrasing in **any language, including Polish and English**, not only in German, Czech or Slovak.
+
+---
+
+### Installation in Home Assistant
+
+#### Step 0 — Add the repository to HA
+
+1. In Home Assistant go to **Settings → Add-ons → Add-on Store**
+2. Click the **⋮** menu (three dots, top right) → **Repositories**
+3. Paste the repository URL:
+   ```
+   https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge
+   ```
+4. Click **Add** → **Close**
+5. Refresh the page — the **wMBus MQTT Bridge** add-on will appear in the store
+6. Click the add-on → **Install**
+
+> ℹ️ This repository contains the **stable** version of the add-on. For the development version use:
+> `https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge-dev`
 
 ---
 
