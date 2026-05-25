@@ -1,3 +1,3 @@
-## 1.5.7 (2026-05-24)
+## 1.5.8 (2026-05-25)
 
-- Minor improvements and bug fixes
+- fix(webui): zmień sufiks pliku .tmp aby uniknąć kolizji z bridge.sh
