@@ -28,7 +28,7 @@ jobs:
 
       - name: Checkout dev repo
         shell: bash
-        run: git -c credential.helper= clone --depth 1 https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge-dev.git _dev
+        run: git -c credential.helper= clone https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge-dev.git _dev
 
       - name: Detect and validate version from dev
         id: version
@@ -75,10 +75,10 @@ jobs:
           # Collect meaningful commits since that boundary
           if [[ -n "${BOUNDARY_SHA}" ]]; then
             CHANGES="$(git -C _dev log "${BOUNDARY_SHA}..HEAD" --pretty=format:"- %s" \
-              | grep -vE "^- ci\(dev\): |^- Merge " || true)"
+              | grep -vE "^- ci\(dev\): |^- chore: bump dev base |^- Merge " || true)"
           else
             CHANGES="$(git -C _dev log -50 --pretty=format:"- %s" \
-              | grep -vE "^- ci\(dev\): |^- Merge " || true)"
+              | grep -vE "^- ci\(dev\): |^- chore: bump dev base |^- Merge " || true)"
           fi
 
           if [[ -z "${CHANGES}" ]]; then
