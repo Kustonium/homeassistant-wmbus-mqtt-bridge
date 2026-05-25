@@ -172,7 +172,10 @@ def read_tsv(path: Path, fields: list[str], limit: int | None = None, reverse: b
 
 def write_lines_atomic(path: Path, lines: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    # Use ".webui.tmp" suffix to avoid colliding with bridge.sh which also
+    # writes "<file>.tmp" for the same TSV files (e.g. status_meters.tsv.tmp).
+    # If both processes used the same temp name they could overwrite each other.
+    tmp = path.with_suffix(path.suffix + ".webui.tmp")
     tmp.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     tmp.replace(path)
 
