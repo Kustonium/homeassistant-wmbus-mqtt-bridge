@@ -38,20 +38,34 @@ ZERO_AES_KEY = "00000000000000000000000000000000"
 
 def read_addon_version() -> tuple[str, bool]:
     import re as _re, os as _os
+    # Read config.yaml once — used both for version and slug-based dev detection.
+    cfg_text = ""
+    is_dev_slug = False
+    try:
+        cfg_path = Path(__file__).parent / "config.yaml"
+        cfg_text = cfg_path.read_text(encoding="utf-8")
+        slug_m = _re.search(r'^slug:\s*["\']?(\S+?)["\']?\s*$', cfg_text, _re.MULTILINE)
+        if slug_m:
+            is_dev_slug = "dev" in slug_m.group(1).lower()
+    except Exception:
+        pass
+
+    def _is_dev(ver: str) -> bool:
+        # A build is dev if: version contains "-" (e.g. 1.5.9-dev.15),
+        # "dev" appears anywhere in the version string,
+        # or the addon slug ends with "_dev" / contains "dev".
+        return "-" in ver or "dev" in ver.lower() or is_dev_slug
+
     # 1. Env var injected by CI build-arg (most accurate for dev builds)
     env_ver = _os.environ.get("ADDON_VERSION", "").strip()
     if env_ver:
-        return env_ver, "-" in env_ver
-    # 2. Fallback: read from config.yaml next to this script
-    try:
-        cfg_path = Path(__file__).parent / "config.yaml"
-        text = cfg_path.read_text(encoding="utf-8")
-        m = _re.search(r'^version:\s*["\']?([^\s"\']+)["\']?', text, _re.MULTILINE)
+        return env_ver, _is_dev(env_ver)
+    # 2. Fallback: read version from config.yaml next to this script
+    if cfg_text:
+        m = _re.search(r'^version:\s*["\']?([^\s"\']+)["\']?', cfg_text, _re.MULTILINE)
         if m:
             v = m.group(1).strip()
-            return v, "-" in v
-    except Exception:
-        pass
+            return v, _is_dev(v)
     return "dev", True
 
 
@@ -804,6 +818,15 @@ def status_model(data: dict) -> dict:
                 raw_15m = raw_count
     except Exception:
         pass
+    # Telegrams-per-minute: sum seen_60m across all candidates and meters ÷ 60.
+    # seen_60m counts unique telegrams received per device in the last 60 minutes;
+    # summing gives a good approximation of the total reception rate.
+    total_60m = (
+        sum(safe_int(c.get("seen_60m")) for c in data.get("candidates", []))
+        + sum(safe_int(m.get("seen_60m")) for m in data.get("meters", []))
+    )
+    raw_per_min = round(total_60m / 60, 1) if total_60m > 0 else 0.0
+
     return {
         "status": status,
         "cfg": cfg,
@@ -822,6 +845,7 @@ def status_model(data: dict) -> dict:
         "decoded_ok": decoded_ok,
         "discovery_ok": discovery_ok,
         "raw_15m": raw_15m,
+        "raw_per_min": raw_per_min,
     }
 
 
@@ -1098,19 +1122,22 @@ def render_system_status(model: dict) -> str:
     </div><div class="last-line"><span>Last RAW telegram</span><span>{esc(fmt_ts(pipe.get('last_raw_seen') or '') or 'not seen this session')} <span class="pill raw">RAW</span></span></div></section>'''
 
 
-def render_stats(model: dict) -> str:
+def render_stats(model: dict, lang: str = DEFAULT_LANG) -> str:
     raw = model['raw_count']
     decoded = model['decoded_count']
     candidates = model['candidate_count']
     meters = model['meter_count']
+    per_min = model['raw_per_min']
+    per_min_str = f"{per_min:.1f}" if per_min != int(per_min) else str(int(per_min))
     max_value = max(raw, decoded, candidates, meters, 1)
     return f'''
-    <section class="card"><h2>Statistics</h2><div class="metric-list">
-      <div class="metric-row"><div class="metric-icon">📡</div><div><div class="metric-title">RAW telegrams</div><div class="metric-value">{raw}</div></div>{mini_bar(raw, max_value)}</div>
-      <div class="metric-row"><div class="metric-icon">⌘</div><div><div class="metric-title">Decoded JSON</div><div class="metric-value">{decoded}</div></div>{mini_bar(decoded, max_value)}</div>
-      <div class="metric-row"><div class="metric-icon purple">▣</div><div><div class="metric-title">Detected candidates</div><div class="metric-value">{candidates}</div></div>{mini_bar(candidates, max_value)}</div>
-      <div class="metric-row"><div class="metric-icon green">◇</div><div><div class="metric-title">Configured meters</div><div class="metric-value">{meters}</div></div>{mini_bar(meters, max_value)}</div>
-    </div><div class="sub" style="margin-top:12px;font-size:12px;">Bars are relative to the largest visible value, not historical charts.</div></section>'''
+    <section class="card"><h2>{esc(tr(lang, "statistics"))}</h2><div class="metric-list">
+      <div class="metric-row"><div class="metric-icon">📡</div><div><div class="metric-title">{esc(tr(lang, "raw_telegrams_metric"))}</div><div class="metric-value">{raw}</div></div>{mini_bar(raw, max_value)}</div>
+      <div class="metric-row"><div class="metric-icon">⌘</div><div><div class="metric-title">{esc(tr(lang, "decoded_json_metric"))}</div><div class="metric-value">{decoded}</div></div>{mini_bar(decoded, max_value)}</div>
+      <div class="metric-row"><div class="metric-icon purple">▣</div><div><div class="metric-title">{esc(tr(lang, "detected_candidates"))}</div><div class="metric-value">{candidates}</div></div>{mini_bar(candidates, max_value)}</div>
+      <div class="metric-row"><div class="metric-icon green">◇</div><div><div class="metric-title">{esc(tr(lang, "configured_meters"))}</div><div class="metric-value">{meters}</div></div>{mini_bar(meters, max_value)}</div>
+      <div class="metric-row"><div class="metric-icon" style="background:#0f2a2d;color:#00d4c8;">⏱</div><div><div class="metric-title">{esc(tr(lang, "telegrams_per_min_metric"))}</div><div class="metric-value">{per_min_str}</div></div><div style="color:#607a88;font-size:11px;text-align:right;align-self:center;white-space:nowrap;">60 min avg</div></div>
+    </div><div class="sub" style="margin-top:12px;font-size:12px;">{esc(tr(lang, "bars_relative_note"))}</div></section>'''
 
 
 def render_discovery(model: dict) -> str:
@@ -1458,11 +1485,12 @@ def page_dashboard(data: dict, params: dict[str, list[str]], lang: str = DEFAULT
     pending = pending_meters(data)
     body = f'''
       <h1>{esc(tr(lang, "dashboard_title"))}</h1><div class="sub">{esc(tr(lang, "dashboard_sub"))}</div>
-      <section class="grid3">{render_system_status(model)}{render_stats(model)}{render_discovery(model)}</section>
+      <section class="grid3">{render_system_status(model)}{render_stats(model, lang)}{render_discovery(model)}</section>
       {render_pending_panel(pending, lang)}
       {render_waiting_panel(data, lang)}
       <section class="card" style="margin-top:14px;"><div class="section-head"><h2>{esc(tr(lang, "configured_meters"))}</h2>{render_filter_links('.', media, lang)}</div>{render_configured_meters(meters, max_items=6, lang=lang, pending=pending, cfg=model["cfg"])}</section>
       <section class="card" style="margin-top:14px;"><div class="section-head"><h2>{esc(tr(lang, "detected_candidates"))}</h2></div>{render_candidate_summary(data['candidates'], lang)}</section>
+      <section class="card" style="margin-top:14px;"><div class="section-head"><h2>{esc(tr(lang, "recent_events_title"))}</h2><a class="small-button" href="logs">{esc(tr(lang, "nav_logs"))}</a></div>{render_events(data.get("events", []), max_items=8, lang=lang)}</section>
       <div class="footer"><span>wMBus MQTT Bridge</span><span>{esc(tr(lang, "footer_subtitle"))}</span><span>{esc(tr(lang, "footer_caption"))}</span></div>'''
     return shell('dashboard', body, model['status'].get('updated_at', ''), lang=lang)
 
@@ -1733,6 +1761,20 @@ def page_candidate(data: dict, params: dict[str, list[str]], lang: str = DEFAULT
     else:
         status_banner = ""
 
+    # Suggested meter name for the candidate page forms
+    last4_cand = mid[-4:].upper()
+    mclass_cand = media_class(candidate.get('type', ''), driver)
+    if mclass_cand == "warm_water":
+        suggested_name_cand = f"Warm_Water_{last4_cand}"
+    elif mclass_cand in ("water", "cold_water"):
+        suggested_name_cand = f"Cold_Water_{last4_cand}"
+    elif mclass_cand == "electricity":
+        suggested_name_cand = f"Electricity_{last4_cand}"
+    elif mclass_cand == "heat":
+        suggested_name_cand = f"Heat_{last4_cand}"
+    else:
+        suggested_name_cand = f"meter_{mid}" if not driver or driver == "auto" else f"{driver[:12]}_{last4_cand}"
+
     # AES key input + add-meter form
     if aes_required:
         add_form = f"""
@@ -1754,6 +1796,12 @@ def page_candidate(data: dict, params: dict[str, list[str]], lang: str = DEFAULT
       </div>
       <span id="key-status" style="font-size:12px;font-weight:800;min-width:50px;margin-top:18px;"></span>
     </div>
+    <div style="margin-bottom:10px;">
+      <label style="color:#95adbd;font-size:12px;display:block;margin-bottom:4px;">{esc(tr(lang, "meter_name_label"))}</label>
+      <input type="text" name="meter_name" value="{esc(suggested_name_cand)}"
+        style="width:100%;background:#0e151b;border:1px solid #5a2020;color:#e8f1f8;
+               border-radius:6px;padding:8px 10px;font-size:13px;box-sizing:border-box;">
+    </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
       <button id="btn-add" class="button good" type="submit" disabled
         style="opacity:0.4;cursor:not-allowed;">{esc(tr(lang, "add_meter_btn"))}</button>
@@ -1772,6 +1820,12 @@ def page_candidate(data: dict, params: dict[str, list[str]], lang: str = DEFAULT
   <input type="hidden" name="meter_id" value="{esc(mid)}">
   <input type="hidden" name="driver"   value="{esc(driver)}">
   <input type="hidden" name="key"      value="">
+  <div style="margin-bottom:10px;">
+    <label style="color:#95adbd;font-size:12px;display:block;margin-bottom:4px;">{esc(tr(lang, "meter_name_label"))}</label>
+    <input type="text" name="meter_name" value="{esc(suggested_name_cand)}"
+      style="width:100%;background:#0e151b;border:1px solid #2a4555;color:#e8f1f8;
+             border-radius:6px;padding:8px 10px;font-size:13px;box-sizing:border-box;">
+  </div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
     <button class="button good" type="submit"{'disabled style="opacity:0.5;cursor:not-allowed;"' if already_added else ''}>{esc(tr(lang, "add_meter_btn"))}</button>
     <span style="color:#95adbd;font-size:12px;">{esc(tr(lang, "saves_then_restart"))}</span>
