@@ -58,8 +58,19 @@ STATUS_LAST_DECODED_SEEN=""
 STATUS_LAST_ERROR=""
 STATUS_LAST_EVENT="starting"
 
+# Per-minute rate tracking: updated on every incoming RAW telegram.
+# WebGUI reads status_rate_1m.json to show live current/prev minute counts.
+STATUS_RATE_1M_FILE="${BASE}/status_rate_1m.json"
+STATUS_BRIDGE_START_FILE="${BASE}/status_bridge_start.txt"
+RAW_RATE_CUR_MIN_EPOCH=0
+RAW_RATE_CUR_MIN_COUNT=0
+RAW_RATE_PREV_MIN_COUNT=0
+
 touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}"
 [[ -f "${STATUS_RAW_COUNT_FILE}" ]] || echo "0" > "${STATUS_RAW_COUNT_FILE}"
+
+# Record bridge start time for the WebGUI rate denominator fix.
+printf '%s\n' "$(epoch_now)" > "${STATUS_BRIDGE_START_FILE}" 2>/dev/null || true
 
 iso_now() {
   date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z'
@@ -310,6 +321,25 @@ status_raw_seen() {
   if (( STATUS_RAW_COUNT == 1 || STATUS_RAW_COUNT % 25 == 0 )); then
     status_add_event "ok" "RAW telegram received (${#raw} hex chars)"
   fi
+
+  # Per-minute rate tracking for the WebGUI live dashboard.
+  # Telegrams arriving within the same 60-second bucket increment current_min.
+  # When the minute turns, current_min is rotated into prev_min and reset to 1.
+  local _now_epoch _cur_min
+  _now_epoch="$(epoch_now)"
+  _cur_min=$(( _now_epoch / 60 ))
+  if [[ "${RAW_RATE_CUR_MIN_EPOCH}" -ne "${_cur_min}" ]]; then
+    RAW_RATE_PREV_MIN_COUNT="${RAW_RATE_CUR_MIN_COUNT}"
+    RAW_RATE_CUR_MIN_COUNT=1
+    RAW_RATE_CUR_MIN_EPOCH="${_cur_min}"
+  else
+    RAW_RATE_CUR_MIN_COUNT=$(( RAW_RATE_CUR_MIN_COUNT + 1 ))
+  fi
+  printf '{"current_min":%d,"prev_min":%d,"epoch":%d}\n' \
+    "${RAW_RATE_CUR_MIN_COUNT}" "${RAW_RATE_PREV_MIN_COUNT}" "${_now_epoch}" \
+    > "${STATUS_RATE_1M_FILE}.tmp" 2>/dev/null \
+    && mv "${STATUS_RATE_1M_FILE}.tmp" "${STATUS_RATE_1M_FILE}" 2>/dev/null || true
+
   write_status_json
 }
 

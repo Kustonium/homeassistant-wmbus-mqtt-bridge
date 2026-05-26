@@ -33,6 +33,9 @@ SEARCH_MATCHES_TSV = BASE / "search_matches.tsv"
 SEARCH_STATUS_JSON = BASE / "search_status.json"
 CANDIDATE_ANALYSIS_TSV = BASE / "status_candidate_analysis.tsv"
 OPTIONS_JSON = BASE / "options.json"
+# Per-minute rate dashboard files written by bridge.sh
+STATUS_RATE_1M_JSON = BASE / "status_rate_1m.json"
+STATUS_BRIDGE_START_FILE = BASE / "status_bridge_start.txt"
 ZERO_AES_KEY = "00000000000000000000000000000000"
 
 
@@ -818,14 +821,36 @@ def status_model(data: dict) -> dict:
                 raw_15m = raw_count
     except Exception:
         pass
-    # Telegrams-per-minute: sum seen_60m across all candidates and meters ÷ 60.
-    # seen_60m counts unique telegrams received per device in the last 60 minutes;
-    # summing gives a good approximation of the total reception rate.
+
+    # Telegrams-per-minute: sum seen_60m across all candidates and meters.
+    # Divide by actual elapsed minutes (capped at 60) instead of always 60 —
+    # dividing by 60 when the bridge is young (e.g. 23 min uptime) produces a
+    # systematically low rate that confuses the user (3.8/min vs real 11/min).
     total_60m = (
         sum(safe_int(c.get("seen_60m")) for c in data.get("candidates", []))
         + sum(safe_int(m.get("seen_60m")) for m in data.get("meters", []))
     )
-    raw_per_min = round(total_60m / 60, 1) if total_60m > 0 else 0.0
+    import time as _time
+    bridge_start_epoch = 0
+    try:
+        bridge_start_epoch = int(STATUS_BRIDGE_START_FILE.read_text(encoding="utf-8").strip())
+    except Exception:
+        pass
+    if bridge_start_epoch > 0:
+        elapsed_min = min(60.0, max(1.0, (_time.time() - bridge_start_epoch) / 60.0))
+    else:
+        elapsed_min = 60.0
+    raw_per_min = round(total_60m / elapsed_min, 1) if total_60m > 0 else 0.0
+
+    # Per-minute live rate from bridge.sh (rotates every 60 s wall-clock).
+    rate_1m = read_json(STATUS_RATE_1M_JSON)
+    rate_current_min = safe_int(rate_1m.get("current_min", 0))
+    rate_prev_min = safe_int(rate_1m.get("prev_min", 0))
+    # Staleness check: if status_rate_1m.json epoch is >90 s old the bridge
+    # may be idle — show 0 for current_min so the UI reflects reality.
+    rate_epoch = safe_int(rate_1m.get("epoch", 0))
+    if rate_epoch > 0 and (_time.time() - rate_epoch) > 90:
+        rate_current_min = 0
 
     return {
         "status": status,
@@ -846,6 +871,8 @@ def status_model(data: dict) -> dict:
         "discovery_ok": discovery_ok,
         "raw_15m": raw_15m,
         "raw_per_min": raw_per_min,
+        "rate_current_min": rate_current_min,
+        "rate_prev_min": rate_prev_min,
     }
 
 
@@ -1123,21 +1150,80 @@ def render_system_status(model: dict) -> str:
 
 
 def render_stats(model: dict, lang: str = DEFAULT_LANG) -> str:
-    raw = model['raw_count']
-    decoded = model['decoded_count']
     candidates = model['candidate_count']
     meters = model['meter_count']
     per_min = model['raw_per_min']
     per_min_str = f"{per_min:.1f}" if per_min != int(per_min) else str(int(per_min))
-    max_value = max(raw, decoded, candidates, meters, 1)
+    current_min = model.get('rate_current_min', 0)
+    prev_min = model.get('rate_prev_min', 0)
+    delta = current_min - prev_min
+
+    # Trend indicator: colour + arrow + numeric delta
+    if delta > 0:
+        trend_colour = "#24d26f"
+        trend_arrow = "↑"
+        trend_delta = f"+{delta}"
+    elif delta < 0:
+        trend_colour = "#ff646b"
+        trend_arrow = "↓"
+        trend_delta = str(delta)
+    else:
+        trend_colour = "#95adbd"
+        trend_arrow = "→"
+        trend_delta = "±0"
+
+    trend_html = (
+        f'<span style="font-size:32px;font-weight:900;color:{trend_colour};line-height:1.1;">'
+        f'{trend_arrow}</span>'
+        f'<span style="font-size:13px;color:{trend_colour};font-weight:700;">{trend_delta}</span>'
+    )
+
+    # Meter count bar relative to candidates
+    max_bar = max(candidates, meters, 1)
+
     return f'''
-    <section class="card"><h2>{esc(tr(lang, "statistics"))}</h2><div class="metric-list">
-      <div class="metric-row"><div class="metric-icon">📡</div><div><div class="metric-title">{esc(tr(lang, "raw_telegrams_metric"))}</div><div class="metric-value">{raw}</div></div>{mini_bar(raw, max_value)}</div>
-      <div class="metric-row"><div class="metric-icon">⌘</div><div><div class="metric-title">{esc(tr(lang, "decoded_json_metric"))}</div><div class="metric-value">{decoded}</div></div>{mini_bar(decoded, max_value)}</div>
-      <div class="metric-row"><div class="metric-icon purple">▣</div><div><div class="metric-title">{esc(tr(lang, "detected_candidates"))}</div><div class="metric-value">{candidates}</div></div>{mini_bar(candidates, max_value)}</div>
-      <div class="metric-row"><div class="metric-icon green">◇</div><div><div class="metric-title">{esc(tr(lang, "configured_meters"))}</div><div class="metric-value">{meters}</div></div>{mini_bar(meters, max_value)}</div>
+    <section class="card"><h2>{esc(tr(lang, "statistics"))}</h2>
+
+    <!-- Live rate dashboard — car-dashboard style -->
+    <div style="background:#0d1f2d;border:1px solid #1a3344;border-radius:8px;padding:14px 10px 12px;margin-bottom:14px;">
+      <div style="display:grid;grid-template-columns:1fr 1px 1fr 1px 1fr;gap:0;text-align:center;align-items:center;">
+
+        <!-- Current minute -->
+        <div style="padding:0 6px;">
+          <div style="color:#8ea4b1;font-size:10px;text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;">{esc(tr(lang, "rate_current_min_label"))}</div>
+          <div style="font-size:38px;font-weight:900;color:#ffffff;line-height:1;">{current_min}</div>
+          <div style="color:#607a88;font-size:11px;margin-top:3px;">{esc(tr(lang, "rate_tel_min"))}</div>
+        </div>
+
+        <!-- Divider -->
+        <div style="background:#1a3344;height:52px;"></div>
+
+        <!-- Previous minute -->
+        <div style="padding:0 6px;">
+          <div style="color:#8ea4b1;font-size:10px;text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;">{esc(tr(lang, "rate_prev_min_label"))}</div>
+          <div style="font-size:38px;font-weight:900;color:#b0c4d4;line-height:1;">{prev_min}</div>
+          <div style="color:#607a88;font-size:11px;margin-top:3px;">{esc(tr(lang, "rate_tel_min"))}</div>
+        </div>
+
+        <!-- Divider -->
+        <div style="background:#1a3344;height:52px;"></div>
+
+        <!-- Trend -->
+        <div style="padding:0 6px;">
+          <div style="color:#8ea4b1;font-size:10px;text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;">{esc(tr(lang, "rate_trend_label"))}</div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:0;line-height:1.1;">{trend_html}</div>
+          <div style="color:#607a88;font-size:11px;margin-top:3px;">{esc(tr(lang, "rate_vs_prev"))}</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Supporting metrics — no duplicates with Stan systemu panel -->
+    <div class="metric-list">
+      <div class="metric-row"><div class="metric-icon purple">▣</div><div><div class="metric-title">{esc(tr(lang, "detected_candidates"))}</div><div class="metric-value">{candidates}</div></div>{mini_bar(candidates, max_bar)}</div>
+      <div class="metric-row"><div class="metric-icon green">◇</div><div><div class="metric-title">{esc(tr(lang, "configured_meters"))}</div><div class="metric-value">{meters}</div></div>{mini_bar(meters, max_bar)}</div>
       <div class="metric-row"><div class="metric-icon" style="background:#0f2a2d;color:#00d4c8;">⏱</div><div><div class="metric-title">{esc(tr(lang, "telegrams_per_min_metric"))}</div><div class="metric-value">{per_min_str}</div></div><div style="color:#607a88;font-size:11px;text-align:right;align-self:center;white-space:nowrap;">60 min avg</div></div>
-    </div><div class="sub" style="margin-top:12px;font-size:12px;">{esc(tr(lang, "bars_relative_note"))}</div></section>'''
+    </div></section>'''
 
 
 def render_discovery(model: dict) -> str:
