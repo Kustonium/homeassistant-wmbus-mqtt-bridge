@@ -45,6 +45,18 @@ STATUS_LAST_RAW_FILE="${BASE}/status_last_raw_seen.txt"
 STATUS_RECENT_RAW_FILE="${BASE}/status_recent_raw.tsv"
 STATUS_CANDIDATE_ANALYSIS_FILE="${BASE}/status_candidate_analysis.tsv"
 STATUS_CANDIDATE_RAW_FILE="${BASE}/status_candidate_raw.tsv"
+# Per-candidate decoded value preview — written by parse_listen_candidates when
+# the parallel LISTEN instance has a meter-preview-<id> file in its config dir.
+# Format: id<TAB>value<TAB>value_key<TAB>iso_timestamp
+STATUS_CANDIDATE_VALUES_FILE="${BASE}/status_candidate_values.tsv"
+# Per-ESP-device telegram tracking — written by the background MQTT subscriber
+# that listens to the RAW topic itself. The "+" wildcard segment carries the
+# device name (e.g. wmbus/xiaoseed/telegram → "xiaoseed"). Lets the WebGUI
+# detect ESPs WITHOUT requiring diagnostic publishing on the ESP side.
+# The file is cleared at bridge start, so rows describe devices seen in the
+# current bridge session via the configured RAW_TOPIC.
+# Format: device_name<TAB>last_seen_epoch<TAB>last_topic<TAB>telegram_count
+STATUS_ESP_TELEGRAM_DEVICES_FILE="${BASE}/status_esp_telegram_devices.tsv"
 SEARCH_MATCHES_FILE="${BASE}/search_matches.tsv"
 SEARCH_STATUS_FILE="${BASE}/search_status.json"
 
@@ -61,20 +73,34 @@ STATUS_LAST_EVENT="starting"
 # Per-minute rate tracking: updated on every incoming RAW telegram.
 # WebGUI reads status_rate_1m.json to show live current/prev minute counts.
 STATUS_RATE_1M_FILE="${BASE}/status_rate_1m.json"
+# Per-minute history (rolling 15 entries) — feeds the sparkline in the WebGUI
+# Statystyki view. Each row: epoch_minute<TAB>telegram_count. Appended every
+# time a minute boundary is crossed; trimmed back to 15 rows.
+STATUS_RATE_HISTORY_FILE="${BASE}/status_rate_history.tsv"
 STATUS_BRIDGE_START_FILE="${BASE}/status_bridge_start.txt"
 RAW_RATE_CUR_MIN_EPOCH=0
 RAW_RATE_CUR_MIN_COUNT=0
 RAW_RATE_PREV_MIN_COUNT=0
 
-touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}"
+touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}"
+: > "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" 2>/dev/null || true
+# Preview values are session-scoped — clear stale entries from previous runs
+# so the WebGUI doesn't show outdated readings (or the legacy first-numeric-field
+# pick that briefly stored bogus backflow_m3 / fraud counter values) until the
+# next telegram arrives. New correct values appear ~2 min later on first decode.
+: > "${STATUS_CANDIDATE_VALUES_FILE}" 2>/dev/null || touch "${STATUS_CANDIDATE_VALUES_FILE}"
 [[ -f "${STATUS_RAW_COUNT_FILE}" ]] || echo "0" > "${STATUS_RAW_COUNT_FILE}"
-
-# Record bridge start time for the WebGUI rate denominator fix.
-printf '%s\n' "$(epoch_now)" > "${STATUS_BRIDGE_START_FILE}" 2>/dev/null || true
 
 iso_now() {
   date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z'
 }
+
+epoch_now() {
+  date +%s 2>/dev/null || echo 0
+}
+
+# Record bridge start time for the WebGUI rate denominator fix.
+printf '%s\n' "$(epoch_now)" > "${STATUS_BRIDGE_START_FILE}" 2>/dev/null || true
 
 status_add_event() {
   local level="$1"
@@ -85,10 +111,6 @@ status_add_event() {
   printf '%s	%s	%s
 ' "${now}" "${level}" "${message}" >> "${STATUS_EVENTS_FILE}" 2>/dev/null || true
   tail -n 40 "${STATUS_EVENTS_FILE}" > "${STATUS_EVENTS_FILE}.tmp" 2>/dev/null && mv "${STATUS_EVENTS_FILE}.tmp" "${STATUS_EVENTS_FILE}" 2>/dev/null || true
-}
-
-epoch_now() {
-  date +%s 2>/dev/null || echo 0
 }
 
 status_record_seen() {
@@ -202,6 +224,67 @@ status_upsert_candidate_analysis() {
   mv "${tmp}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" 2>/dev/null || true
 }
 
+candidate_autodecode_file() {
+  local id="$1"
+  printf '%s/meter-preview-%s' "${LISTEN_METER_DIR}" "${id}"
+}
+
+candidate_type_requires_aes() {
+  local type_lc
+  type_lc="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  [[ "${type_lc}" == *not\ encrypted* || "${type_lc}" == *unencrypted* || "${type_lc}" == *no\ aes* || "${type_lc}" == *no_aes* ]] && return 1
+  [[ "${type_lc}" == *encrypted* || "${type_lc}" == *aes* ]]
+}
+
+ensure_candidate_autodecode() {
+  local id="$1"
+  local driver="${2:-auto}"
+  local type_line="${3:-}"
+  local reload="${4:-true}"
+  local file tmp
+
+  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  file="$(candidate_autodecode_file "${id}")"
+
+  if candidate_type_requires_aes "${type_line}"; then
+    if [[ -f "${file}" ]]; then
+      rm -f "${file}" 2>/dev/null || true
+      if [[ "${reload}" == "true" ]]; then
+        touch "${BASE}/.reload_listen" "${RELOAD_FLAG:-${BASE}/.reload_pipeline}" 2>/dev/null || true
+      fi
+    fi
+    return 0
+  fi
+
+  mkdir -p "${LISTEN_METER_DIR}" 2>/dev/null || true
+  tmp="${file}.tmp"
+  {
+    echo "name=preview_${id}"
+    echo "id=${id}"
+    if [[ -n "${driver}" && "${driver}" != "auto" && "${driver}" != "unknown" ]]; then
+      echo "driver=${driver}"
+    fi
+  } > "${tmp}" 2>/dev/null || return 0
+
+  if [[ ! -f "${file}" ]] || ! cmp -s "${tmp}" "${file}" 2>/dev/null; then
+    mv "${tmp}" "${file}" 2>/dev/null || true
+    if [[ "${reload}" == "true" ]]; then
+      touch "${BASE}/.reload_listen" "${RELOAD_FLAG:-${BASE}/.reload_pipeline}" 2>/dev/null || true
+    fi
+  else
+    rm -f "${tmp}" 2>/dev/null || true
+  fi
+}
+
+sync_candidate_autodecode_files() {
+  local id driver type_line rest
+  [[ -f "${STATUS_CANDIDATES_FILE}" ]] || return 0
+  while IFS=$'\t' read -r id driver type_line rest; do
+    [[ "${id}" =~ ^[0-9]{8}$ ]] || continue
+    ensure_candidate_autodecode "${id}" "${driver:-auto}" "${type_line:-}" "false"
+  done < "${STATUS_CANDIDATES_FILE}"
+}
+
 status_record_candidate_raw() {
   local id="$1"
   local raw="$2"
@@ -250,7 +333,7 @@ status_analyze_candidate_from_text() {
   # Do not guess encryption from driver. Only use explicit backend evidence:
   # 1) wmbusmeters/listen text explicitly says encrypted/AES,
   # 2) process_search_json marks a temporary no-key search meter as decoded.
-  if [[ "${type_lc}" == *encrypted* || "${type_lc}" == *aes* ]]; then
+  if candidate_type_requires_aes "${type_line}"; then
     encryption="aes_required"
     note="wmbusmeters/listen output explicitly reports encrypted/AES telegram"
   elif [[ -n "${raw}" ]]; then
@@ -329,6 +412,18 @@ status_raw_seen() {
   _now_epoch="$(epoch_now)"
   _cur_min=$(( _now_epoch / 60 ))
   if [[ "${RAW_RATE_CUR_MIN_EPOCH}" -ne "${_cur_min}" ]]; then
+    # Minute boundary crossed: archive the finished minute's count into the
+    # 15-entry rolling history (skip when there was no previous minute yet —
+    # RAW_RATE_CUR_MIN_EPOCH==0 means this is the very first telegram). The
+    # _prev_min epoch lets the WebGUI place each bar correctly on the axis.
+    if [[ "${RAW_RATE_CUR_MIN_EPOCH}" -ne 0 ]]; then
+      local _hist_tmp="${STATUS_RATE_HISTORY_FILE}.tmp"
+      {
+        tail -n 14 "${STATUS_RATE_HISTORY_FILE}" 2>/dev/null || true
+        printf '%d\t%d\n' "${RAW_RATE_CUR_MIN_EPOCH}" "${RAW_RATE_CUR_MIN_COUNT}"
+      } > "${_hist_tmp}" 2>/dev/null \
+        && mv "${_hist_tmp}" "${STATUS_RATE_HISTORY_FILE}" 2>/dev/null || true
+    fi
     RAW_RATE_PREV_MIN_COUNT="${RAW_RATE_CUR_MIN_COUNT}"
     RAW_RATE_CUR_MIN_COUNT=1
     RAW_RATE_CUR_MIN_EPOCH="${_cur_min}"
@@ -397,6 +492,7 @@ status_candidate_seen() {
 ' "${id}" "${driver}" "${type_line}" "${now}" "${seen_count}" "${avg_interval_s}" "${seen_15m}" "${seen_60m}" >> "${tmp}"
   mv "${tmp}" "${STATUS_CANDIDATES_FILE}" 2>/dev/null || true
   status_analyze_candidate_from_text "${id}" "${driver}" "${type_line}"
+  ensure_candidate_autodecode "${id}" "${driver:-auto}" "${type_line:-}"
   if [[ "${existed}" != "true" ]]; then
     status_add_event "candidate" "Candidate detected ${id} (${driver})"
   fi
@@ -541,6 +637,150 @@ if command -v stdbuf >/dev/null 2>&1; then
   STDBUF_BIN="stdbuf -oL -eL"
 fi
 
+# Background subscriber for ESP diagnostic summaries (wmbus/+/diag/summary).
+# ESP publishes every 60 s: {"event":"summary","interval_s":60,"total":N,...}
+# bridge.sh injects _bridge_rx_epoch so webui.py can check freshness.
+# When fresh (<90 s) webui.py uses ESP's exact "total" count as the live rate
+# instead of its own per-minute counting — more accurate source of truth.
+STATUS_ESP_DIAG_FILE="${BASE}/status_esp_diag.json"
+(
+  while true; do
+    # -F '%t\t%p' = "topic<TAB>payload" so we can record which ESP device sent
+    # the summary. The topic segment between wmbus/ and /diag/summary is the
+    # ESP device name (e.g. "esphome-wmbus-tx-lilygo"). webui.py uses _topic
+    # to display the source in the Pipeline ESP node and to detect when more
+    # than one ESP is publishing.
+    while IFS=$'\t' read -r _diag_topic _diag_line; do
+          [[ -n "${_diag_line}" ]] || continue
+          _ts="$(date +%s 2>/dev/null || echo 0)"
+          printf '%s\n' "${_diag_line}" \
+            | jq --argjson t "${_ts}" --arg topic "${_diag_topic:-}" '. + {_bridge_rx_epoch: $t, _topic: $topic}' 2>/dev/null \
+            > "${STATUS_ESP_DIAG_FILE}.tmp" \
+            && mv "${STATUS_ESP_DIAG_FILE}.tmp" "${STATUS_ESP_DIAG_FILE}" 2>/dev/null \
+            || true
+        done < <(
+          ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/diag/summary" -F '%t\t%p' -W 90 2>/dev/null
+        )
+    sleep 5
+  done
+) &
+
+# Background subscriber for per-ESP-device telegram tracking.
+# Listens to the RAW telegram topic (with wildcard) and records each
+# distinct device name + last-seen epoch + telegram count to a TSV.
+# This is the SOURCE OF TRUTH for "which ESPs are alive right now" —
+# telegrams arrive live, not retained, so dead ESPs naturally age out.
+# Works even when the ESP has NO diagnostic publishing enabled.
+#
+# The device name is whatever segment of the received topic matches the
+# `+` wildcard in RAW_TOPIC (e.g. RAW_TOPIC="wmbus/+/telegram", topic
+# "wmbus/xiaoseed/telegram" → device "xiaoseed"). If RAW_TOPIC has no
+# wildcard at all, this loop still runs but produces no device data
+# (and the WebGUI falls back to diag-based detection as before).
+(
+  # Pre-compute which segment of RAW_TOPIC holds the device name.
+  IFS='/' read -ra _RT_PARTS <<< "${RAW_TOPIC}"
+  _RT_DEV_POS=-1
+  for _i in "${!_RT_PARTS[@]}"; do
+    if [[ "${_RT_PARTS[$_i]}" == "+" ]]; then
+      _RT_DEV_POS="${_i}"
+      break
+    fi
+  done
+
+  if [[ "${_RT_DEV_POS}" -ge 0 ]]; then
+    log "ESP-device tracker: device name at topic segment ${_RT_DEV_POS} of '${RAW_TOPIC}'"
+    while true; do
+      # Read via process substitution, not a pipe: with set -euo pipefail a
+      # mosquitto_sub timeout/disconnect would otherwise kill this tracker.
+      while IFS= read -r _tg_topic; do
+        [[ -n "${_tg_topic}" ]] || continue
+        IFS='/' read -ra _T_PARTS <<< "${_tg_topic}"
+        _dev="${_T_PARTS[${_RT_DEV_POS}]:-}"
+        [[ -n "${_dev}" ]] || continue
+        _now=$(date +%s 2>/dev/null || echo 0)
+        _tmp="${STATUS_ESP_TELEGRAM_DEVICES_FILE}.tmp"
+        # Upsert the row for this device — increment count if exists,
+        # otherwise append a fresh row with count=1.
+        awk -F'\t' -v dev="${_dev}" -v now="${_now}" -v tg="${_tg_topic}" '
+          BEGIN { upd=0 }
+          $1 == dev {
+            cnt = (NF >= 4 ? $4+1 : 1)
+            print dev "\t" now "\t" tg "\t" cnt
+            upd=1
+            next
+          }
+          { print }
+          END { if (!upd) print dev "\t" now "\t" tg "\t1" }
+        ' "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" 2>/dev/null > "${_tmp}" \
+          && mv "${_tmp}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" 2>/dev/null \
+          || true
+      done < <(
+        ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%t' -W 180 2>/dev/null
+      )
+      sleep 5
+    done
+  else
+    log "ESP-device tracker: RAW_TOPIC '${RAW_TOPIC}' has no '+' wildcard — per-device tracking disabled."
+  fi
+) &
+
+# Background subscriber for all ESP diagnostic events.
+# Subscribes to bare diag topic (dropped/truncated/rx_path) and all subtopics.
+# Writes TSV: epoch<TAB>evtype<TAB>topic<TAB>payload  (rolling 200 lines).
+# Extracts suggestion and boot events to their own JSON files for webui detail panels.
+STATUS_ESP_EVENTS_FILE="${BASE}/status_esp_events.tsv"
+STATUS_ESP_SUGGESTION_FILE="${BASE}/status_esp_suggestion.json"
+STATUS_ESP_BOOT_FILE="${BASE}/status_esp_boot.json"
+touch "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
+(
+  _n=0
+  while true; do
+    while IFS=$'\t' read -r _etopic _epayload; do
+      [[ -n "${_etopic}" ]] || continue
+      [[ -n "${_epayload}" ]] || continue
+      _ets="$(date +%s 2>/dev/null || echo 0)"
+      _evtype="$(printf '%s\n' "${_epayload}" | jq -r '.event // "unknown"' 2>/dev/null || echo "unknown")"
+      [[ -n "${_evtype}" && "${_evtype}" != "null" ]] || _evtype="unknown"
+      # summary_15min and summary_60min publish JSON with "event":"summary" (same as 60s).
+      # Override evtype from the MQTT topic suffix so they appear distinctly in the log.
+      case "${_etopic}" in
+        */summary_15min) _evtype="summary_15min" ;;
+        */summary_60min) _evtype="summary_60min" ;;
+      esac
+      printf '%s\t%s\t%s\t%s\n' "${_ets}" "${_evtype}" "${_etopic}" "${_epayload}" \
+        >> "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
+      _n=$(( _n + 1 ))
+      if (( _n % 50 == 0 )); then
+        tail -n 200 "${STATUS_ESP_EVENTS_FILE}" > "${STATUS_ESP_EVENTS_FILE}.tmp" 2>/dev/null \
+          && mv "${STATUS_ESP_EVENTS_FILE}.tmp" "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
+      fi
+      if [[ "${_evtype}" == "suggestion" ]]; then
+        printf '%s\n' "${_epayload}" \
+          | jq --argjson t "${_ets}" '. + {_bridge_rx_epoch: $t}' 2>/dev/null \
+          > "${STATUS_ESP_SUGGESTION_FILE}.tmp" \
+          && mv "${STATUS_ESP_SUGGESTION_FILE}.tmp" "${STATUS_ESP_SUGGESTION_FILE}" 2>/dev/null \
+          || true
+      fi
+      if [[ "${_evtype}" == "boot" ]]; then
+        printf '%s\n' "${_epayload}" \
+          | jq --argjson t "${_ets}" '. + {_bridge_rx_epoch: $t}' 2>/dev/null \
+          > "${STATUS_ESP_BOOT_FILE}.tmp" \
+          && mv "${STATUS_ESP_BOOT_FILE}.tmp" "${STATUS_ESP_BOOT_FILE}" 2>/dev/null \
+          || true
+        # Clear stale suggestion on ESP reboot — suggestions from previous session
+        # are no longer actionable after the ESP restarts.
+        rm -f "${STATUS_ESP_SUGGESTION_FILE}" 2>/dev/null || true
+      fi
+    done < <(
+      ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" \
+        -t "wmbus/+/diag" -t "wmbus/+/diag/#" \
+        -F '%t\t%p' -W 180 2>/dev/null
+    )
+    sleep 5
+  done
+) &
+
 mqtt_pub() {
   local topic="$1"
   local payload="$2"
@@ -561,6 +801,34 @@ device=stdin:hex
 logfile=/dev/stdout
 format=json
 EOFCONF
+
+# ------------------------------------------------------------
+# Listen-only wmbusmeters config: SECONDARY instance for candidate
+# visibility in DECODE mode. Separate config dir under ${BASE}/listen
+# with NO meter files — this instance always runs in pure listen mode
+# and emits "Received telegram from: XXXXXXXX" / type: / driver: lines
+# for every wMBus telegram seen, regardless of how many meters the user
+# has configured in the primary instance. Spawned when DECODE is active or
+# when meter-preview-* files exist (preview values need this separate config
+# dir even if the primary instance is otherwise in pure LISTEN mode).
+#
+# Shares the SAME wmbusmeters binary as the primary — only the config
+# dir differs. User-uploaded binary upgrades are picked up by both
+# instances on addon restart with no additional work.
+# ------------------------------------------------------------
+LISTEN_BASE="${BASE}/listen"
+LISTEN_ETC="${LISTEN_BASE}/etc"
+LISTEN_METER_DIR="${LISTEN_ETC}/wmbusmeters.d"
+LISTEN_CONF_FILE="${LISTEN_ETC}/wmbusmeters.conf"
+mkdir -p "${LISTEN_METER_DIR}"
+# Defensive — the listen instance must NEVER have meter files (would force decode)
+rm -f "${LISTEN_METER_DIR}/meter-"* 2>/dev/null || true
+cat > "${LISTEN_CONF_FILE}" <<EOFLISTEN
+loglevel=${LOGLEVEL}
+device=stdin:hex
+logfile=/dev/stdout
+format=json
+EOFLISTEN
 
 # ------------------------------------------------------------
 # Helpers
@@ -898,7 +1166,7 @@ search_type_is_water_candidate() {
   local type_lc="$1"
 
   [[ -n "${type_lc}" ]] || return 1
-  [[ "${type_lc}" == *encrypted* ]] && return 1
+  candidate_type_requires_aes "${type_lc}" && return 1
 
   case "${type_lc}" in
     *water*) return 0 ;;
@@ -1049,84 +1317,113 @@ process_search_json() {
 }
 
 # ------------------------------------------------------------
-# Meter registration
+# Meter registration — refresh_meter_files()
+# Called once at startup AND before every run_once() iteration, so that
+# meters added/removed by the user via options.json are picked up by a
+# soft pipeline restart (touch ${RELOAD_FLAG}) without needing a full
+# container restart. wmbusmeters reads its meter-NNNN files only at
+# startup, so the pipeline must be restarted to pick up changes.
 # ------------------------------------------------------------
-rm -f "${METER_DIR}/meter-"* 2>/dev/null || true
+refresh_meter_files() {
+  rm -f "${METER_DIR}/meter-"* 2>/dev/null || true
 
-METERS_COUNT=0
-if [[ -f "${OPTIONS_JSON}" ]] && jq -e '.meters and (.meters|length>0)' "${OPTIONS_JSON}" >/dev/null 2>&1; then
-  METERS_COUNT="$(jq -r '.meters|length' "${OPTIONS_JSON}")"
-fi
-OFFICIAL_METERS_COUNT="${METERS_COUNT}"
-
-if [[ "${METERS_COUNT}" -eq 0 && "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
-  cached_count="$(create_search_meter_files_from_cache)"
-  if [[ "${cached_count}" =~ ^[0-9]+$ && "${cached_count}" -gt 0 ]]; then
-    METERS_COUNT="${cached_count}"
-    SEARCH_USING_TEMP_METERS="true"
-    SEARCH_TEMP_METERS_LOADED="${cached_count}"
-    warn "No user meters configured -> SEARCH MODE (temporary cached candidates=${cached_count}, expected=${SEARCH_EXPECTED_VALUE_M3} m3, tolerance=${SEARCH_TOLERANCE_M3} m3)."
-    warn "SEARCH MODE uses cached candidates from ${SEARCH_CANDIDATES_FILE}. Remove that file or disable search_mode to return to pure LISTEN MODE."
-    write_search_status "search" "loaded_temp_meters"
-  else
-    warn "No meters configured -> SEARCH DISCOVERY MODE."
-    warn "SEARCH MODE needs decoded JSON values, but there are no cached candidates yet."
-    warn "The bridge will collect id+driver candidates first. Let it run long enough to hear meters; restart later to decode cached candidates and compare m3 values."
-    write_search_status "collecting" "no_cached_candidates"
+  METERS_COUNT=0
+  OFFICIAL_METERS_COUNT=0
+  local configured_count=0
+  if [[ -f "${OPTIONS_JSON}" ]] && jq -e '.meters and (.meters|length>0)' "${OPTIONS_JSON}" >/dev/null 2>&1; then
+    configured_count="$(jq -r '.meters|length' "${OPTIONS_JSON}")"
   fi
-elif [[ "${METERS_COUNT}" -eq 0 ]]; then
-  warn "No meters configured -> LISTEN MODE (will log DLL-ID + suggested driver)."
-  write_search_status "listen" "listen_mode"
-else
-  i=0
-  while IFS= read -r meter_json; do
-    i=$((i+1))
-    file="$(printf '%s/meter-%04d' "${METER_DIR}" "${i}")"
+  SEARCH_USING_TEMP_METERS="false"
 
-    friendly_name="$(echo "${meter_json}" | jq -r '.id // "meter"')"
-    driver="$(echo "${meter_json}" | jq -r '.type // "auto"')"
-    driver_other="$(echo "${meter_json}" | jq -r '.type_other // empty')"
-    mid_raw="$(echo "${meter_json}" | jq -r '.meter_id // empty')"
-    key="$(echo "${meter_json}" | jq -r '.key // empty')"
-
-    if [[ -z "${key}" || "${key}" == "null" ]]; then
-      key=""
-    elif [[ ! "${key}" =~ ^[A-Fa-f0-9]{32}$ ]]; then
-      warn "Invalid key for '${friendly_name}' -> skipping (expected empty or 32 hex chars, got: '${key}')"
-      continue
+  if [[ "${configured_count}" -eq 0 && "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
+    local cached_count
+    cached_count="$(create_search_meter_files_from_cache)"
+    if [[ "${cached_count}" =~ ^[0-9]+$ && "${cached_count}" -gt 0 ]]; then
+      METERS_COUNT="${cached_count}"
+      SEARCH_USING_TEMP_METERS="true"
+      SEARCH_TEMP_METERS_LOADED="${cached_count}"
+      warn "No user meters configured -> SEARCH MODE (temporary cached candidates=${cached_count}, expected=${SEARCH_EXPECTED_VALUE_M3} m3, tolerance=${SEARCH_TOLERANCE_M3} m3)."
+      warn "SEARCH MODE uses cached candidates from ${SEARCH_CANDIDATES_FILE}. Remove that file or disable search_mode to return to pure LISTEN MODE."
+      write_search_status "search" "loaded_temp_meters"
+    else
+      warn "No meters configured -> SEARCH DISCOVERY MODE."
+      warn "SEARCH MODE needs decoded JSON values, but there are no cached candidates yet."
+      warn "The bridge will collect id+driver candidates first. Let it run long enough to hear meters; restart later to decode cached candidates and compare m3 values."
+      write_search_status "collecting" "no_cached_candidates"
     fi
+  elif [[ "${configured_count}" -eq 0 ]]; then
+    warn "No meters configured -> LISTEN MODE (will log DLL-ID + suggested driver)."
+    write_search_status "listen" "listen_mode"
+  else
+    local loaded_count=0
+    local meter_json file friendly_name driver driver_other mid_raw key mid
+    while IFS= read -r meter_json; do
+      friendly_name="$(echo "${meter_json}" | jq -r '.id // "meter"')"
+      driver="$(echo "${meter_json}" | jq -r '.type // "auto"')"
+      driver_other="$(echo "${meter_json}" | jq -r '.type_other // empty')"
+      mid_raw="$(echo "${meter_json}" | jq -r '.meter_id // empty')"
+      key="$(echo "${meter_json}" | jq -r '.key // empty')"
 
-    [[ -z "${driver}" || "${driver}" == "null" ]] && driver="auto"
-
-    if [[ "${driver}" == "other" ]]; then
-      if [[ -z "${driver_other}" || "${driver_other}" == "null" ]]; then
-        warn "type=other but type_other is empty for '${friendly_name}' -> skipping"
+      if [[ -z "${key}" || "${key}" == "null" ]]; then
+        key=""
+      elif [[ ! "${key}" =~ ^[A-Fa-f0-9]{32}$ ]]; then
+        warn "Invalid key for '${friendly_name}' -> skipping (expected empty or 32 hex chars, got: '${key}')"
         continue
       fi
-      driver="${driver_other}"
-    fi
 
-    mid="$(normalize_meter_id "${mid_raw}")"
-    if [[ -z "${mid}" ]]; then
-      warn "Invalid meter_id for '${friendly_name}' -> skipping (got: '${mid_raw}')"
-      continue
-    fi
+      [[ -z "${driver}" || "${driver}" == "null" ]] && driver="auto"
 
-    {
-      echo "name=${friendly_name}"
-      echo "id=${mid}"
-      if [[ -n "${key}" ]]; then
-        echo "key=${key}"
+      if [[ "${driver}" == "other" ]]; then
+        if [[ -z "${driver_other}" || "${driver_other}" == "null" ]]; then
+          warn "type=other but type_other is empty for '${friendly_name}' -> skipping"
+          continue
+        fi
+        driver="${driver_other}"
       fi
-      if [[ "${driver}" != "auto" ]]; then
-        echo "driver=${driver}"
-      fi
-    } > "${file}"
 
-    log "meter: ${friendly_name} id=${mid} driver=${driver}"
-  done < <(jq -c '.meters[]' "${OPTIONS_JSON}" 2>/dev/null || true)
-  write_search_status "configured" "official_meters_configured"
-fi
+      mid="$(normalize_meter_id "${mid_raw}")"
+      if [[ -z "${mid}" ]]; then
+        warn "Invalid meter_id for '${friendly_name}' -> skipping (got: '${mid_raw}')"
+        continue
+      fi
+
+      loaded_count=$((loaded_count + 1))
+      file="$(printf '%s/meter-%04d' "${METER_DIR}" "${loaded_count}")"
+      {
+        echo "name=${friendly_name}"
+        echo "id=${mid}"
+        if [[ -n "${key}" ]]; then
+          echo "key=${key}"
+        fi
+        if [[ "${driver}" != "auto" ]]; then
+          echo "driver=${driver}"
+        fi
+      } > "${file}"
+
+      log "meter: ${friendly_name} id=${mid} driver=${driver}"
+    done < <(jq -c '.meters[]' "${OPTIONS_JSON}" 2>/dev/null || true)
+    METERS_COUNT="${loaded_count}"
+    OFFICIAL_METERS_COUNT="${loaded_count}"
+    if [[ "${loaded_count}" -gt 0 ]]; then
+      write_search_status "configured" "official_meters_configured"
+    else
+      warn "Configured meters exist in options.json, but none produced a valid wmbusmeters meter file -> LISTEN MODE."
+      write_search_status "listen" "configured_meters_invalid"
+    fi
+  fi
+}
+
+# Soft-reload flag: touch this file to make the running pipeline exit
+# cleanly. The restart_on_exit loop refreshes meter files and respawns.
+# Used by webui.py /api/reload-pipeline to pick up new meters without
+# a full container restart.
+RELOAD_FLAG="${BASE}/.reload_pipeline"
+rm -f "${RELOAD_FLAG}" 2>/dev/null || true
+
+# Initial meter registration before the restart loop kicks in. Without
+# this, METERS_COUNT and OFFICIAL_METERS_COUNT would stay at their
+# default (0), and the first iteration would unconditionally go LISTEN.
+refresh_meter_files
 
 # ------------------------------------------------------------
 # Discovery
@@ -1364,6 +1661,114 @@ emit_snippet_if_new() {
 }
 
 # ------------------------------------------------------------
+# parse_listen_candidates
+# Reads wmbusmeters listen-mode stdout from stdin and emits candidate
+# updates (status_candidates.tsv, status_candidate_analysis.tsv, events).
+# Mirrors the inline listen logic from run_once() (lines that match
+# "Received telegram from:" / type: / driver:), but lives in a parallel
+# subshell so it can run alongside the main DECODE pipeline.
+#
+# write_status_json is overridden to a no-op here — the candidate
+# subshell holds a stale snapshot of the parent's STATUS_* vars at fork
+# time, so letting it write status.json would clobber the parent's
+# decoded-counter / last-seen state. The TSV files are still updated
+# directly (status_candidate_seen writes them via awk+mv), which is
+# what the WebGUI actually reads for the candidate panel.
+# ------------------------------------------------------------
+# _store_candidate_value: extracts (id, primary_numeric_value, value_key) from a
+# decoded wmbusmeters JSON telegram and writes/updates a single row in
+# status_candidate_values.tsv. Called only for telegrams from candidates that
+# have a meter-preview-<id> file in /data/listen/etc/wmbusmeters.d/ (webui.py
+# writes those when the user clicks "Preview value" on the Discover page).
+#
+# Picks the SAME primary field as status_meter_seen() — keeps preview values
+# consistent with what the user sees on the Meters page after permanently adding
+# the meter. Two-step heuristic:
+#   1. instantaneous reading (_kw, _w, _m3h, _l_h)         — e.g. current_power_consumption_kw
+#   2. cumulative reading (total*, _m3, kwh, wh, energy, volume)
+#      but explicitly skip fault/diagnostic counters
+#      (backflow_m3, fraud_*, leak_*, tamper_*, alarm_*)   — e.g. total_m3
+#   3. last resort: first numeric field
+_store_candidate_value() {
+  local json_line="$1"
+  local id value_key value now tmp
+  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null)"
+  [[ -n "${id}" ]] || return 0
+  # Step 1 — instantaneous fields.
+  value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(_kw$|_w$|_m3h$|_l_h$)";"i")) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+  # Step 2 — cumulative reading, excluding fault counters that wmbusmeters
+  # sometimes emits with bogusly large values (the bug that put 1291845 m³
+  # of "backflow" in the WebGUI before).
+  if [[ -z "${value_key}" ]]; then
+    value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(^total|_m3$|kwh|wh$|energy|volume)";"i")) | select(.key|test("(backflow|fraud|leak|tamper|alarm)";"i")|not) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+  fi
+  if [[ -n "${value_key}" ]]; then
+    value="$(jq -r --arg k "${value_key}" '.[$k] // empty' <<<"${json_line}" 2>/dev/null || true)"
+  else
+    # Step 3 — any numeric (skip wmbusmeters metadata keys though).
+    IFS=$'\t' read -r value_key value < <(
+      jq -r '
+        to_entries[]
+        | select(.key as $k
+            | (["_","id","name","meter","media","timestamp","device_date_time","rssi","lqi","status","driver","type"]
+                | index($k)) | not)
+        | select((.value|type)=="number")
+        | "\(.key)\t\(.value)"
+      ' <<<"${json_line}" 2>/dev/null | head -n 1
+    )
+  fi
+  [[ -n "${value}" ]] || return 0
+  now="$(iso_now)"
+  tmp="${STATUS_CANDIDATE_VALUES_FILE}.tmp"
+  # Remove any previous row for this id, then append the new one.
+  awk -F '\t' -v id="${id}" '$1 != id {print}' "${STATUS_CANDIDATE_VALUES_FILE}" 2>/dev/null > "${tmp}" || true
+  printf '%s\t%s\t%s\t%s\n' "${id}" "${value}" "${value_key}" "${now}" >> "${tmp}"
+  mv "${tmp}" "${STATUS_CANDIDATE_VALUES_FILE}" 2>/dev/null || true
+}
+
+parse_listen_candidates() {
+  # Suppress status.json writes from this subshell to prevent races
+  # with the parent shell's pipeline writes.
+  write_status_json() { :; }
+
+  local last_id="" last_driver="" last_type=""
+  while IFS= read -r line; do
+    # Decoded JSON output — present only when LISTEN has a meter-preview-<id>
+    # config matching this telegram's ID. Capture the primary numeric value
+    # for the WebGUI "Preview value" feature.
+    if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
+      _store_candidate_value "${line}"
+      continue
+    fi
+    # Plain listen-mode text output — extract candidate metadata.
+    if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9]{8}) ]]; then
+      last_id="${BASH_REMATCH[1]}"
+      last_type=""
+      last_driver=""
+    elif [[ "${line}" =~ ^[[:space:]]*type:[[:space:]]*(.*)$ ]]; then
+      last_type="${BASH_REMATCH[1]}"
+    elif [[ "${line}" =~ ^[[:space:]]*driver:\ ([a-zA-Z0-9_]+) ]]; then
+      last_driver="${BASH_REMATCH[1]}"
+    fi
+    if [[ -n "${last_id}" && -n "${last_driver}" ]]; then
+      # When there are no official meters, the primary pipeline already runs in
+      # LISTEN mode and updates candidate stats. A secondary LISTEN may still be
+      # running for preview decoding; do not double-count candidate receptions.
+      if [[ "${OFFICIAL_METERS_COUNT:-0}" -gt 0 ]]; then
+        if [[ "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
+          search_cache_candidate "${last_id}" "${last_driver}" "${last_type}"
+        else
+          emit_snippet_if_new "${last_id}" "${last_driver}" "${last_type}"
+        fi
+      fi
+      last_id=""
+      last_driver=""
+      last_type=""
+    fi
+  done
+}
+
+# ------------------------------------------------------------
 # Pipeline
 # ------------------------------------------------------------
 log "Starting wmbusmeters..."
@@ -1372,6 +1777,30 @@ run_once() {
   last_id=""
   last_driver=""
   last_type=""
+
+  # ─── Soft-reload flag watcher ────────────────────────────────────────
+  # Polls for ${RELOAD_FLAG} every 2 s. When present, removes it and kills
+  # the main shell's direct children (mosquitto_sub, awk, tee, wmbusmeters,
+  # while-read subshell) to bring down the foreground pipeline. The
+  # restart_on_exit loop above refreshes meter files and respawns run_once.
+  # Watcher excludes itself (BASHPID) and LISTEN_PID from the kill list so
+  # the parallel listen instance keeps running across pipeline restarts.
+  (
+    watcher_self="${BASHPID}"
+    while sleep 2; do
+      if [[ -f "${RELOAD_FLAG}" ]]; then
+        rm -f "${RELOAD_FLAG}" 2>/dev/null || true
+        log "Soft reload: ${RELOAD_FLAG} detected, restarting decode pipeline..."
+        for child in $(pgrep -P "$$" 2>/dev/null); do
+          [[ "${child}" == "${watcher_self}" ]] && continue
+          [[ -n "${LISTEN_PID}" && "${child}" == "${LISTEN_PID}" ]] && continue
+          kill -TERM "${child}" 2>/dev/null
+        done
+        exit 0
+      fi
+    done
+  ) &
+  local WATCHER_PID=$!
 
   if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
   ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
@@ -1487,7 +1916,94 @@ else
         fi
 done
 fi
+
+  # ─── Cleanup flag watcher ──────────────────────────────────────────────
+  # Main pipeline exited (natural EOF / soft-reload kill / SIGTERM). Stop
+  # the polling watcher. LISTEN instance is NOT killed here — it persists
+  # across run_once restarts (managed by the restart_on_exit loop instead).
+  if [[ -n "${WATCHER_PID}" ]]; then
+    kill -TERM "${WATCHER_PID}" 2>/dev/null || true
+    wait "${WATCHER_PID}" 2>/dev/null || true
+  fi
 }
+
+# ────────────────────────────────────────────────────────────────────────
+# Parallel LISTEN instance lifecycle — managed at the script level so it
+# persists across run_once() restarts (soft reload picks up new meters
+# without disturbing the always-on candidate stream).
+# ────────────────────────────────────────────────────────────────────────
+LISTEN_PID=""
+
+listen_preview_count() {
+  local count=0 f
+  for f in "${LISTEN_METER_DIR}"/meter-preview-*; do
+    [[ -e "${f}" ]] || continue
+    count=$((count + 1))
+  done
+  echo "${count}"
+}
+
+start_listen_instance() {
+  # Already running? Done.
+  if [[ -n "${LISTEN_PID}" ]] && kill -0 "${LISTEN_PID}" 2>/dev/null; then
+    return 0
+  fi
+  (
+    # ── LISTEN supervisor loop ──
+    # Runs the listen pipeline (mosquitto_sub | awk | wmbusmeters | parse).
+    # When /data/.reload_listen flag appears (touched by webui.py /api/preview-
+    # candidate or /api/cancel-preview), kills the current pipeline and
+    # restarts it. This lets wmbusmeters pick up newly added meter-preview-<id>
+    # files in /data/listen/etc/wmbusmeters.d/ without touching the DECODE
+    # pipeline. Reload cycle ~2-3 s.
+    while true; do
+      ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
+        | awk '
+            function ishex(s) { return (s ~ /^[0-9A-Fa-f]+$/) }
+            {
+              gsub(/[[:space:]]/, "", $0);
+              sub(/^0x/i, "", $0);
+              if (!ishex($0)) next;
+              if ((length($0) % 2) != 0) next;
+              print $0;
+              fflush();
+            }
+          ' \
+        | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${LISTEN_BASE}" 2>&1 \
+        | parse_listen_candidates &
+      pipeline_pid=$!
+      # Poll for reload flag or natural exit.
+      while kill -0 "${pipeline_pid}" 2>/dev/null; do
+        if [[ -f "${BASE}/.reload_listen" ]]; then
+          rm -f "${BASE}/.reload_listen" 2>/dev/null || true
+          pkill -TERM -P "${pipeline_pid}" 2>/dev/null || true
+          kill -TERM "${pipeline_pid}" 2>/dev/null || true
+          wait "${pipeline_pid}" 2>/dev/null || true
+          break
+        fi
+        sleep 2
+      done
+      wait "${pipeline_pid}" 2>/dev/null || true
+      # Brief pause before restart to avoid tight-looping on persistent failures.
+      sleep 1
+    done
+  ) &
+  LISTEN_PID=$!
+  log "Parallel LISTEN instance started (pid=${LISTEN_PID}) — supervisor loop with .reload_listen support."
+}
+
+stop_listen_instance() {
+  [[ -z "${LISTEN_PID}" ]] && return 0
+  log "Stopping parallel LISTEN instance (pid=${LISTEN_PID})..."
+  pkill -TERM -P "${LISTEN_PID}" 2>/dev/null || true
+  kill -TERM "${LISTEN_PID}" 2>/dev/null || true
+  wait "${LISTEN_PID}" 2>/dev/null || true
+  pkill -KILL -P "${LISTEN_PID}" 2>/dev/null || true
+  LISTEN_PID=""
+}
+
+# Ensure LISTEN dies when the addon shuts down (docker stop / s6 SIGTERM).
+trap stop_listen_instance EXIT TERM INT
 
 # ------------------------------------------------------------
 # wait_for_mqtt
@@ -1533,6 +2049,28 @@ wait_for_mqtt() {
 while true; do
   set +e
   wait_for_mqtt
+
+  # ─── Soft reload: refresh meter files & LISTEN instance ───
+  # Re-read options.json so meters added/removed via WebUI without a
+  # container restart are picked up. wmbusmeters reads its meter-NNNN
+  # configs only at startup, so the pipeline restart on the next line
+  # is required for new meters to start decoding.
+  refresh_meter_files
+
+  # Existing candidates from previous LISTEN ticks should be decodable by the
+  # secondary LISTEN immediately after restart, not only after each one sends
+  # one more telegram to create its meter-preview file.
+  sync_candidate_autodecode_files
+
+  # LISTEN is needed when DECODE is active, and also when preview files exist.
+  # In pure LISTEN mode the primary pipeline sees candidates, but only this
+  # separate config dir contains meter-preview-* files for value preview.
+  if [[ "${METERS_COUNT}" -gt 0 || "$(listen_preview_count)" -gt 0 ]]; then
+    start_listen_instance
+  else
+    stop_listen_instance
+  fi
+
   run_once
   rc=$?
   set -e
