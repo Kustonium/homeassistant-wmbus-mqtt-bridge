@@ -4,7 +4,7 @@
 
 # wMBus MQTT Bridge — kompletná dokumentácia (SK)
 
-> Verzia dokumentu: **1.5.4-dev**  ·  Jazyk: **slovenčina**  ·  Stav: dev-channel Home Assistant add-onu
+> Aktuálne k dátumu: **2026-05-29**  ·  Jazyk: **slovenčina**  ·  Stav: dev-channel Home Assistant add-onu
 >
 > Krátky dvojjazyčný prehľad nájdete v hlavnom [README.md](../README.md). Tento dokument je úplná slovenská dokumentácia projektu — od „čo to je" po detaily architektúry a runtime.
 
@@ -16,7 +16,7 @@
 2. [Architektúra toku dát](#2-architektúra-toku-dát)
 3. [Rýchly štart — Home Assistant](#3-rýchly-štart--home-assistant)
 4. [Rýchly štart — Docker standalone](#4-rýchly-štart--docker-standalone)
-5. [WebUI — 7 pohľadov](#5-webui--7-pohľadov)
+5. [WebUI — hlavné pohľady](#5-webui--hlavné-pohľady)
 6. [Typický workflow: od prázdna k fungujúcemu meraču](#6-typický-workflow-od-prázdna-k-fungujúcemu-meraču)
 7. [Režim SEARCH — keď LISTEN počuje príliš veľa cudzích meračov](#7-režim-search--keď-listen-počuje-príliš-veľa-cudzích-meračov)
 8. [Kompletná referencia konfigurácie](#8-kompletná-referencia-konfigurácie)
@@ -112,7 +112,7 @@ flowchart TB
 
 Tieto tri komponenty komunikujú iba cez **súbory v `/data/`** — žiadne sockety vo vnútri kontajnera. Vďaka tomu sa dá webui reštartovať nezávisle od bridge a stav prežíva reštarty.
 
-> 🔗 **Na strane prijímača (ESP32 s rádiom)** — používame sesterský projekt Kustonia: **[esphome-wmbus-bridge-rawonly-dev](https://github.com/Kustonium/esphome-wmbus-bridge-rawonly-dev)** — ESPHome firmware pre SX1262 / SX1276 / CC1101 publikujúci surové HEX na `wmbus/<device>/telegram`. Topic presne zodpovedá nášmu predvolenému `raw_topic: wmbus/+/telegram` — na našej strane nie je potrebné nič konfigurovať. Prijímač má vlastnú úplnú dokumentáciu (EN/PL) — začni s [`START_HERE.md`](https://github.com/Kustonium/esphome-wmbus-bridge-rawonly-dev/blob/main/docs/START_HERE.md).
+> 🔗 **Na strane prijímača (ESP32 s rádiom)** — používame sesterský projekt Kustonia: **[esphome-wmbus-bridge-rawonly](https://github.com/Kustonium/esphome-wmbus-bridge-rawonly)** — ESPHome firmware pre SX1262 / SX1276 / CC1101 publikujúci surové HEX na `wmbus/<device>/telegram`. V HA zodpovedá predvolenému `raw_topic: wmbus/+/telegram`; v Dockeri skontroluj vygenerovaný `/config/options.json`, pretože `docker/entrypoint.sh` aktuálne vytvára `raw_topic: wmbus_bridge/+/telegram`. Prijímač má vlastnú úplnú dokumentáciu (EN/PL) — začni s [`START_HERE.md`](https://github.com/Kustonium/esphome-wmbus-bridge-rawonly/blob/main/docs/START_HERE.md).
 
 ---
 
@@ -143,24 +143,23 @@ Na záložke **Info** add-onu klikni **OPEN WEB UI**. Privíta ťa dashboard:
 ```
 ┌────────────────────────────────────────────────────────────────┐
 │ wMBus MQTT Bridge                              [EN PL DE CS SK]│
-│ Panel | Merače | Detekcia | Hľadanie | Logy | Nastavenia | ⋮  │
+│ Panel | Merače | Detekcia | Logy | ESP logy | Nastavenia     │
 ├────────────────────────────────────────────────────────────────┤
 │ Panel                                                          │
-│ Stav pipeline za behu...                                       │
+│ [Pipeline] [Štatistiky]                                        │
 │                                                                │
-│ [System status]  [Statistics]  [Discovery]                     │
+│ ESP -> MQTT -> wmbusmeters -> Home Assistant                   │
 │                                                                │
-│ Nakonfigurované merače                                         │
-│   (prázdne)                                                    │
+│ Zatiaľ žiadne nakonfigurované merače                           │
+│   Prejdi do Detekcie a pridaj prvý merač                       │
 │                                                                │
-│ Detegovaní kandidáti                                           │
-│   12 kandidátov / OTVORIŤ DETEKCIU                             │
+│ Posledné udalosti                                              │
 └────────────────────────────────────────────────────────────────┘
 ```
 
 ### Krok 5 — choď na „Detekcia" a pridaj merač
 
-Na záložke **DETEKCIA** uvidíš zoznam kandidátov. Pre každého bez požiadavky na AES kľúč — tlačidlo **PRIDAŤ MERAČ** priamo v riadku. Klik, reštart, hotovo.
+Na záložke **DETEKCIA** uvidíš zoznam kandidátov. **PRIDAŤ MERAČ** otvorí modal s ID, ovládačom, názvom a voliteľným AES kľúčom. Po uložení WebUI zavolá `/api/reload-pipeline`, takže DECODE pipeline sa načíta znova bez plného reštartu kontajnera.
 
 ➡️ Plný popis tohto workflowu v [§6 Typický workflow](#6-typický-workflow-od-prázdna-k-fungujúcemu-meraču).
 
@@ -174,7 +173,7 @@ Pre všetkých mimo Home Assistant (DietPi, Ubuntu, Raspberry Pi OS, NAS atď.).
 
 - Docker + docker compose
 - Funkčný MQTT broker (Mosquitto, EMQX, …) dostupný z hostiteľa
-- Rádiový prijímač publikujúci HEX rámce do brokeru — napr. [esphome-wmbus-bridge-rawonly-dev](https://github.com/Kustonium/esphome-wmbus-bridge-rawonly-dev) (publikuje na `wmbus/<device>/telegram`, kompatibilný out-of-the-box)
+- Rádiový prijímač publikujúci HEX rámce do brokeru — napr. [esphome-wmbus-bridge-rawonly](https://github.com/Kustonium/esphome-wmbus-bridge-rawonly) (publikuje na `wmbus/<device>/telegram`, kompatibilný out-of-the-box)
 
 ### Inštalácia
 
@@ -200,7 +199,7 @@ Edituj `./config/options.json`. Úplná referencia polí v [§8](#8-kompletná-r
 
 ```json
 {
-  "raw_topic": "wmbus_bridge/+/telegram",
+  "raw_topic": "wmbus/+/telegram",
   "loglevel": "normal",
   "discovery_enabled": true,
   "state_prefix": "wmbusmeters",
@@ -232,15 +231,15 @@ services:
 
 Potom otvor `http://<host-ip>:8099/`.
 
-> 💡 V režime Docker UI deteguje chýbajúci `SUPERVISOR_TOKEN` a nahradí tlačidlá RESTART pokynom `docker restart <container>` — viď [§11](#11-home-assistant-vs-docker--rozdiely-ux).
+> 💡 V režime Docker UI stále zobrazuje globálne reštart tlačidlo, ale `/api/restart-bridge` vyžaduje `SUPERVISOR_TOKEN`. Bez Supervisora reštartuj kontajner ručne (`docker restart <container>`).
 
 ---
 
-## 5. WebUI — 7 pohľadov
+## 5. WebUI — hlavné pohľady
 
 WebUI je dostupné v **5 jazykoch** (EN/PL/DE/CS/SK) — prepínač v pravom hornom rohu. Jazyk je detegovaný z (v poradí): `?lang=`, cookie `wmbus_lang`, hlavička `Accept-Language`.
 
-Všetky stránky sa automaticky obnovujú každých 15 sekúnd (okrem `/candidate`).
+UI sa aktualizuje cez SSE z `/api/events`; ak live spojenie nie je dostupné, frontend prejde na polling `/api/app`.
 
 ### Mapa záložiek
 
@@ -248,59 +247,43 @@ Všetky stránky sa automaticky obnovujú každých 15 sekúnd (okrem `/candidat
 flowchart LR
   N1["PANEL<br/>/"] --> N2["MERAČE<br/>/meters"]
   N2 --> N3["DETEKCIA<br/>/discover"]
-  N3 --> N4["HĽADANIE<br/>/search"]
-  N4 --> N5["LOGY<br/>/logs"]
+  N3 --> N4["LOGY<br/>/logs"]
+  N4 --> N5["ESP LOGY<br/>/esp-logs"]
   N5 --> N6["NASTAVENIA<br/>/settings"]
   N6 --> N7["O PROJEKTE<br/>/about"]
-  N3 -.->|ANALYZOVAŤ| N8["/candidate?id=...<br/>(detail kandidáta)"]
+  N3 -.->|legacy direct URL| N8["HĽADANIE<br/>#search"]
 ```
 
 ### 5.1. Panel (`/`)
 
-Tri karty hore: **System status** (MQTT, RAW telegrams, wmbusmeters, decoded JSON, configured meters, HA Discovery), **Statistics** (čísla + mini-bary), **Discovery status** (prefixy + počet meračov/kandidátov).
+Horný blok má prepínač **Pipeline / Štatistiky**. Pipeline ukazuje ESP → MQTT → wmbusmeters → Home Assistant s metrikami pre každý krok; Štatistiky ukazuje rýchlosť telegramov, funnel a históriu rate.
 
-Nižšie: kompaktná mriežka nakonfigurovaných meračov + zhrnutie kandidátov s tlačidlom „OTVORIŤ DETEKCIU".
+Nižšie dashboard zobrazuje pending/waiting panel, posledné dekódované merače alebo CTA do `/discover`, a posledné runtime udalosti.
 
-Ak máš **pending changes** (pridal si niečo pred reštartom) — žltý panel sa objaví tu, na `/meters` a na `/discover`. Viď [§6](#krok-3--pozri-sa-čo-čaká-na-reštart).
+Ak sú merače uložené v `options.json`, ale ešte neboli dekódované, dashboard ukáže „Waiting for first telegram". Viď [§6](#krok-3--reload-pipeline-a-čakanie-na-telegram).
 
 ### 5.2. Merače (`/meters`)
 
-Plná mriežka **dekódovaných** meračov. Každá karta:
-
-```
-┌──────────────────────────────┐
-│ 💧 cold_water_bathroom       │
-│ 41553221 / mkradio3          │
-│                              │
-│ total_m3                     │
-│ 123.456                      │
-│ ─────────────────────────    │
-│ Media:    water              │
-│ Reception: ~30 min           │
-│ Seen 15m:  2  Seen 60m: 5    │
-│ ─────────────────────────    │
-│ [Online]            [DELETE] │
-└──────────────────────────────┘
-```
-
-Hlavná hodnota je **aktuálna** okamžitá hodnota alebo stav merača (od verzie 1.5.2-dev — viď [§13](#13-riešenie-problémov)).
+Tabuľka **dekódovaných** meračov. Stĺpce: ID, názov, driver, hodnota, posledný telegram a príjem. Hlavná hodnota je aktuálna okamžitá hodnota alebo stav merača (od verzie 1.5.2-dev — viď [§13](#13-riešenie-problémov)). Každý riadok má akciu **DELETE**. Pending záznamy z `options.json` sa môžu objaviť pod tabuľkou, kým nedorazí prvý telegram.
 
 ### 5.3. Detekcia (`/discover`)
 
-Tabuľka kandidátov z LISTEN módu. Pre každého vidíš: ID, ovládač, médium (💧/⚡/🔥/📡), šifrovanie (AES required / no AES / —), príjem (15m/60m), posledný telegram, akcie.
+Tabuľka kandidátov z LISTEN módu. Pre každého vidíš: ID, ovládač, médium (💧/⚡/🔥/📡), šifrovanie (AES required / no AES / —), príjem (15m/60m), posledný telegram, **živý náhľad hodnoty** a akcie.
+
+**Automatický náhľad hodnoty (auto-dekódovanie).** Kandidáti, ktorí **nevyžadujú** kľúč AES, sú automaticky dekódovaní paralelnou inštanciou LISTEN — aktuálny odpočet sa objaví v stĺpci **Hodnota (náhľad)** bez nastavenia ako merač a bez kliknutia na náhľad. Bridge vytvára dočasné `meter-preview-<id>` záznamy a zapisuje hodnoty do `status_candidate_values.tsv`; hodnota sa však objaví až po ďalšom dekódovanom telegrame. Kandidáti **vyžadujúci AES** zostanú bez hodnoty, kým nezadáš kľúč.
 
 **Akcie** závisia od šifrovacieho pillu:
 
 | Pill | Tlačidlá |
 |---|---|
-| 🟢 **no AES** alebo sivé **—** | `[PRIDAŤ MERAČ] [ANALYZOVAŤ] [IGNOROVAŤ]` — inline ADD, jedno kliknutie = zápis do `options.json` |
-| 🔴 **AES required** | `[ANALYZOVAŤ] [IGNOROVAŤ]` — musíš ísť na `/candidate` a vložiť 32-znakový HEX kľúč |
+| 🟢 **no AES** alebo sivé **—** | `[PRIDAŤ MERAČ] [IGNOROVAŤ]` — ADD otvorí modal a zapíše do `options.json` |
+| 🔴 **AES required** | `[PRIDAŤ MERAČ] [IGNOROVAŤ]` — v modale zadaj 32znakový HEX kľúč; bez kľúča sa hodnota neukáže |
 
 Filtre médií hore: **Všetko / Voda / Elektrina / Teplo / Ostatné**. Druhý odkaz `[Ignorovaní]` zobrazuje predtým ignorovaných kandidátov (s možnosťou OBNOVIŤ).
 
-### 5.4. Hľadanie (`/search`)
+### 5.4. Hľadanie (`#search`, legacy režim)
 
-Servisný režim — používa sa keď LISTEN vráti desiatky cudzích meračov (napr. bytovka) a nevieš, ktorý je tvoj. Viď dedikovaná sekcia [§7](#7-režim-search--keď-listen-počuje-príliš-veľa-cudzích-meračov).
+Servisný režim — používa sa keď LISTEN vráti desiatky cudzích meračov (napr. bytovka) a nevieš, ktorý je tvoj. Už nie je v hlavnej navigácii, pretože aktuálny workflow používa filter hodnôt v `/discover`; obrazovka stále funguje cez priamy hash `#search`. Viď dedikovaná sekcia [§7](#7-režim-search--keď-listen-počuje-príliš-veľa-cudzích-meračov).
 
 UI má 3 (kontextové) banery:
 
@@ -314,16 +297,20 @@ Plus formulár konfigurácie (m³ odpočet + tolerancia) a živý status z bridg
 
 Krátky prúd runtime udalostí z [`status_events.tsv`](#10-runtime-súbory-v-data) — RAW received, candidate detected, errors. Úplné logy sú stále v záložke HA add-onu **Log**.
 
-### 5.6. Nastavenia (`/settings`)
+### 5.6. ESP logy (`/esp-logs`)
+
+Diagnostika ESP prijímačov: zariadenia detegované z `wmbus/+/telegram`, voliteľný heartbeat `wmbus/+/diag/summary`, diagnostické udalosti, boot a návrhy. `diag/boot` a iné retained diagnostické udalosti sú logy; nie sú zdrojom aktívneho stavu dosky.
+
+### 5.7. Nastavenia (`/settings`)
 
 Zobrazuje aktívnu runtime konfiguráciu (zo `status.json`):
 - `raw_topic`, `state_prefix`, `discovery_prefix`
 - `search_mode`, `search_expected_value_m3`, `search_tolerance_m3`
 - `loglevel`, MQTT host, počet ignorovaných kandidátov
 
-Plus blok **RESTART ADDON** (alebo v režime Docker: pokyn `docker restart`) a zoznam runtime súborov + tlačidlo **MANAGE IGNORED CANDIDATES** (presmerovanie na `/discover?ignored=1`).
+Nižšie zobrazuje snapshot `options.json`. Reštart add-onu je globálne tlačidlo v hornej lište WebUI; ignorovanie/obnovenie kandidátov sa robí zo zoznamu `/discover`.
 
-### 5.7. O projekte (`/about`)
+### 5.8. O projekte (`/about`)
 
 Krátky popis architektúry a ASCII diagram.
 
@@ -337,11 +324,11 @@ flowchart TD
   B --> C["Prijímač publikuje<br/>HEX → wmbusmeters<br/>→ kandidát viditeľný"]
   C --> D{"Vidíš kandidáta<br/>na /discover?"}
   D -- "áno, no AES" --> E["2️⃣ Klik PRIDAŤ MERAČ<br/>(inline)"]
-  D -- "áno, AES required" --> F["2a. Klik ANALYZOVAŤ<br/>→ vlož HEX kľúč<br/>→ PRIDAŤ MERAČ"]
+  D -- "áno, AES required" --> F["2a. Klik PRIDAŤ MERAČ<br/>→ vlož HEX kľúč<br/>v modale"]
   D -- "nie" --> G["Skontroluj prijímač,<br/>broker, raw_topic,<br/>filter_hex_only"]
-  E --> H["3️⃣ Kandidát zmizne zo zoznamu,<br/>pending panel zobrazuje<br/>'čaká na reštart'"]
+  E --> H["3️⃣ WebUI zapíše options.json<br/>a zavolá /api/reload-pipeline"]
   F --> H
-  H --> I["4️⃣ Klik RESTART ADDON<br/>(panel alebo /settings)"]
+  H --> I["4️⃣ DECODE pipeline<br/>načíta konfiguráciu znova"]
   I --> J["5️⃣ Po prvom telegrame<br/>merač prejde Online<br/>na /meters"]
 ```
 
@@ -367,28 +354,26 @@ Pre merač bez šifrovania: v riadku **DETEKCIA** klikni `PRIDAŤ MERAČ`. Pod k
 2. Kontrola `SUPERVISOR_TOKEN`:
    - **Je** → POST na `http://supervisor/addons/self/options` s celým poľom `meters[]` → Supervisor perzistentne zapíše
    - **Nie je** → `write_json_atomic(/data/options.json, ...)` — priamy zápis súboru
-3. Redirect späť na `/discover?added=...`
+3. Frontend zavolá `/api/reload-pipeline`; backend vytvorí `/data/.reload_pipeline` a watcher v `bridge.sh` reštartuje iba DECODE pipeline.
 
-Výsledok: merač je v `options.json`, ale **wmbusmeters ho ešte nepozná** (naučí sa až po reštarte).
+Výsledok: merač je v `options.json`, pipeline načíta konfiguráciu bez plného reštartu kontajnera. Viditeľný bude po ďalšom telegrame tohto ID.
 
-### Krok 3 — pozri sa „čo čaká na reštart"
+### Krok 3 — reload pipeline a čakanie na telegram
 
-WebUI hneď ukáže, že máš neaktívne zmeny:
+WebUI rozlišuje dva stavy: `pending_restart=true`, keď je `options.json` novší než `status_bridge_start.txt`, a „Waiting for first telegram", keď je merač uložený, ale ešte nie je v `status_meters.tsv`.
 
-**Žltý panel hore na /discover, /meters a dashboarde:**
+Typický stav po soft reloade:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ ⚠ Čakajúce zmeny — čakajú na reštart (2)                    │
-│ Tieto merače sú v options.json, ale add-on ich ešte         │
-│ neprevzal. Reštartujte add-on pre načítanie.                │
+│ ⏳ Waiting for first telegram (2)                            │
+│ Merače sú uložené, pipeline bola reloadovaná,                │
+│ ale objavia sa až po ďalšom telegrame.                       │
 │ ┌─────────────────────────────────────────────┐             │
 │ │ Meter ID   │ Driver       │ AES             │             │
 │ │ 41553221   │ mkradio3     │ bez AES kľúča   │             │
 │ │ aabbccdd   │ amiplus      │ kľúč nastavený  │             │
 │ └─────────────────────────────────────────────┘             │
-│                                                             │
-│ [ REŠTARTOVAŤ ADD-ON TERAZ ]                                │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -396,15 +381,15 @@ Plus sivé/prerušované „pending" karty v mriežke nakonfigurovaných meračo
 
 Mechanizmus funguje porovnaním `options.json` ↔ `status_meters.tsv`. Záznam zmizne z pending automaticky, akonáhle wmbusmeters dekóduje prvý telegram pre toto ID.
 
-### Krok 4 — reštart
+### Krok 4 — kedy reštartovať add-on
 
-V režime HA: klik **REŠTARTOVAŤ ADD-ON TERAZ** → POST `/restart-bridge` → volanie `http://supervisor/addons/self/restart`.
+Pridanie merača z WebUI volá `/api/reload-pipeline` a zvyčajne nepotrebuje plný reštart. Odobranie aktualizuje `options.json` a zmaže riadok statusu v UI, ale frontend po ňom nevolá `/api/reload-pipeline`; pipeline preto môže používať starú konfiguráciu do ďalšieho reloadu alebo reštartu.
 
-V režime Docker: namiesto tlačidla — pokyn `docker restart <container>`. Viď [§11](#11-home-assistant-vs-docker--rozdiely-ux).
+V režime HA reštartovacie tlačidlo volá `POST /restart-bridge` → `http://supervisor/addons/self/restart`. V Dockeri rovnaké tlačidlo zasiahne API bez `SUPERVISOR_TOKEN` a kontajner nereštartuje; použi ručne `docker restart <container>`. Viď [§11](#11-home-assistant-vs-docker--rozdiely-ux).
 
 ### Krok 5 — hotovo
 
-Po reštarte dostane wmbusmeters novú konfiguráciu, čaká na ďalší telegram. Keď príde:
+Po reloade pipeline má wmbusmeters novú konfiguráciu a čaká na ďalší telegram. Keď príde:
 
 1. JSON pristane v MQTT (`wmbusmeters/<id>/...`)
 2. `bridge.sh` zapíše záznam do `status_meters.tsv`
@@ -430,13 +415,13 @@ sequenceDiagram
 
   U->>W: zadá expected=23.93, tolerance=0.05
   U->>W: klik ULOŽIŤ — AKTIVOVAŤ SEARCH A REŠTARTOVAŤ
-  W->>B: zápis options.json, reštart addonu
+  W->>B: zápis options.json, pokus o reštart cez Supervisor
   B->>B: fáza 1 — číta search_candidates.tsv,<br/>vytvára search_<id> merač pre každého
   B->>WM: všetky telegramy dekódované ako<br/>všetky možné ovládače
   WM-->>B: JSON pre každého kandidáta
   B->>B: porovnáva total_m3 s expected ±tolerance
   B-->>W: SEARCH MATCH! zapisuje do search_matches.tsv
-  W-->>U: zelený banner + tlačidlo PRIDAŤ MERAČ
+  W-->>U: aktualizovaný status, cache kandidátov a tabuľka matches
 ```
 
 ### Konfigurácia cez UI
@@ -447,7 +432,7 @@ Choď na `/search`:
 2. **Tolerancia m³** — predvolené `0.05` (50 litrov). V bytovke **nepoužívaj `0.5`** — veľa meračov môže mať podobné hodnoty
 3. Klik **ULOŽIŤ — AKTIVOVAŤ SEARCH A REŠTARTOVAŤ**
 
-Add-on sa reštartuje a prejde do SEARCH MODE. Čakaj na ďalšie telegramy (typické intervaly: 30 s — 15 min v závislosti od merača).
+V HA backend skúsi reštart add-onu cez Supervisor a po reštarte prejde do SEARCH MODE. V Dockeri zapíše voľby, ale bez `SUPERVISOR_TOKEN` kontajner automaticky nereštartuje. Po účinnom reštarte/reloade čakaj na ďalšie telegramy (typické intervaly: 30 s — 15 min v závislosti od merača).
 
 ### Výsledok
 
@@ -462,22 +447,7 @@ Keď je zhoda nájdená:
    "type_other":"","key":""}
 ```
 
-WebUI na `/search` ukazuje:
-
-```
-✅ SEARCH MODE — NÁJDENÁ ZHODA
-Hlavný výsledok: nájdená zhoda (1)
-
-┌──────────────────────────────────────────────────────┐
-│ 03534159  hydrodigit · water                         │
-│ value: 23.932 m³ · expected: 23.93 m³ · diff: 0.002  │
-│ {"id":"meter_03534159","meter_id":"03534159",...}    │
-│                                                      │
-│ [ PRIDAŤ MERAČ ]  [ KOPÍROVAŤ KONFIG ]               │
-└──────────────────────────────────────────────────────┘
-```
-
-Klik PRIDAŤ MERAČ → uložené do `options.json`, reštart, hotovo.
+Aktuálny frontend `/search` ukazuje SEARCH formulár, `search_candidates` a `search_matches` ako jednoduché tabuľky. V tomto pohľade nerenderuje tlačidlá **PRIDAŤ MERAČ** ani **KOPÍROVAŤ KONFIG**; pridanie merača prebieha z `/discover` cez add-meter modal.
 
 ### Po dokončení
 
@@ -495,7 +465,7 @@ Z [`config.yaml`](../config.yaml):
 
 | Pole | Typ | Predvolené | Popis |
 |---|---|---|---|
-| `raw_topic` | str | `wmbus/+/telegram` | Topic so surovým HEX z prijímača. `+` je MQTT wildcard — zodpovedá jednému segmentu |
+| `raw_topic` | str | HA: `wmbus/+/telegram`; Docker/fallback: `wmbus_bridge/+/telegram` | Topic so surovým HEX z prijímača. `+` je MQTT wildcard — zodpovedá jednému segmentu a používa sa ako meno ESP v diagnostike |
 | `filter_hex_only` | bool | `true` | Ignoruj MQTT správy, ktoré nevyzerajú ako HEX (chráni pred odpadom) |
 | `mqtt_mode` | enum | `auto` | `auto` (HA broker ak je dostupný, inak external), `ha` (vynúť HA), `external` (vždy externý) |
 | `external_mqtt_host` | str? | `""` | Host externého brokeru (keď `mqtt_mode=external`) |
@@ -624,12 +594,22 @@ Všetky súbory zdieľané medzi `bridge.sh` ↔ `webui.py` žijú v `/data/`:
 | `status_meters.tsv` | TSV | `bridge.sh` | `webui.py` | Dekódované merače — jeden riadok na meter_id |
 | `status_candidates.tsv` | TSV | `bridge.sh` | `webui.py` | LISTEN kandidáti |
 | `status_candidate_analysis.tsv` | TSV | `bridge.sh` | `webui.py` | Analýza šifrovania kandidátov |
-| `status_events.tsv` | TSV | `bridge.sh`, `webui.py` | `webui.py` | Posledných 80 udalostí (RAW received, errors, UI actions) |
+| `status_events.tsv` | TSV | `bridge.sh`, `webui.py` | `webui.py` | Posledných 40 udalostí (RAW received, errors, UI actions) |
 | `status_seen.tsv` | TSV | `bridge.sh` | `bridge.sh` | História intervalov príjmu (pre seen_15m/seen_60m štatistiky) |
 | `status_ignored_candidates.tsv` | text | `webui.py` | `bridge.sh`, `webui.py` | Zoznam ID ignorovaných používateľom |
+| `status_candidate_values.tsv` | TSV | `bridge.sh` | `webui.py` | Automaticky dekódované hodnoty LISTEN kandidátov |
+| `status_candidate_raw.tsv` | TSV | `bridge.sh` | `bridge.sh` | Posledný RAW pre kandidáta pre analýzu šifrovania |
 | `status_raw_count.txt` | int | `bridge.sh` | `bridge.sh` | Počítadlo všetkých RAW telegramov tejto session |
 | `status_last_raw_seen.txt` | ISO time | `bridge.sh` | `bridge.sh`, `webui.py` | Časová pečiatka posledného RAW |
 | `status_recent_raw.tsv` | TSV | `bridge.sh` | (pre debug) | Kruhový buffer posledných N RAW HEX hodnôt |
+| `status_rate_1m.json` | JSON | `bridge.sh` | `webui.py` | Rýchlosť telegramov v aktuálnej/predchádzajúcej minúte |
+| `status_rate_history.tsv` | TSV | `bridge.sh` | `webui.py` | História rýchlosti pre grafy |
+| `status_bridge_start.txt` | epoch | `bridge.sh` | `webui.py` | Čas štartu bridge pre pending/reload |
+| `status_esp_telegram_devices.tsv` | TSV | `bridge.sh` | `webui.py` | ESP detegované z `wmbus/+/telegram` |
+| `status_esp_diag.json` | JSON | `bridge.sh` | `webui.py` | Posledný voliteľný heartbeat `wmbus/+/diag/summary` |
+| `status_esp_events.tsv` | TSV | `bridge.sh` | `webui.py` | Posledné ESP diagnostické udalosti |
+| `status_esp_suggestion.json` | JSON | `bridge.sh` | `webui.py` | ESP diagnostický návrh |
+| `status_esp_boot.json` | JSON | `bridge.sh` | `webui.py` | Posledná ESP boot udalosť |
 | `search_candidates.tsv` | TSV | `bridge.sh` | `bridge.sh` | Vodomerné kandidáti pre SEARCH |
 | `search_matches.tsv` | TSV | `bridge.sh` | `webui.py` | Zhody nájdené v SEARCH |
 | `search_status.json` | JSON | `bridge.sh` | `webui.py` | Živý SEARCH status (fáza, čísla) |
@@ -642,13 +622,13 @@ Tieto súbory prežívajú reštart kontajnera (mountovaný `/data` volume), ale
 
 ## 11. Home Assistant vs Docker — rozdiely UX
 
-Jedna kódová báza, dva módy behu. UI sama deteguje mód podľa prítomnosti `SUPERVISOR_TOKEN` v prostredí (HA injektuje, keď `hassio_api: true`).
+Jedna kódová báza, dva módy behu. Backend vracia `runtime` podľa prítomnosti `SUPERVISOR_TOKEN` v prostredí (HA ho injektuje, keď `hassio_api: true`) a API operácie kontrolujú token priamo bez samostatnej funkcie `is_supervisor_mode()`.
 
 ### Čo funguje identicky
 
 ✅ Celé WebUI (Panel, Merače, Detekcia, Hľadanie, Logy, Nastavenia, O projekte)
 ✅ Lokalizácia 5 jazykov
-✅ Inline ADD v tabuľke kandidátov (rozdiel iba v zápise: API vs súbor)
+✅ Pridanie kandidáta cez modal (rozdiel iba v zápise: API vs súbor)
 ✅ Pending panel
 ✅ Bridge.sh — dekódovanie, MQTT, Discovery
 ✅ Výber okamžitých hodnôt (current_power_kw namiesto total_kwh)
@@ -657,23 +637,24 @@ Jedna kódová báza, dva módy behu. UI sama deteguje mód podľa prítomnosti 
 
 | Akcia | Home Assistant | Docker standalone |
 |---|---|---|
-| Pridanie merača | POST `http://supervisor/addons/self/options` (perzistentné) | `write_json_atomic(/data/options.json)` (súbor) |
-| Banner po pridaní | „Kliknite RESTART ADDON nižšie…" | „Reštartujte kontajner manuálne pre aplikovanie." |
-| Pending panel — reštart tlačidlo | `[REŠTARTOVAŤ ADD-ON TERAZ]` (POST `/restart-bridge`) | Pokyn: `docker restart <container>` |
-| `/settings` — reštart sekcia | Tlačidlo + supervisor_api_notice | Žltá karta s pokynom |
-| `/candidate` — RESTART ADDON | POST tlačidlo | Pokyn |
+| Pridanie merača | POST `http://supervisor/addons/self/options` (perzistentné) + `/api/reload-pipeline` | `write_json_atomic(/data/options.json)` + `/api/reload-pipeline` |
+| Po pridaní | DECODE pipeline sa reloaduje; merač sa objaví po ďalšom telegrame | Rovnako |
+| Odobranie merača | POST `/api/remove-meter`; žiadne automatické frontend volanie `/api/reload-pipeline` | Rovnako |
+| Plný reštart add-onu | Tlačidlo v hornej lište (POST `/restart-bridge`) ako ručná/fallback akcia | Rovnaké tlačidlo skúsi `/api/restart-bridge`, ale bez Supervisora kontajner nereštartuje; spusť `docker restart <container>` ručne |
 | Stiahnutie nového image | HA Supervisor automaticky pri „Update Available" | `docker pull ...` ručne |
 | Perzistencia zmien | Supervisor (Supervisor DB) | `/data` volume |
 
 ### Prečo tak
 
-V Dockeri nie je Supervisor API. Volanie `http://supervisor/addons/self/restart` by vrátilo chybu. Namiesto zobrazenia rozbitého tlačidla používateľovi, UI sama deteguje chýbajúci token a nahradí ho textovou inštrukciou.
+V Dockeri nie je Supervisor API. Backend `/api/restart-bridge` vracia chybu chýbajúceho `SUPERVISOR_TOKEN`; aktuálny frontend nenahrádza reštart tlačidlo textovou inštrukciou.
 
 ```mermaid
 flowchart TD
-  A["UI klik"] --> B{"is_supervisor_mode()<br/>SUPERVISOR_TOKEN env?"}
-  B -- "ÁNO" --> C["POST /supervisor/addons/self/...<br/>Supervisor zapisuje + reštartuje"]
-  B -- "NIE" --> D["write_json_atomic(options.json)<br/>+ pokyn používateľovi:<br/>docker restart"]
+  A["UI klik ADD"] --> B{"SUPERVISOR_TOKEN env?"}
+  B -- "ÁNO" --> C["POST /supervisor/addons/self/options<br/>Supervisor uloží konfiguráciu"]
+  B -- "NIE" --> D["write_json_atomic(options.json)<br/>zápis do /data"]
+  C --> E["/api/reload-pipeline<br/>soft reload DECODE"]
+  D --> E
 ```
 
 ---
@@ -742,9 +723,9 @@ Skontroluj postupne:
 
 ### „Kandidát pridaný, ale merač sa neobjavuje v Merače"
 
-- Klik na **PRIDAŤ MERAČ** zapisuje do `options.json`, ale **nereštartuje wmbusmeters**. Musíš reštartovať add-on.
-- WebUI to ukazuje cez **pending panel** (žltý, hore na /discover, /meters, dashboarde).
-- Po reštarte dostane wmbusmeters nový zoznam, ale potrebuje **ďalší telegram** pre dekódovanie — môže to trvať od niekoľkých desiatok sekúnd až do mnohých minút v závislosti od intervalu merača.
+- Klik na **PRIDAŤ MERAČ** zapíše do `options.json` a frontend zavolá `/api/reload-pipeline`. To reloaduje DECODE pipeline bez plného reštartu kontajnera.
+- Merač sa v `/meters` objaví až po ďalšom telegrame tohto ID — môže to trvať od niekoľkých desiatok sekúnd až do mnohých minút.
+- Ak sa potom stále neobjaví, skontroluj `meter_id`, ovládač, AES kľúč a logy. Plný reštart add-onu zostáva fallback v `/settings`.
 
 ### „Hodnota ukazuje číslo, ktoré iba rastie, nie okamžité"
 
@@ -769,12 +750,12 @@ AES kľúč dodáva:
 
 Bez kľúča nedekóduješ šifrované telegramy. Niektoré merače používajú tzv. „zero-key" (`00000000000000000000000000000000`) ako fasádové šifrovanie — niekedy funguje.
 
-### „Inline ADD nič neurobil" (v Dockeri)
+### „Pridať merač nič neurobilo" (v Dockeri)
 
 Skontroluj:
 - Je adresár `./config/` **zapisovateľný** pre používateľa kontajnera (nie `:ro`)
-- Je v logu `Meter added to options.json (file only — no SUPERVISOR_TOKEN)` — to znamená, že súbor bol uložený. Reštartuj kontajner ručne.
-- Skontroluj obsah `options.json` po kliknutí — mal by obsahovať nový záznam v `meters[]`.
+- Je v logu `Meter added to options.json (file only — no SUPERVISOR_TOKEN)` — to znamená, že súbor bol uložený.
+- Skontroluj obsah `options.json` po kliknutí — mal by obsahovať nový záznam v `meters[]`. Po úspešnom pridaní frontend volá `/api/reload-pipeline`; ručný `docker restart` je iba fallback, ak pipeline napriek tomu nenačíta konfiguráciu.
 
 ---
 
@@ -802,45 +783,55 @@ Skontroluj:
 │   ├── etc/services.d/          # s6-overlay service definície
 │   │   ├── wmbus_mqtt_bridge/
 │   │   └── wmbus_webui/
-│   └── usr/bin/
-│       ├── bridge.sh            # 1400+ riadkov — hlavná slučka, MQTT, decode
-│       ├── i18n.py              # Preklady pre 5 jazykov
-│       ├── run.sh               # Startup wrapper pre HA režim
-│       └── webui.py             # 1700+ riadkov — HTTP server, stránky, API
+│   └── usr/
+│       ├── bin/
+│       │   ├── bridge.sh        # 2000+ riadkov — hlavná slučka, MQTT, decode
+│       │   ├── i18n.py          # Preklady pre 5 jazykov
+│       │   ├── run.sh           # Startup wrapper pre HA režim
+│       │   └── webui.py         # 1300+ riadkov — HTTP API server pre SPA
+│       └── share/wmbus-webui/
+│           └── assets/app.js    # 2200+ riadkov — WebUI SPA
 ├── translations/                # Preklady HA add-on opcií (en.yaml, pl.yaml)
 └── .github/workflows/           # CI: build-addon, shellcheck, yaml-lint
 ```
 
 ### Hlavné komponenty
 
-#### `bridge.sh` (1400+ riadkov)
+#### `bridge.sh` (2000+ riadkov)
 
 Bash, jeden proces. Hlavná slučka:
 
 1. **Setup** — čítanie `options.json`, generovanie `wmbusmeters.conf` v `/data/etc/`
-2. **MQTT subscribe** — `mosquitto_sub` na `raw_topic`, každý riadok → `process_raw_telegram`
-3. **HEX → wmbusmeters** — predané cez `stdin:hex`
-4. **JSON parse** — ďalší riadok z `mosquitto_sub` na wmbusmeters topiku
-5. **Status update** — zápis do `status_meters.tsv`, `status_events.tsv`, `status.json`
+2. **MQTT subscribe** — `mosquitto_sub` na `raw_topic`; každý telegram aktualizuje RAW počítadlá, recent RAW a ESP detekciu z `wmbus/+/telegram`
+3. **HEX → wmbusmeters** — HEX payload ide cez `stdin:hex` do DECODE inštancie
+4. **JSON/text parse** — `run_once()` spracuje výstup `wmbusmeters` a zapíše merače, kandidátov a udalosti
+5. **Status update** — zápis do `status_meters.tsv`, `status_candidates.tsv`, `status_candidate_values.tsv`, `status_events.tsv`, `status.json`
 6. **HA Discovery publish** — MQTT Discovery správy vypočítané pre každé nové pole
-7. **SEARCH** — ak aktivované, dekóduje kandidátov z `search_candidates.tsv` paralelne
+7. **Parallel LISTEN** — `start_listen_instance()` drží živú detekciu kandidátov a automatický náhľad hodnôt
+8. **SEARCH** — ak aktivované, dekóduje kandidátov z `search_candidates.tsv`
 
 Kľúčové funkcie:
-- `status_meter_seen()` ([riadok 316](../rootfs/usr/bin/bridge.sh#L316)) — zapisuje záznam do `status_meters.tsv`, vyberá value_key (okamžitý > kumulatívny)
-- `status_candidate_seen()` ([riadok 341](../rootfs/usr/bin/bridge.sh#L341)) — registruje LISTEN kandidáta
-- `process_raw_telegram()` — hlavná HEX → decode pipeline
+- `status_meter_seen()` ([riadok 441](../rootfs/usr/bin/bridge.sh#L441)) — zapisuje záznam do `status_meters.tsv`, vyberá value_key (okamžitý > kumulatívny)
+- `status_candidate_seen()` ([riadok 475](../rootfs/usr/bin/bridge.sh#L475)) — registruje LISTEN kandidáta
+- `_store_candidate_value()` ([riadok 1692](../rootfs/usr/bin/bridge.sh#L1692)) — ukladá automaticky dekódované hodnoty kandidátov
+- `parse_listen_candidates()` ([riadok 1729](../rootfs/usr/bin/bridge.sh#L1729)) — spracováva paralelnú LISTEN inštanciu
+- `run_once()` ([riadok 1776](../rootfs/usr/bin/bridge.sh#L1776)) — hlavný cyklus DECODE
+- `start_listen_instance()` ([riadok 1946](../rootfs/usr/bin/bridge.sh#L1946)) — udržiava always-on LISTEN pipeline
 
-#### `webui.py` (1700+ riadkov)
+#### `webui.py` (1300+ riadkov)
 
-Python 3.12, `http.server.ThreadingHTTPServer`. Bez frameworku — surové HTTP + HTML stringy. Hlavné sekcie:
+Python 3.12, `http.server.ThreadingHTTPServer`. Bez frameworku — JSON/SSE API a statická SPA. Hlavné sekcie:
 
-- **`state()`** ([riadok 583](../rootfs/usr/bin/webui.py#L583)) — číta všetky runtime súbory, vracia dict
-- **`add_meter_to_options()`** ([riadok 385](../rootfs/usr/bin/webui.py#L385)) — Supervisor API + file fallback
-- **`is_supervisor_mode()`** — deteguje HA vs Docker režim
-- **`pending_meters()`** — diff `options.json` ↔ `status_meters.tsv`
-- **`render_*()`** — funkcie renderujúce jednotlivé HTML fragmenty (system_status, stats, meter_card, candidates_table, …)
-- **`page_*()`** — renderery celých stránok (`page_dashboard`, `page_meters`, `page_discover`, `page_search`, `page_candidate`, `page_logs`, `page_settings`, `page_about`)
+- **`add_meter_to_options()`** ([riadok 354](../rootfs/usr/bin/webui.py#L354)) — Supervisor API + file fallback
+- **`state()`** ([riadok 585](../rootfs/usr/bin/webui.py#L585)) — číta runtime súbory pre API
+- **`status_model()`** ([riadok 686](../rootfs/usr/bin/webui.py#L686)) — stavia model dashboardu/pipeline
+- **`_esp_payload()`** ([riadok 860](../rootfs/usr/bin/webui.py#L860)) — skladá ESP diagnostiku; aktivita je z `wmbus/+/telegram`, `wmbus/+/diag/summary` je voliteľné
+- HA vs Docker režim sa deteguje cez priame kontroly `SUPERVISOR_TOKEN` a pole `runtime` v API odpovediach; samostatná funkcia `is_supervisor_mode()` neexistuje.
 - **`Handler` (BaseHTTPRequestHandler)** — GET/POST routing, language detection, cookie handling
+
+#### `app.js` (2200+ riadkov)
+
+Frontend SPA z `rootfs/usr/share/wmbus-webui/assets/app.js`. Renderuje dashboard, `/meters`, `/discover`, `/search`, `/logs`, `/esp-logs`, `/settings` a `/about`; číta `/api/app`, používa SSE z `/api/events`, obsluhuje add-meter modal a po uložení volá `/api/reload-pipeline`.
 
 Lokalizácia (`i18n.py`):
 - `tr(lang, key)` — hlavná prekladová funkcia
@@ -905,7 +896,7 @@ print(webui.render_page('/discover', {}, 'pl'))
 | Časť | Bumpuje pri |
 |---|---|
 | MAJOR | Breaking change v konfigurácii / MQTT / discovery |
-| MINOR | Nové funkcie (napr. lokalizácia, pending panel, inline ADD) |
+| MINOR | Nové funkcie (napr. lokalizácia, pending panel, pridanie cez modal) |
 | PATCH | Bug fixes, drobné UX |
 | `-dev` | Pokiaľ sme vo vývojárskom kanále |
 
@@ -943,7 +934,7 @@ Bump verzie v `config.yaml` je **vyžadovaný**, aby HA detegoval aktualizáciu 
 
 **GNU General Public License v3.0 (GPL-3.0)**
 
-Toto repo obsahuje a modifikuje kód z projektu `wmbusmeters-ha-addon` (GPL-3.0). Celý projekt — vrátane forku, nových komponentov (webui.py, i18n.py, bridge.sh rewrite, pending panel, inline ADD) — je distribuovaný pod GPL-3.0.
+Toto repo obsahuje a modifikuje kód z projektu `wmbusmeters-ha-addon` (GPL-3.0). Celý projekt — vrátane forku, nových komponentov (webui.py, i18n.py, bridge.sh rewrite, pending panel, pridanie cez modal) — je distribuovaný pod GPL-3.0.
 
 ### Upstream
 

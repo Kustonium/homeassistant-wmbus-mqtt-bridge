@@ -1,15 +1,12 @@
 # Home Assistant Add-on: wMBus MQTT Bridge
 
-> **ℹ️ Co to jest / What this is:**
-> Ten add-on to **bridge** — nie zastępuje `wmbusmeters`, lecz go używa wewnętrznie. Odbiera surowe ramki wM-Bus z MQTT (np. z ESP32/CC1101), przekazuje do `wmbusmeters stdin:hex`, a wynik publikuje do MQTT i HA Discovery. Potrzebujesz zewnętrznego odbiornika radiowego — add-on nie obsługuje bezpośrednio USB/RTL-SDR.
->
-> This add-on is a **bridge** — it does not replace `wmbusmeters`, it uses it internally. It receives raw wM-Bus frames from MQTT (e.g. from ESP32/CC1101), feeds them to `wmbusmeters stdin:hex`, and publishes decoded JSON back to MQTT and HA Discovery. You need an external radio receiver — the add-on does not support USB/RTL-SDR directly.
+**Dokumentacja aktualna na dzień / Documentation current as of:** 2026-05-29.
 
 **Szybka nawigacja / Quick navigation:**
 [🇵🇱 PL (poniżej)](#-opis-pl) · [🇬🇧 EN (below)](#-description-en)
 
 **Pełna dokumentacja / Full documentation:**
-[🇵🇱 PL](https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/blob/main/docs/README.pl.md) · [🇬🇧 EN](https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/blob/main/docs/README.en.md) · [🇩🇪 DE](https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/blob/main/docs/README.de.md) · [🇨🇿 CS](https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/blob/main/docs/README.cs.md) · [🇸🇰 SK](https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/blob/main/docs/README.sk.md)
+[🇵🇱 PL](docs/README.pl.md) · [🇬🇧 EN](docs/README.en.md) · [🇩🇪 DE](docs/README.de.md) · [🇨🇿 CS](docs/README.cs.md) · [🇸🇰 SK](docs/README.sk.md)
 
 > ⚠️ Tłumaczenia maszynowe — mogą zawierać błędy w dowolnym języku, w tym PL i EN. / Machine-generated translations — may contain errors in any language, including PL and EN.
 
@@ -53,6 +50,8 @@ ESP32 / Gateway / Bridge
 - **Pełne dekodowanie przez wmbusmeters** — projekt nie zastępuje wmbusmeters, lecz wykorzystuje go w całości.
 - **MQTT + Home Assistant Discovery** — dane publikowane w MQTT i automatycznie rejestrowane w HA.
 - **Tryb LISTEN (nasłuch)** — gdy lista `meters` jest pusta, add-on wypisuje w logach wszystkie słyszane liczniki wraz z sugerowanym driverem.
+- **Tryb SEARCH** — gdy nasłuch słyszy wiele cudzych liczników, dopasowuje właściwy po odczycie m³ z fizycznego licznika.
+- **Interaktywny panel WebUI** — zarządzanie przez przeglądarkę (panel boczny w HA / port `8099` w Dockerze): lista wykrytych kandydatów, dodawanie licznika przez modal, podgląd na żywo wartości słuchanych liczników bez dodawania ich na stałe, tryb SEARCH, logi ESP. Interfejs w 5 językach: 🇬🇧 EN · 🇵🇱 PL · 🇩🇪 DE · 🇨🇿 CS · 🇸🇰 SK.
 
 ### Wymagania (WAŻNE)
 
@@ -71,32 +70,33 @@ Wszystkie pliki tekstowe widoczne dla użytkownika — README, dokumentacja w `d
 
 ---
 
-### Instalacja w Home Assistant
+### Interfejs WebUI (panel zarządzania)
 
-#### Krok 0 — Dodaj repozytorium do HA
+Add-on udostępnia interaktywny panel WWW (w Home Assistant jako panel boczny lub przycisk **OPEN WEB UI**, w Dockerze pod portem `8099`). To podstawowy sposób obsługi — wykrywanie i dodawanie liczników nie wymaga ręcznej edycji plików.
 
-1. W Home Assistant przejdź do **Ustawienia → Dodatki → Sklep z dodatkami**
-2. Kliknij menu **⋮** (trzy kropki, prawy górny róg) → **Repozytoria**
-3. Wklej adres repozytorium:
-   ```
-   https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge
-   ```
-4. Kliknij **Dodaj** → **Zamknij**
-5. Odśwież stronę — addon **wMBus MQTT Bridge** pojawi się w sklepie
-6. Kliknij addon → **Zainstaluj**
+Widoki:
 
-> ℹ️ To repozytorium zawiera **stabilną** wersję addona. Jeśli chcesz wersję deweloperską, użyj:
-> `https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge-dev`
+- **Panel** — stan pipeline'u (MQTT, telegramy RAW, dekoder, HA Discovery), statystyki odbioru (w tym tempo telegramy/min na żywo) oraz wykryte płytki ESP.
+- **Liczniki** — skonfigurowane liczniki z bieżącą wartością i statystykami odbioru (15m / 60m).
+- **Odbierane / Szukaj** — kandydaci z trybu LISTEN (ID, driver, medium, szyfrowanie, odbiór). Każdy bez wymaganego klucza AES ma przycisk **Dodaj licznik** i jest **dekodowany automatycznie** przez równoległą instancję LISTEN — bieżąca wartość pojawia się w kolumnie **Wartość** po następnym zdekodowanym telegramie, bez dodawania licznika i bez klikania podglądu. Kandydaci wymagający AES nie pokazują wartości, dopóki nie podasz klucza. Stąd uruchamia się również tryb SEARCH.
+- **Logi** — skrócony strumień zdarzeń runtime (pełne logi w zakładce **Log** dodatku HA).
+- **Logi ESP** — diagnostyka z odbiorników ESP (zdarzenia, RSSI, boot, sugestie) oraz wykrycie wielu płytek na podstawie napływających telegramów `wmbus/+/telegram`.
+- **Ustawienia** — aktywna konfiguracja runtime i snapshot `options.json`; globalny restart dodatku jest w górnym pasku WebUI.
+- **O projekcie** — krótki opis architektury.
+
+Interfejs jest dostępny w 5 językach (🇬🇧 EN · 🇵🇱 PL · 🇩🇪 DE · 🇨🇿 CS · 🇸🇰 SK) — przełącznik w prawym górnym rogu. Pełny opis widoków: [dokumentacja PL](docs/README.pl.md) · [EN §5](docs/README.en.md#5-webui--main-views).
 
 ---
 
 ### Konfiguracja w Home Assistant (GUI)
 
-Konfiguracja odbywa się przez interfejs graficzny dodatku — nie trzeba edytować plików ręcznie.
+Konfiguracja odbywa się przez interfejs graficzny dodatku — nie trzeba edytować plików ręcznie. Najprościej: znajdź licznik w widoku **Odbierane / Szukaj** i kliknij **Dodaj licznik**. Poniższe kroki opisują też ścieżkę z odczytem z logów.
 
-#### Krok 1 — Tryb LISTEN (wykrycie liczników)
+#### Krok 1 — Wykrycie liczników
 
-Zostaw sekcję **meters** pustą i uruchom addon. W logach pojawią się wykryte liczniki:
+**Zalecane (WebUI):** zostaw sekcję **meters** pustą, uruchom addon i otwórz panel WebUI → widok **Odbierane / Szukaj**. Wykryte liczniki pojawią się na liście z wartością podglądu (dla liczników bez AES) i przyciskiem **Dodaj licznik**.
+
+**Alternatywnie (logi):** te same liczniki widać w logach addonu:
 
 ```
 Received telegram from: 41553221
@@ -193,11 +193,13 @@ Pliki pod `./config/etc/` są **generowane automatycznie** przy każdym starcie 
 | `type_other` | Niestandardowy driver — wypełnij tylko gdy `type` = `other` |
 | `key` | Klucz szyfrowania w formacie HEX; zostaw puste, jeśli licznik nie szyfruje |
 
+> ℹ️ Pełna lista opcji (m.in. `discovery_prefix`, `discovery_retain`, `state_retain`, `debug_every_n`, `search_delta_mode`, `search_min_delta_m3`) znajduje się w `config.yaml` oraz w pełnej dokumentacji: [docs/README.pl.md](docs/README.pl.md).
+
 Przykład `options.json`:
 
 ```json
 {
-  "raw_topic": "wmbus_bridge/+/telegram",
+  "raw_topic": "wmbus/+/telegram",
   "loglevel": "normal",
   "filter_hex_only": true,
   "discovery_enabled": true,
@@ -236,12 +238,12 @@ docker compose restart wmbus
 #### Uwagi
 
 - Katalog `./config` musi być **zapisywalny** (nie montuj jako `:ro`) — bridge tworzy tam `options.json` i konfigurację wmbusmeters.
-- Domyślny `raw_topic` to `wmbus_bridge/+/telegram` — upewnij się, że Twój odbiornik publikuje na ten sam temat.
+- W HA domyślny `raw_topic` z `config.yaml` to `wmbus/+/telegram`. W Dockerze pierwszy `/config/options.json` tworzony przez `docker/entrypoint.sh` używa obecnie `wmbus_bridge/+/telegram`, więc dla firmware publikującego na `wmbus/<urządzenie>/telegram` ustaw ręcznie `raw_topic: "wmbus/+/telegram"` i zrestartuj kontener.
 
 #### Ręczny test MQTT
 
 ```bash
-mosquitto_pub -h localhost -p 1883 -t 'wmbus_bridge/any/telegram' -m '<HEX_TELEGRAM>'
+mosquitto_pub -h localhost -p 1883 -t 'wmbus/any/telegram' -m '<HEX_TELEGRAM>'
 mosquitto_sub -h localhost -p 1883 -t 'wmbusmeters/#' -v
 ```
 
@@ -300,6 +302,8 @@ ESP32 / Gateway / Bridge
 - Full decoding handled by upstream wmbusmeters
 - MQTT output with Home Assistant Discovery
 - LISTEN mode: when `meters` list is empty, logs all detected meter IDs and suggested drivers
+- SEARCH mode: matches the right meter by its m³ reading when LISTEN hears many neighbours' meters
+- Interactive WebUI: browser management panel (HA side panel / port `8099` in Docker) — detected candidates, modal-based meter add, live preview of listened meters' values without adding them permanently, SEARCH mode, ESP logs. Available in 5 languages: 🇬🇧 EN · 🇵🇱 PL · 🇩🇪 DE · 🇨🇿 CS · 🇸🇰 SK.
 
 ### Broker modes (`mqtt_mode`)
 
@@ -315,28 +319,27 @@ All user-facing text files — READMEs, the documentation under `docs/`, the Web
 
 ---
 
-### Installation in Home Assistant
+### WebUI (management panel)
 
-#### Step 0 — Add the repository to HA
+The add-on ships an interactive web panel (a side panel or the **OPEN WEB UI** button in Home Assistant, port `8099` in Docker). It is the primary way to use the add-on — discovering and adding meters needs no manual file editing.
 
-1. In Home Assistant go to **Settings → Add-ons → Add-on Store**
-2. Click the **⋮** menu (three dots, top right) → **Repositories**
-3. Paste the repository URL:
-   ```
-   https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge
-   ```
-4. Click **Add** → **Close**
-5. Refresh the page — the **wMBus MQTT Bridge** add-on will appear in the store
-6. Click the add-on → **Install**
+Views:
 
-> ℹ️ This repository contains the **stable** version of the add-on. For the development version use:
-> `https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge-dev`
+- **Dashboard** — pipeline status (MQTT, RAW telegrams, decoder, HA Discovery), reception statistics (including a live telegrams-per-minute rate) and detected ESP boards.
+- **Meters** — configured meters with their current value and reception stats (15m / 60m).
+- **Received / Search** — LISTEN-mode candidates (ID, driver, media, encryption, reception). Each one without a required AES key has an **Add meter** button and is **decoded automatically** by the parallel LISTEN instance — its current value appears in the **Value** column after the next decoded telegram, with no meter added and no preview click. AES-required candidates show no value until you provide a key. SEARCH mode is also started here.
+- **Logs** — a short runtime event stream (full logs are in the add-on **Log** tab).
+- **ESP Logs** — diagnostics from ESP receivers (events, RSSI, boot, suggestions) and multi-board detection based on incoming `wmbus/+/telegram` telegrams.
+- **Settings** — active runtime configuration and `options.json` snapshot; the global add-on restart button is in the WebUI top bar.
+- **About** — a short architecture description.
+
+The interface is available in 5 languages (🇬🇧 EN · 🇵🇱 PL · 🇩🇪 DE · 🇨🇿 CS · 🇸🇰 SK) — switcher in the top-right corner. Full description of the views: [docs EN §5](docs/README.en.md#5-webui--main-views).
 
 ---
 
 ### Configuration in Home Assistant (GUI)
 
-Configuration is done through the add-on GUI — no manual file editing required.
+Configuration is done through the add-on GUI — no manual file editing required. The easiest path: find the meter in the **Received / Search** view and click **Add meter**. The steps below also describe the log-based path.
 
 #### Step 1 — LISTEN mode (meter discovery)
 
@@ -437,11 +440,13 @@ Files under `./config/etc/` are **auto-generated on startup** — do not edit th
 | `type_other` | Custom driver name — only when `type` is `other` |
 | `key` | Encryption key in HEX; leave empty if the meter is not encrypted |
 
+> ℹ️ The full option list (e.g. `discovery_prefix`, `discovery_retain`, `state_retain`, `debug_every_n`, `search_delta_mode`, `search_min_delta_m3`) is in `config.yaml` and the full documentation: [docs/README.en.md](docs/README.en.md).
+
 Example `options.json`:
 
 ```json
 {
-  "raw_topic": "wmbus_bridge/+/telegram",
+  "raw_topic": "wmbus/+/telegram",
   "loglevel": "normal",
   "filter_hex_only": true,
   "discovery_enabled": true,
@@ -480,12 +485,12 @@ docker compose restart wmbus
 #### Notes
 
 - `./config` must be **writable** (do not mount as `:ro`) — the bridge creates `options.json` and wmbusmeters config there.
-- Default `raw_topic` is `wmbus_bridge/+/telegram` — make sure your receiver publishes to the same topic.
+- In HA, the `config.yaml` default `raw_topic` is `wmbus/+/telegram`. In Docker, the first `/config/options.json` generated by `docker/entrypoint.sh` currently uses `wmbus_bridge/+/telegram`, so for firmware publishing to `wmbus/<device>/telegram` set `raw_topic: "wmbus/+/telegram"` manually and restart the container.
 
 #### Manual MQTT test
 
 ```bash
-mosquitto_pub -h localhost -p 1883 -t 'wmbus_bridge/any/telegram' -m '<HEX_TELEGRAM>'
+mosquitto_pub -h localhost -p 1883 -t 'wmbus/any/telegram' -m '<HEX_TELEGRAM>'
 mosquitto_sub -h localhost -p 1883 -t 'wmbusmeters/#' -v
 ```
 
