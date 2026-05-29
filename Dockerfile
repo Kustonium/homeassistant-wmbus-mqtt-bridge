@@ -44,10 +44,14 @@ COPY rootfs /
 # config.yaml into the container).
 COPY config.yaml /usr/bin/config.yaml
 
-RUN sed -i 's/\r$//' /usr/bin/run.sh /usr/bin/bridge.sh \
+COPY docker/entrypoint.sh /usr/bin/docker-entrypoint.sh
+# docker standalone entry point — used when running outside HA supervisor
+
+RUN sed -i 's/\r$//' /usr/bin/run.sh /usr/bin/bridge.sh /usr/bin/docker-entrypoint.sh \
   && chmod a+x \
        /usr/bin/run.sh \
        /usr/bin/bridge.sh \
        /usr/bin/webui.py \
+       /usr/bin/docker-entrypoint.sh \
        /etc/services.d/wmbus_mqtt_bridge/run \
        /etc/services.d/wmbus_webui/run
