@@ -1,5 +1,26 @@
-## 1.5.9 (2026-05-26)
+## 1.5.11 (2026-05-29)
 
-- feat(dashboard): przywróć sekcję ostatnich zdarzeń na panelu głównym
-- feat(webui): dodaj metrykę telegramy/min + napraw i18n w render_stats
-- fix(webui+ci): przywróć odznakę DEV, dodaj pole nazwy licznika AES, napraw bump wersji
+- Update config.yaml
+- fix(dev): use telegram topic as ESP detection source
+- fix(bridge): seed candidate auto-decode before listen starts
+- fix(webui): auto decode candidate values without preview mode
+- fix(dev): restore meter preview and decode state logic
+- Restore Ver 46
+- fix(bridge): tracker ESP nie ginie po rozlaczeniu mosquitto_sub
+- fix(webui): ESP widoczny gdy plyna surowe telegramy bez diagnostyki
+- sync: ESP node green dot when telegrams flow without ESP diagnostics
+- sync: promote newgui to 1.5.11-dev.48 (preserve dev identity)
+- fix: clear stale ESP suggestion on boot event
+- fix: show hint_en in summary events, meter IDs in meter_snapshot, epoch_now order
+- ci: revert to native ubuntu-24.04-arm for aarch64 [skip ci]
+- ci: fix build — use apt QEMU, drop FORCE_JAVASCRIPT_ACTIONS_TO_NODE24
+- ci: change concurrency group to unblock stuck ARM runner queue
+- ci: switch aarch64 to QEMU cross-compile on ubuntu-latest
+- Update config.yaml
+- chore: trigger CI build for docker standalone fix
+- fix(docker): wire up docker-entrypoint.sh for standalone Docker mode
+- fix: ESP Logs — local time, summary_15min/60min evtype, meter_window colors
+- feat: add ESP Logs tab with live diagnostic event stream
+- feat: show rate data source indicator in live dashboard panel
+- feat: use ESP diag MQTT summary as live rate source when available
+- fix(i18n): replace hardcoded '60 min avg' label with translated 'session avg'
