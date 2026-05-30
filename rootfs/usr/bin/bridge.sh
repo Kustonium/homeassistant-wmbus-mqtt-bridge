@@ -440,35 +440,90 @@ status_raw_seen() {
 
 status_meter_seen() {
   local json_line="$1"
-  local id name meter media value_key value last_seen tmp
+  local id name meter media value_key value value_parts last_seen tmp
   id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
   [[ -n "${id}" ]] || return 0
   name="$(jq -r '.name // empty' <<<"${json_line}" 2>/dev/null || true)"
   meter="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
   media="$(jq -r '.media // empty' <<<"${json_line}" 2>/dev/null || true)"
-  # Prefer instantaneous fields (current power, flow rate) — they're what
-  # users see as "live consumption" in HA. Anchor on power/flow-rate units
-  # (_kw, _w, _m3h, _l_h) so temperatures (_c) don't qualify. Fall back to
-  # cumulative totals/meter readings when no live field is published.
-  # Examples: amiplus → current_power_consumption_kw (live);
-  # water meters → total_m3 (no live field exists, cumulative is the reading).
-  value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(_kw$|_w$|_m3h$|_l_h$)";"i")) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
-  if [[ -z "${value_key}" ]]; then
-    value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(^total|_m3$|kwh|wh$|energy|volume)";"i")) | select(.key|test("(backflow|fraud|leak|tamper|alarm)";"i")|not) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
-  fi
+  value_parts="$(jq -rc '
+    [to_entries[]
+      | select((.value|type)=="number")
+      | select(.key|test("^total_energy_consumption_tariff_[0-9]+_kwh$";"i"))
+      | . as $entry
+      | ($entry.key | capture("^total_energy_consumption_tariff_(?<tariff>[0-9]+)_kwh$";"i")) as $m
+      | {label: ("T" + $m.tariff), key: $entry.key, value: $entry.value, order: ($m.tariff|tonumber)}
+    ]
+    | sort_by(.order)
+    | map(del(.order))
+    | if length > 0 then . else empty end
+  ' <<<"${json_line}" 2>/dev/null || true)"
+  # Prefer the cumulative METER READING (what's shown on the meter's own
+  # display) as the primary value — total_m3, total_energy_consumption_kwh,
+  # etc. Consistent across media: water shows total_m3, electricity shows
+  # total_energy_consumption_kwh (not the live kW draw). Exclude production,
+  # raw tariff registers and fault/alarm counters on the first pass; if an
+  # electricity meter only publishes consumption tariffs, sum them below.
+  value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(^total|_m3$|kwh|wh$|energy|volume)";"i")) | select(.key|test("(backflow|fraud|leak|tamper|alarm|production|tariff)";"i")|not) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
   if [[ -n "${value_key}" ]]; then
     value="$(jq -r --arg k "${value_key}" '.[$k] // empty' <<<"${json_line}" 2>/dev/null || true)"
   else
-    value_key="value"
-    value="$(jq -r 'to_entries[] | select((.value|type)=="number") | .value' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+    # Some electricity meters publish only per-tariff import registers. When
+    # the aggregate total is missing, sum consumption tariffs and expose that
+    # as the meter reading. Production tariffs remain excluded.
+    IFS=$'\t' read -r value_key value < <(
+      jq -r '
+        [to_entries[]
+          | select((.value|type)=="number")
+          | select(.key|test("^total_energy_consumption_tariff_[0-9]+_kwh$";"i"))
+          | .value] as $vals
+        | if ($vals|length) > 0 then "total_energy_consumption_kwh\t\($vals|add)" else empty end
+      ' <<<"${json_line}" 2>/dev/null | head -n 1
+    ) || true
+  fi
+  if [[ -z "${value_key}" ]]; then
+    # This telegram carries NO cumulative total. Some electricity meters send
+    # mostly instantaneous-only telegrams (current_power, voltage) and a total
+    # only occasionally. Do NOT downgrade a meter that already showed a
+    # total — reuse the last cumulative reading from the TSV so the value stays
+    # the meter reading and does not flicker back to the live kW draw on every
+    # power-only telegram. For electricity, never show live power as the meter
+    # reading; leave the value empty until a cumulative total arrives. Other
+    # media keep the historical instantaneous fallback.
+    local prev_key prev_val prev_parts
+    IFS=$'\t' read -r prev_key prev_val prev_parts < <(awk -F '\t' -v id="${id}" '$1==id {print $5 "\t" $6 "\t" $13; exit}' "${STATUS_METERS_FILE}" 2>/dev/null || true)
+    if [[ -n "${prev_key}" ]] \
+       && printf '%s' "${prev_key}" | grep -qiE '(^total|_m3$|kwh|wh$|energy|volume)' \
+       && ! printf '%s' "${prev_key}" | grep -qiE '(backflow|fraud|leak|tamper|alarm|production|tariff)'; then
+      value_key="${prev_key}"
+      value="${prev_val}"
+      value_parts="${prev_parts}"
+    else
+      local media_lc meter_lc
+      media_lc="$(printf '%s' "${media}" | tr '[:upper:]' '[:lower:]')"
+      meter_lc="$(printf '%s' "${meter}" | tr '[:upper:]' '[:lower:]')"
+      if [[ "${media_lc}" == *electric* || "${media_lc}" == *energy* || "${meter_lc}" == *electric* ]] \
+         || jq -e 'any(to_entries[]; (.key | test("(energy|power|voltage|current).*(_kwh|_wh|_kw|_w|_v|_a)$"; "i")))' <<<"${json_line}" >/dev/null 2>&1; then
+        value_key=""
+        value=""
+      else
+        value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(_kw$|_w$|_m3h$|_l_h$)";"i")) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+        if [[ -n "${value_key}" ]]; then
+          value="$(jq -r --arg k "${value_key}" '.[$k] // empty' <<<"${json_line}" 2>/dev/null || true)"
+        else
+          value_key="value"
+          value="$(jq -r 'to_entries[] | select((.value|type)=="number") | .value' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+        fi
+      fi
+    fi
   fi
   status_record_seen "${id}" "meter"
   last_seen="$(iso_now)"
   IFS=$'\t' read -r seen_count avg_interval_s seen_15m seen_60m < <(status_seen_stats "${id}" "meter")
   tmp="${STATUS_METERS_FILE}.tmp"
   awk -F '	' -v id="${id}" '$1 != id {print}' "${STATUS_METERS_FILE}" 2>/dev/null > "${tmp}" || true
-  printf '%s	%s	%s	%s	%s	%s	%s	%s	%s	%s	%s	%s
-' "${id}" "${name}" "${meter}" "${media}" "${value_key}" "${value}" "${last_seen}" "published" "${seen_count}" "${avg_interval_s}" "${seen_15m}" "${seen_60m}" >> "${tmp}"
+  printf '%s	%s	%s	%s	%s	%s	%s	%s	%s	%s	%s	%s	%s
+' "${id}" "${name}" "${meter}" "${media}" "${value_key}" "${value}" "${last_seen}" "published" "${seen_count}" "${avg_interval_s}" "${seen_15m}" "${seen_60m}" "${value_parts}" >> "${tmp}"
   mv "${tmp}" "${STATUS_METERS_FILE}" 2>/dev/null || true
 }
 
@@ -1683,27 +1738,38 @@ emit_snippet_if_new() {
 #
 # Picks the SAME primary field as status_meter_seen() — keeps preview values
 # consistent with what the user sees on the Meters page after permanently adding
-# the meter. Two-step heuristic:
-#   1. instantaneous reading (_kw, _w, _m3h, _l_h)         — e.g. current_power_consumption_kw
-#   2. cumulative reading (total*, _m3, kwh, wh, energy, volume)
-#      but explicitly skip fault/diagnostic counters
-#      (backflow_m3, fraud_*, leak_*, tamper_*, alarm_*)   — e.g. total_m3
+# the meter. Heuristic (cumulative meter reading first):
+#   1. cumulative reading (total*, _m3, kwh, wh, energy, volume) — e.g. total_m3,
+#      total_energy_consumption_kwh. Skips production/tariff registers and
+#      fault/diagnostic counters (backflow_m3, fraud_*, leak_*, tamper_*, alarm_*).
+#   2. instantaneous reading (_kw, _w, _m3h, _l_h) — only when no total exists.
 #   3. last resort: first numeric field
 _store_candidate_value() {
   local json_line="$1"
   local id value_key value now tmp
   id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null)"
   [[ -n "${id}" ]] || return 0
-  # Step 1 — instantaneous fields.
-  value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(_kw$|_w$|_m3h$|_l_h$)";"i")) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
-  # Step 2 — cumulative reading, excluding fault counters that wmbusmeters
-  # sometimes emits with bogusly large values (the bug that put 1291845 m³
-  # of "backflow" in the WebGUI before).
+  # Step 1 — cumulative meter reading. Excludes production/tariff registers and
+  # fault counters that wmbusmeters sometimes emits with bogusly large values
+  # (the bug that put 1291845 m³ of "backflow" in the WebGUI before).
+  value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(^total|_m3$|kwh|wh$|energy|volume)";"i")) | select(.key|test("(backflow|fraud|leak|tamper|alarm|production|tariff)";"i")|not) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
   if [[ -z "${value_key}" ]]; then
-    value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(^total|_m3$|kwh|wh$|energy|volume)";"i")) | select(.key|test("(backflow|fraud|leak|tamper|alarm)";"i")|not) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+    IFS=$'\t' read -r value_key value < <(
+      jq -r '
+        [to_entries[]
+          | select((.value|type)=="number")
+          | select(.key|test("^total_energy_consumption_tariff_[0-9]+_kwh$";"i"))
+          | .value] as $vals
+        | if ($vals|length) > 0 then "total_energy_consumption_kwh\t\($vals|add)" else empty end
+      ' <<<"${json_line}" 2>/dev/null | head -n 1
+    ) || true
+  fi
+  # Step 2 — instantaneous fields, only when no cumulative total was found.
+  if [[ -z "${value_key}" ]]; then
+    value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(_kw$|_w$|_m3h$|_l_h$)";"i")) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
   fi
   if [[ -n "${value_key}" ]]; then
-    value="$(jq -r --arg k "${value_key}" '.[$k] // empty' <<<"${json_line}" 2>/dev/null || true)"
+    [[ -n "${value:-}" ]] || value="$(jq -r --arg k "${value_key}" '.[$k] // empty' <<<"${json_line}" 2>/dev/null || true)"
   else
     # Step 3 — any numeric (skip wmbusmeters metadata keys though).
     IFS=$'\t' read -r value_key value < <(
@@ -1726,6 +1792,27 @@ _store_candidate_value() {
   mv "${tmp}" "${STATUS_CANDIDATE_VALUES_FILE}" 2>/dev/null || true
 }
 
+status_candidate_seen_from_json() {
+  local json_line="$1"
+  local id driver type_line existing_driver existing_type
+  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
+  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+
+  driver="$(jq -r '.meter // .driver // empty' <<<"${json_line}" 2>/dev/null || true)"
+  [[ -n "${driver}" && "${driver}" != "null" ]] || driver="auto"
+  type_line="$(jq -r '.media // empty' <<<"${json_line}" 2>/dev/null || true)"
+  [[ "${type_line}" != "null" ]] || type_line=""
+
+  IFS=$'\t' read -r existing_driver existing_type < <(
+    awk -F '\t' -v id="${id}" '$1==id {print $2 "\t" $3; exit}' "${STATUS_CANDIDATES_FILE}" 2>/dev/null || true
+  )
+  [[ -n "${existing_driver}" ]] && driver="${existing_driver}"
+  [[ -n "${existing_type}" ]] && type_line="${existing_type}"
+  [[ -n "${type_line}" ]] || type_line="decoded"
+
+  status_candidate_seen "${id}" "${driver}" "${type_line}"
+}
+
 parse_listen_candidates() {
   # Suppress status.json writes from this subshell to prevent races
   # with the parent shell's pipeline writes.
@@ -1737,6 +1824,9 @@ parse_listen_candidates() {
     # config matching this telegram's ID. Capture the primary numeric value
     # for the WebGUI "Preview value" feature.
     if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
+      if [[ "${OFFICIAL_METERS_COUNT:-0}" -gt 0 ]]; then
+        status_candidate_seen_from_json "${line}"
+      fi
       _store_candidate_value "${line}"
       continue
     fi
