@@ -125,10 +125,17 @@ status_add_event() {
 status_record_seen() {
   local id
   local kind="${2:-meter}"
-  local ts
+  local ts last_ts
   id="$(normalize_meter_id "$1")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   ts="$(epoch_now)"
+  last_ts="$(awk -F '\t' -v id="${id}" -v kind="${kind}" '
+    $1 == id && $2 == kind && $3 ~ /^[0-9]+$/ { last = $3 + 0 }
+    END { if (last) print last; }
+  ' "${STATUS_SEEN_FILE}" 2>/dev/null || true)"
+  if [[ "${last_ts}" =~ ^[0-9]+$ ]] && (( ts - last_ts < 2 )); then
+    return 0
+  fi
   printf '%s\t%s\t%s\n' "${id}" "${kind}" "${ts}" >> "${STATUS_SEEN_FILE}" 2>/dev/null || true
   tail -n 5000 "${STATUS_SEEN_FILE}" > "${STATUS_SEEN_FILE}.tmp" 2>/dev/null && mv "${STATUS_SEEN_FILE}.tmp" "${STATUS_SEEN_FILE}" 2>/dev/null || true
 }
@@ -265,7 +272,10 @@ ensure_candidate_autodecode() {
     if [[ -f "${file}" ]]; then
       rm -f "${file}" 2>/dev/null || true
       if [[ "${reload}" == "true" ]]; then
-        touch "${BASE}/.reload_listen" "${RELOAD_FLAG:-${BASE}/.reload_pipeline}" 2>/dev/null || true
+        # Preview files live in LISTEN_METER_DIR — only the LISTEN instance
+        # needs reloading. Do NOT touch RELOAD_FLAG/.reload_pipeline here: that
+        # restarts the main DECODE pipeline on every new candidate (churn loop).
+        touch "${BASE}/.reload_listen" 2>/dev/null || true
       fi
     fi
     return 0
@@ -275,7 +285,7 @@ ensure_candidate_autodecode() {
   tmp="${file}.tmp"
   {
     echo "name=preview_${id}"
-    echo "id=${id}"
+    echo "id=${id,,}"
     if [[ -n "${driver}" && "${driver}" != "auto" && "${driver}" != "unknown" ]]; then
       echo "driver=${driver}"
     fi
@@ -284,7 +294,10 @@ ensure_candidate_autodecode() {
   if [[ ! -f "${file}" ]] || ! cmp -s "${tmp}" "${file}" 2>/dev/null; then
     mv "${tmp}" "${file}" 2>/dev/null || true
     if [[ "${reload}" == "true" ]]; then
-      touch "${BASE}/.reload_listen" "${RELOAD_FLAG:-${BASE}/.reload_pipeline}" 2>/dev/null || true
+      # Only the LISTEN instance reads these preview files — reload just it.
+      # Touching RELOAD_FLAG/.reload_pipeline would needlessly restart the main
+      # DECODE pipeline on every newly heard candidate (the churn seen in logs).
+      touch "${BASE}/.reload_listen" 2>/dev/null || true
     fi
   else
     rm -f "${tmp}" 2>/dev/null || true
@@ -437,6 +450,7 @@ status_raw_seen() {
   STATUS_WMBUSMETERS_RUNNING="true"
   status_store_raw_seen "$(iso_now)"
   status_store_recent_raw "${raw}"
+  status_raw_candidate_seen "${raw}"
   if (( STATUS_RAW_COUNT == 1 || STATUS_RAW_COUNT % 25 == 0 )); then
     status_add_event "ok" "RAW telegram received (${#raw} hex chars)"
   fi
@@ -500,7 +514,7 @@ status_meter_seen() {
   # total_energy_consumption_kwh (not the live kW draw). Exclude production,
   # raw tariff registers and fault/alarm counters on the first pass; if an
   # electricity meter only publishes consumption tariffs, sum them below.
-  value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(^total|_m3$|kwh|wh$|energy|volume)";"i")) | select(.key|test("(backflow|fraud|leak|tamper|alarm|production|tariff)";"i")|not) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+  value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(^total|_m3$|kwh|wh$|energy|volume)";"i")) | select(.key|test("(backflow|fraud|leak|tamper|alarm|production|tariff|target)";"i")|not) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
   if [[ -n "${value_key}" ]]; then
     value="$(jq -r --arg k "${value_key}" '.[$k] // empty' <<<"${json_line}" 2>/dev/null || true)"
   else
@@ -530,7 +544,7 @@ status_meter_seen() {
     IFS=$'\t' read -r prev_key prev_val prev_parts < <(awk -F '\t' -v id="${id}" '$1==id {print $5 "\t" $6 "\t" $13; exit}' "${STATUS_METERS_FILE}" 2>/dev/null || true)
     if [[ -n "${prev_key}" ]] \
        && printf '%s' "${prev_key}" | grep -qiE '(^total|_m3$|kwh|wh$|energy|volume)' \
-       && ! printf '%s' "${prev_key}" | grep -qiE '(backflow|fraud|leak|tamper|alarm|production|tariff)'; then
+       && ! printf '%s' "${prev_key}" | grep -qiE '(backflow|fraud|leak|tamper|alarm|production|tariff|target)'; then
       value_key="${prev_key}"
       value="${prev_val}"
       value_parts="${prev_parts}"
@@ -567,6 +581,7 @@ status_candidate_seen() {
   local id
   local driver="${2:-auto}"
   local type_line="${3:-}"
+  local update_status="${4:-true}"
   local now tmp
   STATUS_WMBUSMETERS_RUNNING="true"
   id="$(normalize_meter_id "$1")"
@@ -588,7 +603,7 @@ status_candidate_seen() {
   if [[ "${existed}" != "true" ]]; then
     status_add_event "candidate" "Candidate detected ${id} (${driver})"
   fi
-  write_status_json
+  [[ "${update_status}" == "true" ]] && write_status_json
 }
 
 json_get() {
@@ -925,6 +940,45 @@ EOFLISTEN
 # ------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------
+meter_id_from_raw_hex() {
+  local raw="$1"
+  local byte_count lfield id_le
+
+  [[ "${raw}" =~ ^[0-9A-F]+$ ]] || { echo ""; return 0; }
+  [[ "${#raw}" -ge 22 ]] || { echo ""; return 0; }
+  (( ${#raw} % 2 == 0 )) || { echo ""; return 0; }
+
+  byte_count=$(( ${#raw} / 2 ))
+  lfield=$((16#${raw:0:2}))
+  [[ "${lfield}" -eq $((byte_count - 1)) ]] || { echo ""; return 0; }
+
+  # wMBus A-field stores the 4-byte meter ID little-endian after L/C/M-field.
+  id_le="${raw:8:8}"
+  echo "${id_le:6:2}${id_le:4:2}${id_le:2:2}${id_le:0:2}"
+}
+
+status_raw_candidate_seen() {
+  local raw="$1"
+  local id driver type_line mfr
+
+  raw="$(echo "${raw}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
+  id="$(meter_id_from_raw_hex "${raw}")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
+
+  driver="auto"
+  type_line="wMBus telegram"
+
+  # Diehl/SAP IZAR frames sometimes do not surface as listen candidates from
+  # wmbusmeters, but the link-layer A-field is still enough to show the meter.
+  mfr="${raw:4:4}"
+  if [[ "${mfr}" == "304C" ]]; then
+    driver="izarv2"
+    type_line="Water meter (0x07)"
+  fi
+
+  status_candidate_seen "${id}" "${driver}" "${type_line}" "false"
+}
+
 normalize_meter_id() {
   local mid_raw="$1"
   mid_raw="$(echo "${mid_raw}" | tr -d '[:space:]')"
@@ -938,6 +992,8 @@ normalize_meter_id() {
 
   if [[ "${#mid_raw}" -lt 8 ]]; then
     printf "%8s" "${mid_raw}" | tr ' ' '0'
+  elif [[ "${#mid_raw}" -gt 8 ]]; then
+    meter_id_from_raw_hex "${mid_raw}"
   else
     echo "${mid_raw}"
   fi
@@ -1326,7 +1382,7 @@ create_search_meter_files_from_cache() {
 
     {
       echo "name=search_${id}"
-      echo "id=${id}"
+      echo "id=${id,,}"
       if [[ "${safe_driver}" != "auto" ]]; then
         echo "driver=${safe_driver}"
       fi
@@ -1485,7 +1541,12 @@ refresh_meter_files() {
       file="$(printf '%s/meter-%04d' "${METER_DIR}" "${loaded_count}")"
       {
         echo "name=${friendly_name}"
-        echo "id=${mid}"
+        # wmbusmeters matches the telegram address case-sensitively in
+        # lowercase. meter_id is kept UPPERCASE for display, so lowercase it
+        # in the config file — otherwise ids with hex letters (e.g. izar
+        # 2156B4C2) never match and the meter silently doesn't decode, even
+        # though the file loads. Numeric-only ids were unaffected.
+        echo "id=${mid,,}"
         if [[ -n "${key}" ]]; then
           echo "key=${key}"
         fi
@@ -1793,7 +1854,7 @@ _store_candidate_value() {
   # Step 1 — cumulative meter reading. Excludes production/tariff registers and
   # fault counters that wmbusmeters sometimes emits with bogusly large values
   # (the bug that put 1291845 m³ of "backflow" in the WebGUI before).
-  value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(^total|_m3$|kwh|wh$|energy|volume)";"i")) | select(.key|test("(backflow|fraud|leak|tamper|alarm|production|tariff)";"i")|not) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+  value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(^total|_m3$|kwh|wh$|energy|volume)";"i")) | select(.key|test("(backflow|fraud|leak|tamper|alarm|production|tariff|target)";"i")|not) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
   if [[ -z "${value_key}" ]]; then
     IFS=$'\t' read -r value_key value < <(
       jq -r '

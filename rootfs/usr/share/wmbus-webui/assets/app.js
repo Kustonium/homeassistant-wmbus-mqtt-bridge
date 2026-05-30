@@ -122,10 +122,22 @@
     return Array.isArray(value) ? value : [];
   }
 
+  function meterIdFromRawHex(hexValue) {
+    const hex = String(hexValue || "").toUpperCase();
+    if (!/^[0-9A-F]+$/.test(hex)) return "";
+    if (hex.length < 22 || hex.length % 2 !== 0) return "";
+    const lengthField = Number.parseInt(hex.slice(0, 2), 16);
+    if (!Number.isFinite(lengthField) || lengthField !== (hex.length / 2) - 1) return "";
+    // wMBus A-field stores the 4-byte meter ID little-endian after L/C/M-field.
+    const idLe = hex.slice(8, 16);
+    return `${idLe.slice(6, 8)}${idLe.slice(4, 6)}${idLe.slice(2, 4)}${idLe.slice(0, 2)}`;
+  }
+
   function normalizeMeterId(value) {
     let mid = String(value || "").replace(/\s+/g, "").toUpperCase();
     if (mid.startsWith("0X")) mid = mid.slice(2);
     if (!/^[0-9A-F]+$/.test(mid)) return "";
+    if (mid.length > 8) return meterIdFromRawHex(mid);
     return mid.length < 8 ? mid.padStart(8, "0") : mid;
   }
 
@@ -2092,7 +2104,7 @@
               <div class="form-grid" style="grid-template-columns:1fr">
                 <div class="field">
                   <label for="meter-id">${escapeHtml(t("meter_id", "Meter ID"))}</label>
-                  <input id="meter-id" name="meter_id" value="${escapeHtml(modal.id || "")}" required pattern="[0-9A-Fa-f]{8}">
+                  <input id="meter-id" name="meter_id" value="${escapeHtml(modal.id || "")}" required pattern="(?:0[xX])?[0-9A-Fa-f\\s]{8,}">
                 </div>
                 <div class="field">
                   <label for="meter-name">${escapeHtml(t("webui_meter_name", "Name"))}</label>
@@ -2322,8 +2334,10 @@
     if (event.target.id === "add-meter-form") {
       event.preventDefault();
       const form = new FormData(event.target);
+      const payload = Object.fromEntries(form.entries());
+      payload.meter_id = normalizeMeterId(payload.meter_id);
       try {
-        await postApi("add-meter", Object.fromEntries(form.entries()));
+        await postApi("add-meter", payload);
         state.modal = null;
         // Soft pipeline reload so the new meter starts decoding without
         // a full container restart. bridge.sh's watcher picks up the
