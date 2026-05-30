@@ -104,12 +104,30 @@ VALID_ID_RE = re.compile(r"^[0-9A-Fa-f]{8}$")
 MEDIA_FILTERS = {"all", "water", "warm_water", "electricity", "heat", "other"}
 
 
+def meter_id_from_raw_hex(hex_value: str) -> str:
+    if not re.fullmatch(r"[0-9A-F]+", hex_value or ""):
+        return ""
+    if len(hex_value) < 22 or len(hex_value) % 2:
+        return ""
+    try:
+        length_field = int(hex_value[:2], 16)
+    except ValueError:
+        return ""
+    if length_field != (len(hex_value) // 2) - 1:
+        return ""
+    # wMBus A-field stores the 4-byte meter ID little-endian after L/C/M-field.
+    id_le = hex_value[8:16]
+    return id_le[6:8] + id_le[4:6] + id_le[2:4] + id_le[0:2]
+
+
 def normalize_meter_id(value: object) -> str:
     mid = re.sub(r"\s+", "", str(value or "")).upper()
     if mid.startswith("0X"):
         mid = mid[2:]
     if not mid or not re.fullmatch(r"[0-9A-F]+", mid):
         return ""
+    if len(mid) > 8:
+        return meter_id_from_raw_hex(mid)
     return mid.zfill(8) if len(mid) < 8 else mid
 
 
