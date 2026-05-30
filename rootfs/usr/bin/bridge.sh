@@ -65,6 +65,7 @@ STATUS_WMBUSMETERS_RUNNING="false"
 STATUS_RAW_COUNT=0
 STATUS_DECODED_COUNT=0
 STATUS_DISCOVERY_PUBLISHED="false"
+STATUS_DISCOVERY_PUBLISHED_AT=""
 STATUS_LAST_RAW_SEEN=""
 STATUS_LAST_DECODED_SEEN=""
 STATUS_LAST_ERROR=""
@@ -114,19 +115,22 @@ status_add_event() {
 }
 
 status_record_seen() {
-  local id="$1"
+  local id
   local kind="${2:-meter}"
   local ts
-  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  id="$(normalize_meter_id "$1")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   ts="$(epoch_now)"
   printf '%s\t%s\t%s\n' "${id}" "${kind}" "${ts}" >> "${STATUS_SEEN_FILE}" 2>/dev/null || true
   tail -n 5000 "${STATUS_SEEN_FILE}" > "${STATUS_SEEN_FILE}.tmp" 2>/dev/null && mv "${STATUS_SEEN_FILE}.tmp" "${STATUS_SEEN_FILE}" 2>/dev/null || true
 }
 
 status_seen_stats() {
-  local id="$1"
+  local id
   local kind="${2:-meter}"
   local now
+  id="$(normalize_meter_id "$1")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || { printf '0\t0\t0\t0\n'; return 0; }
   now="$(epoch_now)"
 
   awk -F '\t' -v id="${id}" -v kind="${kind}" -v now="${now}" '
@@ -186,7 +190,8 @@ status_store_recent_raw() {
 }
 
 id_to_le_hex() {
-  local id="$1"
+  local id
+  id="$(normalize_meter_id "$1")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || { echo ""; return 0; }
   echo "${id:6:2}${id:4:2}${id:2:2}${id:0:2}" | tr '[:upper:]' '[:lower:]'
 }
@@ -206,7 +211,7 @@ status_find_recent_raw_for_id() {
 }
 
 status_upsert_candidate_analysis() {
-  local id="$1"
+  local id
   local encryption="$2"
   local note="$3"
   local ci="${4:-}"
@@ -215,7 +220,8 @@ status_upsert_candidate_analysis() {
   local last_seen="${7:-}"
   local tmp
 
-  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  id="$(normalize_meter_id "$1")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   [[ -n "${last_seen}" ]] || last_seen="$(iso_now)"
 
   tmp="${STATUS_CANDIDATE_ANALYSIS_FILE}.tmp"
@@ -237,13 +243,14 @@ candidate_type_requires_aes() {
 }
 
 ensure_candidate_autodecode() {
-  local id="$1"
+  local id
   local driver="${2:-auto}"
   local type_line="${3:-}"
   local reload="${4:-true}"
   local file tmp
 
-  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  id="$(normalize_meter_id "$1")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   file="$(candidate_autodecode_file "${id}")"
 
   if candidate_type_requires_aes "${type_line}"; then
@@ -280,17 +287,19 @@ sync_candidate_autodecode_files() {
   local id driver type_line rest
   [[ -f "${STATUS_CANDIDATES_FILE}" ]] || return 0
   while IFS=$'\t' read -r id driver type_line rest; do
-    [[ "${id}" =~ ^[0-9]{8}$ ]] || continue
+    id="$(normalize_meter_id "${id}")"
+    [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || continue
     ensure_candidate_autodecode "${id}" "${driver:-auto}" "${type_line:-}" "false"
   done < "${STATUS_CANDIDATES_FILE}"
 }
 
 status_record_candidate_raw() {
-  local id="$1"
+  local id
   local raw="$2"
   local ts="${3:-}"
   local tmp
-  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  id="$(normalize_meter_id "$1")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   [[ -n "${raw}" ]] || return 0
   [[ -n "${ts}" ]] || ts="$(iso_now)"
 
@@ -301,12 +310,13 @@ status_record_candidate_raw() {
 }
 
 status_analyze_candidate_from_text() {
-  local id="$1"
+  local id
   local driver="${2:-auto}"
   local type_line="${3:-}"
   local type_lc raw_row raw_ts raw_len raw ci encryption note security
 
-  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  id="$(normalize_meter_id "$1")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   type_lc="$(echo "${type_line}" | tr '[:upper:]' '[:lower:]')"
 
   raw_row="$(status_find_recent_raw_for_id "${id}" || true)"
@@ -350,8 +360,8 @@ status_analyze_candidate_from_text() {
 status_mark_search_decoded_no_aes() {
   local json_line="$1"
   local id meter media field
-  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
-  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  id="$(normalize_meter_id "$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
 
   # Search temporary meters are created without key=. If wmbusmeters decodes
   # numeric JSON from such a meter, then no AES key was required for that telegram.
@@ -370,8 +380,8 @@ search_record_match() {
   local diff="$4"
   local id meter media now tmp
 
-  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
-  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  id="$(normalize_meter_id "$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   meter="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
   media="$(jq -r '.media // empty' <<<"${json_line}" 2>/dev/null || true)"
   now="$(iso_now)"
@@ -387,10 +397,15 @@ write_status_json() {
   # would overwrite raw_count back to 0.
   STATUS_RAW_COUNT="$(status_read_raw_count)"
   STATUS_LAST_RAW_SEEN="$(status_read_last_raw_seen)"
-  jq -n     --arg updated_at "$(iso_now)"     --arg raw_topic "${RAW_TOPIC:-}"     --arg state_prefix "${STATE_PREFIX:-}"     --arg discovery_prefix "${DISCOVERY_PREFIX:-}"     --arg search_mode "${SEARCH_MODE:-false}"     --arg loglevel "${LOGLEVEL:-}"     --arg mqtt_host "${MQTT_HOST:-}"     --arg mqtt_port "${MQTT_PORT:-}"     --arg mqtt_connected "${STATUS_MQTT_CONNECTED}"     --arg wmbusmeters_running "${STATUS_WMBUSMETERS_RUNNING}"     --arg raw_count "${STATUS_RAW_COUNT}"     --arg decoded_count "${STATUS_DECODED_COUNT}"     --arg discovery_published "${STATUS_DISCOVERY_PUBLISHED}"     --arg last_raw_seen "${STATUS_LAST_RAW_SEEN}"     --arg last_decoded_seen "${STATUS_LAST_DECODED_SEEN}"     --arg last_error "${STATUS_LAST_ERROR}"     --arg last_event "${STATUS_LAST_EVENT}"     '{updated_at:$updated_at,
+  jq -n     --arg updated_at "$(iso_now)"     --arg raw_topic "${RAW_TOPIC:-}"     --arg state_prefix "${STATE_PREFIX:-}"     --arg discovery_prefix "${DISCOVERY_PREFIX:-}"     --arg search_mode "${SEARCH_MODE:-false}"     --arg loglevel "${LOGLEVEL:-}"     --arg mqtt_host "${MQTT_HOST:-}"     --arg mqtt_port "${MQTT_PORT:-}"     --arg mqtt_connected "${STATUS_MQTT_CONNECTED}"     --arg wmbusmeters_running "${STATUS_WMBUSMETERS_RUNNING}"     --arg raw_count "${STATUS_RAW_COUNT}"     --arg decoded_count "${STATUS_DECODED_COUNT}"     --arg discovery_published "${STATUS_DISCOVERY_PUBLISHED}"     --arg discovery_published_at "${STATUS_DISCOVERY_PUBLISHED_AT}"     --arg last_raw_seen "${STATUS_LAST_RAW_SEEN}"     --arg last_decoded_seen "${STATUS_LAST_DECODED_SEEN}"     --arg last_error "${STATUS_LAST_ERROR}"     --arg last_event "${STATUS_LAST_EVENT}"     '{updated_at:$updated_at,
       config:{raw_topic:$raw_topic,state_prefix:$state_prefix,discovery_prefix:$discovery_prefix,search_mode:($search_mode=="true"),loglevel:$loglevel},
       mqtt:{host:$mqtt_host,port:$mqtt_port,connected:($mqtt_connected=="true")},
-      pipeline:{raw_count:($raw_count|tonumber? // 0),decoded_count:($decoded_count|tonumber? // 0),wmbusmeters_running:($wmbusmeters_running=="true"),discovery_published:($discovery_published=="true"),last_raw_seen:$last_raw_seen,last_decoded_seen:$last_decoded_seen,last_error:$last_error,last_event:$last_event}}'     > "${tmp}" 2>/dev/null && mv "${tmp}" "${STATUS_JSON}" 2>/dev/null || true
+      pipeline:{raw_count:($raw_count|tonumber? // 0),decoded_count:($decoded_count|tonumber? // 0),wmbusmeters_running:($wmbusmeters_running=="true"),discovery_published:($discovery_published=="true"),discovery_published_at:$discovery_published_at,last_raw_seen:$last_raw_seen,last_decoded_seen:$last_decoded_seen,last_error:$last_error,last_event:$last_event}}'     > "${tmp}" 2>/dev/null && mv "${tmp}" "${STATUS_JSON}" 2>/dev/null || true
+}
+
+status_mark_discovery_published() {
+  STATUS_DISCOVERY_PUBLISHED="true"
+  STATUS_DISCOVERY_PUBLISHED_AT="$(iso_now)"
 }
 
 status_raw_seen() {
@@ -441,8 +456,8 @@ status_raw_seen() {
 status_meter_seen() {
   local json_line="$1"
   local id name meter media value_key value value_parts last_seen tmp
-  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
-  [[ -n "${id}" ]] || return 0
+  id="$(normalize_meter_id "$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   name="$(jq -r '.name // empty' <<<"${json_line}" 2>/dev/null || true)"
   meter="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
   media="$(jq -r '.media // empty' <<<"${json_line}" 2>/dev/null || true)"
@@ -528,12 +543,13 @@ status_meter_seen() {
 }
 
 status_candidate_seen() {
-  local id="$1"
+  local id
   local driver="${2:-auto}"
   local type_line="${3:-}"
   local now tmp
   STATUS_WMBUSMETERS_RUNNING="true"
-  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  id="$(normalize_meter_id "$1")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   local existed="false"
   if grep -q "^${id}	" "${STATUS_CANDIDATES_FILE}" 2>/dev/null; then
     existed="true"
@@ -895,9 +911,9 @@ normalize_meter_id() {
 
   mid_raw="${mid_raw#0x}"
   mid_raw="${mid_raw#0X}"
-  mid_raw="$(echo "${mid_raw}" | tr '[:upper:]' '[:lower:]')"
+  mid_raw="$(echo "${mid_raw}" | tr '[:lower:]' '[:upper:]')"
 
-  [[ "${mid_raw}" =~ ^[0-9a-f]+$ ]] || { echo ""; return 0; }
+  [[ "${mid_raw}" =~ ^[0-9A-F]+$ ]] || { echo ""; return 0; }
 
   if [[ "${#mid_raw}" -lt 8 ]]; then
     printf "%8s" "${mid_raw}" | tr ' ' '0'
@@ -1096,7 +1112,7 @@ SEARCH_LAST_IGNORED_REASON=""
 
 search_cached_count() {
   if [[ -f "${SEARCH_CANDIDATES_FILE}" ]]; then
-    grep -Ec '^[0-9]{8}[[:space:]]' "${SEARCH_CANDIDATES_FILE}" 2>/dev/null || echo 0
+    grep -Ec '^[0-9A-Fa-f]{8}[[:space:]]' "${SEARCH_CANDIDATES_FILE}" 2>/dev/null || echo 0
   else
     echo 0
   fi
@@ -1191,8 +1207,8 @@ emit_search_payload() {
   local delta="$6"
 
   local id meter media name payload
-  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
-  [[ -n "${id}" ]] || return 0
+  id="$(normalize_meter_id "$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
 
   meter="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
   media="$(jq -r '.media // empty' <<<"${json_line}" 2>/dev/null || true)"
@@ -1230,12 +1246,13 @@ search_type_is_water_candidate() {
 }
 
 search_cache_candidate() {
-  local id="$1"
+  local id
   local driver="$2"
   local type_line="${3:-}"
   local type_lc
 
-  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  id="$(normalize_meter_id "$1")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   [[ -n "${driver}" ]] || driver="auto"
 
   type_lc="$(echo "${type_line}" | tr '[:upper:]' '[:lower:]')"
@@ -1263,7 +1280,7 @@ search_cache_candidate() {
   SEARCH_LAST_CANDIDATE_TYPE="${type_line:-unknown}"
 
   local cached_count
-  cached_count="$(grep -Ec '^[0-9]{8}[[:space:]]' "${SEARCH_CANDIDATES_FILE}" 2>/dev/null || true)"
+  cached_count="$(grep -Ec '^[0-9A-Fa-f]{8}[[:space:]]' "${SEARCH_CANDIDATES_FILE}" 2>/dev/null || true)"
   [[ "${cached_count}" =~ ^[0-9]+$ ]] || cached_count=0
 
   warn "SEARCH discovered: id=${id} driver=${driver} type=${type_line:-unknown} stored as water candidate (cached=${cached_count}, ignored=${SEARCH_IGNORED_COUNT})."
@@ -1277,7 +1294,8 @@ create_search_meter_files_from_cache() {
   local i=0
   local id driver file safe_driver
   while IFS=$'\t' read -r id driver; do
-    [[ "${id}" =~ ^[0-9]{8}$ ]] || continue
+    id="$(normalize_meter_id "${id}")"
+    [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || continue
     [[ -n "${driver}" ]] || driver="auto"
     [[ "${driver}" =~ ^[A-Za-z0-9_]+$ ]] || driver="auto"
 
@@ -1304,8 +1322,8 @@ process_search_json() {
   [[ "${SEARCH_MODE}" == "true" ]] || return 0
 
   local id
-  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
-  [[ -n "${id}" ]] || return 0
+  id="$(normalize_meter_id "$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   if is_search_temp_json "${json_line}"; then
     SEARCH_DECODED_JSON_COUNT=$((SEARCH_DECODED_JSON_COUNT + 1))
   fi
@@ -1488,9 +1506,10 @@ declare -A DISCOVERY_CLEANED_LEGACY
 declare -A SEARCH_DISCOVERY_CLEARED_FIELD
 
 clean_legacy_totalm3() {
-  local id="$1"
+  local id
   [[ "${DISCOVERY_ENABLED}" == "true" ]] || return 0
-  [[ -n "${id}" ]] || return 0
+  id="$(normalize_meter_id "$1")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
 
   if [[ -z "${DISCOVERY_CLEANED_LEGACY[${id}]+x}" ]]; then
     if mqtt_pub "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/total_m3/config" "" "true"; then
@@ -1506,8 +1525,8 @@ emit_discovery_from_json() {
   [[ "${DISCOVERY_ENABLED}" == "true" ]] || return 0
 
   local id name meter media
-  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
-  [[ -n "${id}" ]] || return 0
+  id="$(normalize_meter_id "$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
 
   clean_legacy_totalm3 "${id}"
 
@@ -1644,8 +1663,8 @@ clear_search_discovery_from_json() {
   is_search_temp_json "${json_line}" || return 0
 
   local id
-  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
-  [[ -n "${id}" ]] || return 0
+  id="$(normalize_meter_id "$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
 
   # Clear older retained discovery configs if a previous buggy search run
   # already created HA entities. Use retain=true because MQTT Discovery
@@ -1693,10 +1712,11 @@ SNIPPET_STATE="${BASE}/seen_ids.txt"
 touch "${SNIPPET_STATE}"
 
 emit_snippet_if_new() {
-  local id="$1"
+  local id
   local driver="$2"
   local type_line="${3:-}"
-  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  id="$(normalize_meter_id "$1")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
 
   # Update dashboard stats every time this candidate is heard.
   # Pass the real type_line from wmbusmeters output so the webui can
@@ -1747,8 +1767,8 @@ emit_snippet_if_new() {
 _store_candidate_value() {
   local json_line="$1"
   local id value_key value now tmp
-  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null)"
-  [[ -n "${id}" ]] || return 0
+  id="$(normalize_meter_id "$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null)")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   # Step 1 — cumulative meter reading. Excludes production/tariff registers and
   # fault counters that wmbusmeters sometimes emits with bogusly large values
   # (the bug that put 1291845 m³ of "backflow" in the WebGUI before).
@@ -1795,8 +1815,8 @@ _store_candidate_value() {
 status_candidate_seen_from_json() {
   local json_line="$1"
   local id driver type_line existing_driver existing_type
-  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)"
-  [[ "${id}" =~ ^[0-9]{8}$ ]] || return 0
+  id="$(normalize_meter_id "$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
 
   driver="$(jq -r '.meter // .driver // empty' <<<"${json_line}" 2>/dev/null || true)"
   [[ -n "${driver}" && "${driver}" != "null" ]] || driver="auto"
@@ -1831,8 +1851,8 @@ parse_listen_candidates() {
       continue
     fi
     # Plain listen-mode text output — extract candidate metadata.
-    if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9]{8}) ]]; then
-      last_id="${BASH_REMATCH[1]}"
+    if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9A-Fa-f]{8}) ]]; then
+      last_id="$(normalize_meter_id "${BASH_REMATCH[1]}")"
       last_type=""
       last_driver=""
     elif [[ "${line}" =~ ^[[:space:]]*type:[[:space:]]*(.*)$ ]]; then
@@ -1928,15 +1948,15 @@ run_once() {
           fi
           status_meter_seen "${line}"
           echo "${line}"
-          id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
+          id="$(normalize_meter_id "$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)")"
           ts="$(echo "${line}" | jq -r '.timestamp // .device_date_time // empty' 2>/dev/null || true)"
-          if [[ -n "${id}" ]]; then
+          if [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]]; then
             if [[ "${REQUIRE_TIMESTAMP}" == "true" && -z "${ts}" ]]; then
               warn "Skip publish: missing timestamp for id=${id}"
             else
               mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
               emit_discovery_from_json "${line}"
-              STATUS_DISCOVERY_PUBLISHED="true"
+              status_mark_discovery_published
               write_status_json
             fi
           fi
@@ -1946,8 +1966,8 @@ run_once() {
         echo "${line}"
 
         if [[ "${OFFICIAL_METERS_COUNT}" -eq 0 && "${SEARCH_USING_TEMP_METERS}" != "true" ]]; then
-          if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9]{8}) ]]; then
-            last_id="${BASH_REMATCH[1]}"
+          if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9A-Fa-f]{8}) ]]; then
+            last_id="$(normalize_meter_id "${BASH_REMATCH[1]}")"
             last_type=""
             last_driver=""
           fi
@@ -1989,15 +2009,15 @@ else
           fi
           status_meter_seen "${line}"
           echo "${line}"
-          id="$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)"
+          id="$(normalize_meter_id "$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)")"
           ts="$(echo "${line}" | jq -r '.timestamp // .device_date_time // empty' 2>/dev/null || true)"
-          if [[ -n "${id}" ]]; then
+          if [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]]; then
             if [[ "${REQUIRE_TIMESTAMP}" == "true" && -z "${ts}" ]]; then
               warn "Skip publish: missing timestamp for id=${id}"
             else
               mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
               emit_discovery_from_json "${line}"
-              STATUS_DISCOVERY_PUBLISHED="true"
+              status_mark_discovery_published
               write_status_json
             fi
           fi
