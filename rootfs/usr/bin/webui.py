@@ -885,7 +885,8 @@ def _esp_payload() -> dict:
     events     = read_tsv(STATUS_ESP_EVENTS_FILE, ["epoch", "evtype", "topic", "payload"], limit=100, reverse=True)
     telegram_rows = read_tsv(STATUS_ESP_TELEGRAM_DEVICES_FILE, ["name", "last_telegram_epoch", "topic", "telegram_count"])
 
-    ACTIVE_WINDOW_S = 5 * 60
+    WARN_AFTER_S = 2 * 60
+    OFFLINE_AFTER_S = 5 * 60
     now_epoch       = int(_time.time())
     SUMMARY_TOPIC_SUFFIX = "/diag/summary"
 
@@ -970,13 +971,26 @@ def _esp_payload() -> dict:
                 entry["last_evtype"] = evtype
 
     # ── Finalize display + active flag ──
-    # Telegram rows are session-scoped, so any telegram in the current bridge
-    # run counts as detected. diag/summary is a heartbeat, so it must be fresh.
+    # ESP receiver status is based on the primary telegram topic only. A fresh
+    # wmbus/<device>/telegram means green; after 2 minutes without telegrams it
+    # becomes warning; after 5 minutes it is offline. diag/summary remains
+    # optional context and never keeps a receiver green by itself.
     for entry in devices.values():
         last_tg  = entry.get("last_telegram_epoch", 0)
         last_sum = entry.get("last_summary_epoch", 0)
-        fresh_sum = last_sum > 0 and (now_epoch - last_sum) <= ACTIVE_WINDOW_S
-        entry["active"] = bool(last_tg > 0 or fresh_sum)
+        telegram_age_s = max(0, now_epoch - last_tg) if last_tg > 0 else 0
+        if last_tg <= 0 or telegram_age_s > OFFLINE_AFTER_S:
+            health = "offline"
+            active = False
+        elif telegram_age_s > WARN_AFTER_S:
+            health = "warn"
+            active = True
+        else:
+            health = "online"
+            active = True
+        entry["telegram_age_s"] = telegram_age_s
+        entry["health"] = health
+        entry["active"] = active
         # has_diag tells the frontend whether this ESP exposes diag/events
         # (useful for the "diag required" notice — we can soften it when
         # at least one ESP IS publishing diag).

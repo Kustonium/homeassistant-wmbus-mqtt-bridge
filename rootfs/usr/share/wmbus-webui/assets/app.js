@@ -824,7 +824,7 @@
     const pipe = model.pipe || {};
     const mqtt = model.mqtt || {};
     const esp  = (data.esp || {}).diag || {};
-    const espActive = model.rate_source === "esp";
+    const espRateFromDiag = model.rate_source === "esp";
     const cur  = Number(model.rate_current_min || 0);
     const rateLabel = `${cur}/min`;
 
@@ -842,27 +842,34 @@
     const decodedCount   = Number(model.decoded_count || 0);
     const hasLiveRate    = cur > 0;
 
-    // Multi-ESP support: webui.py exposes esp.devices[] (each entry carries
-    // an `active` flag set from wmbus/+/telegram, or from a fresh
-    // wmbus/+/diag/summary heartbeat). devices_count holds the ACTIVE count.
+    // Multi-ESP support: webui.py exposes esp.devices[] with status based on
+    // the primary wmbus/+/telegram topic: online <=2 min, warn <=5 min,
+    // offline after that. diag/summary is displayed as context only.
     const espDevicesAll    = asArray((data.esp || {}).devices);
     const espActiveDevices = espDevicesAll.filter(d => d && d.active);
+    const espOnlineDevices = espDevicesAll.filter(d => d && d.health === "online");
+    const espWarnDevices   = espDevicesAll.filter(d => d && d.health === "warn");
     const espCount         = Number((data.esp || {}).devices_count || espActiveDevices.length || 0);
     const isMultiEsp       = espCount > 1;
     const espTitle         = isMultiEsp ? `${espCount} × ESP` : "ESP";
     const raw15m           = Number(model.raw_15m || 0);
-    const espOk            = espActive || espActiveDevices.length > 0 || (esp && Object.keys(esp).length > 0)
-                          || (raw15m > 0 && espDevicesAll.length > 0);
+    const espOnline        = espOnlineDevices.length > 0;
+    const espWarn          = !espOnline && espWarnDevices.length > 0;
+    const espSeen          = espDevicesAll.length > 0 || (esp && Object.keys(esp).length > 0) || raw15m > 0;
     const espRssi          = esp.avg_ok_rssi ? `${esp.avg_ok_rssi} dBm` : "—";
 
     // Status text + rate. The rate comes from model.rate_current_min which
     // status_model() already populates either from ESP's diag.total (when
     // rate_source=="esp") or from bridge.sh's own per-minute counter.
     const rateSuffix = cur > 0 ? ` · ${cur}/min` : "";
-    const espStatus = espActive
-      ? t("pipeline_esp_active", "active") + rateSuffix
-      : (espOk ? t("pipeline_esp_seen", "seen") + rateSuffix
-                : t("pipeline_esp_none", "n/a"));
+    let espStatus = t("pipeline_esp_none", "n/a");
+    if (espOnline) {
+      espStatus = t("pipeline_esp_active", "active") + rateSuffix;
+    } else if (espWarn) {
+      espStatus = t("silent_label", "silent") + rateSuffix;
+    } else if (espSeen) {
+      espStatus = t("offline_label", "offline") + rateSuffix;
+    }
 
     // Source topic — the device segment of the primary (most recent) ESP.
     // Falls back to esp.diag._topic if events are empty (e.g. fresh start
@@ -905,7 +912,7 @@
           <button class="${cls("esp")}" data-action="open-workspace" data-ws="esp" type="button">
             <div class="pipeline-icon">📡</div>
             <div class="pipeline-title">${escapeHtml(espTitle)}</div>
-            <div class="pipeline-meta">${dot(espOk, false, espActive && hasLiveRate)} ${escapeHtml(espStatus)}</div>
+            <div class="pipeline-meta">${dot(espOnline, espWarn, espOnline && hasLiveRate && espRateFromDiag)} ${escapeHtml(espStatus)}</div>
             <div class="pipeline-sub">${escapeHtml(espVisibleLine)}</div>
             <div class="pipeline-sub pipeline-device" title="${escapeHtml(primaryTopic || "")}">${escapeHtml(espDeviceLine)}</div>
           </button>
@@ -948,14 +955,11 @@
     let body = "";
     if (state.workspace === "esp") {
       const esp = data.esp || {};
-      const diag = esp.diag || {};
       const sug  = esp.suggestion || {};
       const devices = asArray(esp.devices);
-      const hasDiag = Object.keys(diag).length > 0;
       // Multi-device table — one row per ESP receiver heard by the bridge.
-      // Active devices first (green dot), then stale "ghost" entries from
-      // MQTT retained messages or past sessions (dimmed grey). Counter in
-      // the header reads "N active / M total" when there are stale entries.
+      // Green = telegram heard within 2 minutes, orange = telegram silence
+      // between 2 and 5 minutes, red = no telegram for more than 5 minutes.
       const activeDevs = devices.filter(d => d && d.active);
       const totalDevs  = devices.length;
       const counter    = (totalDevs > activeDevs.length)
@@ -981,11 +985,15 @@
               ${devices.map(d => {
                 const epoch = Number(d.last_seen_epoch || 0);
                 const when = epoch > 0 ? new Date(epoch * 1000).toLocaleString() : "—";
-                const isAct = !!d.active;
-                const rowStyle = isAct ? "" : "opacity:0.55;";
-                const statusCell = isAct
-                  ? `<span class="dot ok live" style="margin-right:5px;"></span>${escapeHtml(t("pipeline_esp_active", "active"))}`
-                  : `<span class="dot" style="margin-right:5px;"></span>${escapeHtml(t("workspace_esp_device_stale", "stale (retained?)"))}`;
+                const health = String(d.health || (d.active ? "online" : "offline"));
+                const isOffline = health === "offline";
+                const rowStyle = isOffline ? "opacity:0.65;" : "";
+                const statusMeta = health === "online"
+                  ? {cls: "ok live", label: t("pipeline_esp_active", "active")}
+                  : (health === "warn"
+                      ? {cls: "warn", label: t("silent_label", "silent")}
+                      : {cls: "bad", label: t("offline_label", "offline")});
+                const statusCell = `<span class="dot ${statusMeta.cls}" style="margin-right:5px;"></span>${escapeHtml(statusMeta.label)}`;
                 const tgCount = Number(d.telegram_count || 0);
                 const tgCell  = tgCount > 0 ? String(tgCount) : "—";
                 const diagCell = d.has_diag
@@ -1008,8 +1016,6 @@
       body = `
         <h3>📡 ESP — ${escapeHtml(t("workspace_esp_title", "ESP diagnostics"))}</h3>
         ${devicesTable}
-        <h4 style="margin-top:14px;">${escapeHtml(t("workspace_esp_latest_diag", "Latest diagnostic summary"))}</h4>
-        ${hasDiag ? objectKv(diag) : `<div class="empty">${escapeHtml(t("webui_no_diagnostics", "No diagnostic summary."))}</div>`}
         ${Object.keys(sug).length ? `<h4 style="margin-top:14px;">💡 ${escapeHtml(t("webui_suggestion", "Suggestion"))}</h4>${objectKv(sug)}` : ""}
       `;
     } else if (state.workspace === "mqtt") {
@@ -1867,9 +1873,9 @@
     const suggestion = esp.suggestion || {};
     const events = asArray(esp.events);
 
-    // Use the backend's single source of truth for ESP activity. It combines
-    // wmbus/+/telegram with the optional wmbus/+/diag/summary heartbeat; boot
-    // and other diag events remain log-only and do not mark a device active.
+    // Use the backend's single source of truth for ESP activity. It is based
+    // on wmbus/+/telegram freshness; diag/summary and other diag events remain
+    // log-only context and do not keep a device active.
     const devices = asArray(esp.devices);
     const activeDevices = new Set(
       devices
@@ -1879,8 +1885,9 @@
 
     // Badge — one pill per active device. When the list is empty we don't
     // render any badge.
-    const activeDeviceBadges = [...activeDevices]
-      .map(dev => `<span class="pill ok" style="font-size:11px;margin-left:6px;">📡 ${escapeHtml(dev)}</span>`)
+    const activeDeviceBadges = devices
+      .filter(d => d && d.active && d.name)
+      .map(d => `<span class="pill ${d.health === "warn" ? "warn" : "ok"}" style="font-size:11px;margin-left:6px;">📡 ${escapeHtml(d.name)}</span>`)
       .join("");
 
     // Help notice — shown only when NO active ESP has diag enabled. When

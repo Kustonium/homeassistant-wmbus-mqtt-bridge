@@ -1,23 +1,3 @@
-## 1.5.12 (2026-05-30)
+## 1.5.13 (2026-05-30)
 
-- fix(webui): odswiez pipeline po usunieciu licznika
-- fix(webui): pokaz oczekujace liczniki w discover
-- fix(webui): pokaz przeplyw taryf energii
-- fix(webui): popraw filtr discover i komunikat dodania
-- fix(bridge): sumuj taryfy energii bez agregatu
-- fix(bridge): popraw odczyt energii i odbior kandydatow
-- fix(bridge): nie degraduj licznika do chwilowego gdy telegram nie ma totalu
-- ci(build): bump wersji DOPIERO po udanym buildzie obu architektur
-- feat(bridge): WARTOSC = calkowite zuzycie (total) dla wszystkich licznikow
-- Revert "feat(bridge): WARTOSC = stan licznika (total) zamiast chwilowego poboru"
-- Update build.yaml
-- feat(bridge): WARTOSC = stan licznika (total) zamiast chwilowego poboru
-- docs: aktualne/okresowe zuzycie z total_m3 (Utility Meter) dla driverow total-only
-- Update Doc Files
-- docs(dev): sync docs with implementation
-- chore: przestan sledzic _bmad/ (instalacja BMAD, juz w .gitignore)
-- docs(P3): spojnosc - linki docs wzgledne, firmware rawonly, WebUI-first w Krok 1
-- docs(readme): opis Panelu o live telegramy/min (PL+EN)
-- docs(readme): wskaznik do pelnej listy opcji konfiguracji (PL+EN)
-- docs: aktualny raw_topic (wmbus/+/telegram) i auto-dekodowanie kandydatow bez AES
-- Update build.yaml
+- feat(esp): status odbiornika ESP wg wieku telegramu (online / >2min / >5min)
