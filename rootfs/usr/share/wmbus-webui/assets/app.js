@@ -236,6 +236,69 @@
     return "";
   }
 
+  function parseValueParts(row) {
+    const raw = String(row?.value_parts || "").trim();
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((part) => {
+          const label = String(part?.label || "").trim();
+          const key = String(part?.key || "").trim();
+          const value = Number(part?.value);
+          if (!label || !Number.isFinite(value)) return null;
+          return {label, key, value};
+        })
+        .filter(Boolean);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function formatFlowValue(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return String(value ?? "");
+    return n.toFixed(3).replace(/\.?0+$/, "");
+  }
+
+  function tariffFlowHtml(row) {
+    const key = String(row?.value_key || "").toLowerCase();
+    if (!key.includes("total_energy_consumption")) return "";
+    const parts = parseValueParts(row);
+    if (!parts.length) return "";
+    const totalValue = row?.value && row.value !== "-" ? formatFlowValue(row.value) : "";
+    const totalLabel = t("webui_total", "total");
+    const chips = parts.map((part) => `
+      <span title="${escapeHtml(part.key)}" style="display:inline-flex;align-items:center;gap:3px;padding:2px 5px;border:1px solid #264859;border-radius:4px;background:#0c1820;color:#8fb5c8;">
+        <span style="color:#6f8796;">${escapeHtml(part.label)}</span>
+        <strong style="color:#cfe9f7;font-weight:700;">${escapeHtml(formatFlowValue(part.value))}</strong>
+      </span>
+    `).join(`<span style="color:#4a6070;">+</span>`);
+    return `
+      <div class="mono" style="margin-top:5px;display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:10px;line-height:1.35;">
+        ${chips}
+        <span style="color:#4a6070;">=</span>
+        <span style="display:inline-flex;align-items:center;gap:3px;padding:2px 5px;border:1px solid #1c6b50;border-radius:4px;background:#082017;color:#4df08d;font-weight:700;">
+          <span>${escapeHtml(totalLabel)}</span>
+          ${totalValue ? `<strong style="color:#d8ffe8;font-weight:700;">${escapeHtml(totalValue)}</strong>` : ""}
+        </span>
+      </div>
+    `;
+  }
+
+  function meterValueCell(row) {
+    const unit = unitFromKey(row.value_key || "");
+    const hasValue = !!(row.value && row.value !== "-");
+    const valueStr = hasValue ? row.value : "—";
+    const valueColor = hasValue ? "#4df08d" : "#9eafba";
+    return `
+      <span style="font-weight:700;color:${valueColor};">${escapeHtml(valueStr)}</span>${unit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(unit)}</span>` : ""}
+      ${tariffFlowHtml(row)}
+      ${row.value_key ? `<div class="mono" style="font-size:10px;color:#4a6070;">${escapeHtml(row.value_key)}</div>` : ""}
+    `;
+  }
+
   // ── #5 Signal bars + meter health ────────────────────────────────────────
   function signalBars(seen15m) {
     const n = seen15m >= 10 ? 4 : seen15m >= 5 ? 3 : seen15m >= 2 ? 2 : seen15m > 0 ? 1 : 0;
@@ -277,11 +340,10 @@
     return `~${(n / 3600).toFixed(1)} h`;
   }
 
-  // ── #7 Pending-restart banner ─────────────────────────────────────────────
-  // Shown when:
-  //   a) options.json is newer than status.json (mtime check), OR
-  //   b) options.json contains meters that are not yet decoded (reliable signal
-  //      even when bridge.sh frequently re-writes status.json resetting the mtime flag).
+  // ── #7 Pending meter banner ───────────────────────────────────────────────
+  // Shows a restart action only when the backend explicitly says the running
+  // bridge has not applied current options. Otherwise pending meters are simply
+  // waiting for their first decoded telegram after the soft reload.
   function pendingRestartBanner() {
     const data  = state.data || {};
     const model = data.model || {};
@@ -293,17 +355,23 @@
       return mid && !decodedIds.has(mid);
     }).length;
 
-    if (!model.pending_restart && pendingCount === 0) return "";
+    const needsRestart = !!model.pending_restart;
+    if (!needsRestart && pendingCount === 0) return "";
 
-    const detail = t("pending_text", "These meters are saved in options.json but the add-on hasn't picked them up yet. Restart the add-on to apply.");
+    const title = needsRestart
+      ? t("pending_title", "Pending changes — waiting for restart")
+      : t("waiting_for_telegrams_title", "Waiting for first telegram");
+    const detail = needsRestart
+      ? t("pending_text", "These meters are saved in options.json but the add-on hasn't picked them up yet. Restart the add-on to apply.")
+      : t("waiting_for_telegrams_text", "These meters are configured but haven't sent a telegram yet.");
 
     return `
       <div class="notice warn" style="margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
         <div>
-          <strong>⚠ ${escapeHtml(t("pending_title", "Pending changes — waiting for restart"))}</strong>
+          <strong>${escapeHtml(title)}</strong>
           <div style="font-size:11px;color:#b0a060;margin-top:3px;">${escapeHtml(detail)}</div>
         </div>
-        <button class="btn warn" data-action="restart" style="white-space:nowrap;flex-shrink:0;">${escapeHtml(t("restart_addon", "Restart add-on"))}</button>
+        ${needsRestart ? `<button class="btn warn" data-action="restart" style="white-space:nowrap;flex-shrink:0;">${escapeHtml(t("restart_addon", "Restart add-on"))}</button>` : ""}
       </div>
     `;
   }
@@ -347,6 +415,11 @@
       state.toast = null;
       render();
     }, 4800);
+  }
+
+  function clearToast() {
+    state.toast = null;
+    window.clearTimeout(toast.timer);
   }
 
   function currentLang() {
@@ -395,8 +468,10 @@
   // newly added/removed meters take effect WITHOUT a full container restart.
   // The webui process and MQTT broker connection stay alive — only the
   // decode wmbusmeters is recycled.
-  function triggerSoftReload() {
+  function triggerSoftReload(message = "") {
     state.softReloading = true;
+    state.softReloadingText = message || t("reloading_pipeline", "Applying meter changes…");
+    clearToast();
     render();
     (async () => {
       try {
@@ -404,9 +479,11 @@
       } catch (_) {
         // Endpoint failed — fall back to a normal refresh after a short wait.
       }
+      await fetchData(currentLang());
       // Give bridge.sh ~5 s: 2 s flag poll + 2-3 s decode pipeline respawn.
       await new Promise(r => setTimeout(r, 5000));
       state.softReloading = false;
+      state.softReloadingText = "";
       await fetchData(currentLang());
     })();
   }
@@ -544,7 +621,7 @@
       ${state.softReloading ? `
         <div style="position:fixed;right:18px;bottom:18px;background:#1d2a18;color:#a3d870;border:1px solid #4a7332;padding:10px 16px;border-radius:8px;z-index:35;display:flex;align-items:center;gap:10px;font-size:13px;">
           <span style="font-size:18px;">⏳</span>
-          <span>${escapeHtml(t("reloading_pipeline", "Loading new meter…"))}</span>
+          <span>${escapeHtml(state.softReloadingText || t("reloading_pipeline", "Applying meter changes…"))}</span>
         </div>` : ""}
       ${state.toast ? `<div class="toast ${state.toast.isError ? "error" : ""}">${escapeHtml(state.toast.message)}</div>` : ""}
     `;
@@ -1192,8 +1269,6 @@
                 const seen15m = ageS > 15 * 60 ? 0 : Number(row.seen_15m || 0);
                 const seen60m = ageS > 60 * 60 ? 0 : Number(row.seen_60m || 0);
                 const {label: statusLabel, color: statusColor} = meterStatusLabel(seen15m, seen60m);
-                const unit    = unitFromKey(row.value_key || "");
-                const valueStr = (row.value && row.value !== "-") ? row.value : "—";
                 const {icon: mIcon} = mediaIcon(row.media || "", row.driver || "");
                 return `
                   <tr>
@@ -1201,8 +1276,7 @@
                     <td><span style="margin-right:5px;font-size:15px;vertical-align:middle;">${mIcon}</span>${escapeHtml(row.name || row.id || "-")}</td>
                     <td>${escapeHtml(row.driver || "-")}</td>
                     <td>
-                      <span>${escapeHtml(valueStr)}${unit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(unit)}</span>` : ""}</span>
-                      ${row.value_key ? `<div class="mono" style="font-size:10px;color:#4a6070;">${escapeHtml(row.value_key)}</div>` : ""}
+                      ${meterValueCell(row)}
                     </td>
                     <td>${fmtTime(row.last_seen)}</td>
                     <td style="white-space:nowrap;">
@@ -1251,7 +1325,7 @@
               ${withActions ? "<th></th>" : ""}
             </tr>
           </thead>
-          <tbody>
+          <tbody id="discover-candidates-tbody">
             ${rows
               .map((row) => {
                 const id     = row.id || "";
@@ -1397,21 +1471,16 @@
   // The value column lets the user identify which configured ID is which
   // physical meter by just reading the live counter.
   //
-  // The "filter by value" input above the table replaces the legacy SEARCH-mode
-  // workflow: instead of typing an expected value blind, the user sees all
-  // live values and types a target — matching rows stay visible, others hide.
-  // Filtering is pure client-side DOM (rows have data-value); no re-render,
-  // no focus loss on every keystroke.
-  function discoverConfiguredPanel(rows) {
-    if (!rows.length) return "";
+  // The "filter by value" bar on the Discover page replaces the legacy
+  // SEARCH-mode workflow: instead of typing an expected value blind, the user
+  // sees all live values and types a target — matching rows stay visible,
+  // others hide. Filtering is pure client-side DOM (rows have data-value);
+  // no re-render, no focus loss on every keystroke.
+  function discoverValueFilterBar(rowCount) {
+    if (!rowCount) return "";
     return `
       <section class="section">
-        <div class="section-head">
-          <h2>${escapeHtml(t("configured_meters_panel_title", "Configured meters on air"))}</h2>
-          <span id="discover-configured-count">${rows.length}</span>
-        </div>
-        <p style="font-size:11px;color:#607a88;margin:0 0 10px;">${escapeHtml(t("configured_meters_panel_sub", "These IDs are already in your options.json. The parallel listen instance keeps their reception stats live."))}</p>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;padding:8px 12px;background:#0e1a23;border:1px solid #1e3040;border-radius:6px;">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 12px;background:#0e1a23;border:1px solid #1e3040;border-radius:6px;">
           <label for="discover-search-value" style="font-size:12px;color:#9eafba;">${escapeHtml(t("filter_by_value", "Filter by value"))}:</label>
           <input id="discover-search-value" type="text" inputmode="decimal" placeholder="e.g. 23.91"
             style="background:#0a1217;border:1px solid #2a4555;color:#e8f1f8;border-radius:4px;padding:5px 8px;font-size:12px;width:120px;font-family:monospace;"
@@ -1422,8 +1491,21 @@
             oninput="window.__discoverFilterByValue && window.__discoverFilterByValue()">
           <button type="button" class="btn"
             style="font-size:11px;padding:4px 10px;"
-            onclick="var v=document.getElementById('discover-search-value'); if(v){v.value='';} window.__discoverFilterByValue && window.__discoverFilterByValue();">${escapeHtml(t("filter_clear", "Clear"))}</button>
+            onclick="window.__discoverClearValueFilter && window.__discoverClearValueFilter();">${escapeHtml(t("filter_clear", "Clear"))}</button>
         </div>
+      </section>
+    `;
+  }
+
+  function discoverConfiguredPanel(rows) {
+    if (!rows.length) return "";
+    return `
+      <section class="section">
+        <div class="section-head">
+          <h2>${escapeHtml(t("configured_meters_panel_title", "Configured meters on air"))}</h2>
+          <span id="discover-configured-count" data-default="${rows.length}">${rows.length}</span>
+        </div>
+        <p style="font-size:11px;color:#607a88;margin:0 0 10px;">${escapeHtml(t("configured_meters_panel_sub", "These IDs are already in your options.json. The parallel listen instance keeps their reception stats live."))}</p>
         <div class="table-wrap">
           <table>
             <thead>
@@ -1451,7 +1533,6 @@
                 const seen60mAdj = ageS > 60 * 60 ? 0 : Number(row.seen_60m || 0);
                 const {icon: mIcon, mc} = mediaIcon(row.media || "", row.driver || "");
                 const mediaLabel = t(`media_${mc}`, mc);
-                const unit       = unitFromKey(row.value_key || "");
                 const valueStr   = (row.value && row.value !== "-") ? row.value : "—";
                 // data-value carries the parsed numeric value for the filter.
                 // Non-numeric ("—") becomes empty so the row is hidden when
@@ -1465,8 +1546,7 @@
                     <td>${escapeHtml(row.driver || "-")}</td>
                     <td>${escapeHtml(mediaLabel)}</td>
                     <td>
-                      <span style="font-weight:700;">${escapeHtml(valueStr)}</span>${unit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(unit)}</span>` : ""}
-                      ${row.value_key ? `<div class="mono" style="font-size:10px;color:#4a6070;">${escapeHtml(row.value_key)}</div>` : ""}
+                      ${meterValueCell(row)}
                     </td>
                     <td>${fmtTime(row.last_seen)}</td>
                     <td>${escapeHtml(String(seen15mAdj))}</td>
@@ -1482,7 +1562,7 @@
     `;
   }
 
-  // Live value filter for the discover-configured table.
+  // Live value filter for the Discover page tables.
   // Exposed on window so inline `oninput=` handlers in the rendered HTML
   // can call it without going through the IIFE closure. Operates on DOM
   // directly (display:none on non-matching rows) — no re-render, no focus
@@ -1490,35 +1570,40 @@
   window.__discoverFilterByValue = function () {
     const valInp = document.getElementById("discover-search-value");
     const tolInp = document.getElementById("discover-search-tolerance");
-    const tbody  = document.getElementById("discover-configured-tbody");
-    const countEl = document.getElementById("discover-configured-count");
-    if (!tbody) return;
-    const trs = Array.from(tbody.querySelectorAll("tr"));
-    const total = trs.length;
+    const tables = [
+      {tbody: document.getElementById("discover-configured-tbody"), count: document.getElementById("discover-configured-count"), suffix: ""},
+      {tbody: document.getElementById("discover-candidates-tbody"), count: document.getElementById("discover-candidate-count"), suffix: ` ${t("webui_visible", "visible")}`},
+    ].filter(x => x.tbody);
 
     const searchStr = ((valInp && valInp.value) || "").trim();
-    if (searchStr === "") {
-      trs.forEach(r => { r.style.display = ""; });
-      if (countEl) countEl.textContent = String(total);
-      return;
-    }
     const searchVal = parseFloat(searchStr.replace(",", "."));
     const tolerance = parseFloat(((tolInp && tolInp.value) || "0.05").replace(",", ".")) || 0.05;
-    if (!Number.isFinite(searchVal)) {
-      // Invalid input — show all rows so the user isn't left with an empty table.
-      trs.forEach(r => { r.style.display = ""; });
-      if (countEl) countEl.textContent = String(total);
-      return;
-    }
+    const active = searchStr !== "" && Number.isFinite(searchVal);
 
-    let matched = 0;
-    trs.forEach(r => {
-      const rowVal = parseFloat(r.dataset.value);
-      const match  = Number.isFinite(rowVal) && Math.abs(rowVal - searchVal) <= tolerance;
-      r.style.display = match ? "" : "none";
-      if (match) matched++;
+    tables.forEach(({tbody, count, suffix}) => {
+      const trs = Array.from(tbody.querySelectorAll("tr"));
+      const total = trs.length;
+      if (!active) {
+        trs.forEach(r => { r.style.display = ""; });
+        if (count) count.textContent = count.dataset.default || `${total}${suffix}`;
+        return;
+      }
+
+      let matched = 0;
+      trs.forEach(r => {
+        const rowVal = parseFloat(r.dataset.value);
+        const match  = Number.isFinite(rowVal) && Math.abs(rowVal - searchVal) <= tolerance;
+        r.style.display = match ? "" : "none";
+        if (match) matched++;
+      });
+      if (count) count.textContent = `${matched} / ${total}${suffix}`;
     });
-    if (countEl) countEl.textContent = `${matched} / ${total}`;
+  };
+
+  window.__discoverClearValueFilter = function () {
+    const valInp = document.getElementById("discover-search-value");
+    if (valInp) valInp.value = "";
+    window.__discoverFilterByValue && window.__discoverFilterByValue();
   };
 
   function discoverPage() {
@@ -1527,12 +1612,21 @@
     const filteredCandidates = applyMediaFilter(allCandidates, "type");
     const allMeters = asArray(data.meters);
     const filteredMeters = applyMediaFilter(allMeters, "media");
+    const knownIds = new Set(allMeters.map(m => normalizeMeterId(m.id)));
+    const optMeters = asArray((data.options || {}).meters);
+    const pending = optMeters.filter(m => {
+      const mid = normalizeMeterId(m.meter_id);
+      return mid && !knownIds.has(mid);
+    });
+    const candidateCountLabel = `${filteredCandidates.length}${filteredCandidates.length !== allCandidates.length ? `/${allCandidates.length}` : ""} ${t("webui_visible", "visible")}`;
     return `
+      ${discoverValueFilterBar(filteredMeters.length + filteredCandidates.length)}
       ${discoverConfiguredPanel(filteredMeters)}
+      ${pending.length ? pendingMetersSection(pending, data.analysis || {}) : ""}
       <section class="section">
         <div class="section-head">
           <h2>${escapeHtml(t("detected_candidates", "Detected candidates"))}</h2>
-          <span>${filteredCandidates.length}${filteredCandidates.length !== allCandidates.length ? `/${allCandidates.length}` : ""} ${escapeHtml(t("webui_visible", "visible"))}</span>
+          <span id="discover-candidate-count" data-default="${escapeHtml(candidateCountLabel)}">${escapeHtml(candidateCountLabel)}</span>
         </div>
         ${filterChips()}
         ${candidateTable(filteredCandidates, true)}
@@ -2053,6 +2147,9 @@
       // Fallback when morphdom.min.js failed to load.
       app.innerHTML = newHtml;
     }
+    if (state.route === "discover" && window.__discoverFilterByValue) {
+      window.__discoverFilterByValue();
+    }
   }
 
   document.addEventListener("click", async (event) => {
@@ -2114,9 +2211,8 @@
       const id = target.dataset.id || "";
       if (!id || !window.confirm(t("webui_remove_confirm", "Remove meter {id}?", {id}))) return;
       try {
-        const result = await postApi("remove-meter", {meter_id: id});
-        toast(result.message || t("webui_meter_removed", "Meter removed."));
-        await fetchData(currentLang());
+        await postApi("remove-meter", {meter_id: id});
+        triggerSoftReload(`${t("webui_meter_removed", "Meter removed.")} ${t("reloading_pipeline", "Applying meter changes…")}`);
       } catch (error) {
         toast(error.message, true);
       }
@@ -2203,14 +2299,13 @@
       event.preventDefault();
       const form = new FormData(event.target);
       try {
-        const result = await postApi("add-meter", Object.fromEntries(form.entries()));
+        await postApi("add-meter", Object.fromEntries(form.entries()));
         state.modal = null;
-        toast(result.message || t("webui_meter_added", "Meter added."));
         // Soft pipeline reload so the new meter starts decoding without
         // a full container restart. bridge.sh's watcher picks up the
         // flag within 2 s, restarts the decode pipeline (~2-3 s), and
         // the new meter is live without touching the container.
-        triggerSoftReload();
+        triggerSoftReload(`${t("webui_meter_added", "Meter added.")} ${t("reloading_pipeline", "Applying meter changes…")}`);
       } catch (error) {
         toast(error.message, true);
       }

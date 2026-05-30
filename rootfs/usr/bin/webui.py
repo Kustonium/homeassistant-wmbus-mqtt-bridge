@@ -61,6 +61,7 @@ STATUS_ESP_TELEGRAM_DEVICES_FILE = BASE / "status_esp_telegram_devices.tsv"
 LISTEN_METER_DIR = BASE / "listen" / "etc" / "wmbusmeters.d"
 RELOAD_LISTEN_FLAG = BASE / ".reload_listen"
 RELOAD_PIPELINE_FLAG = BASE / ".reload_pipeline"
+STATUS_PIPELINE_RELOAD_FILE = BASE / "status_pipeline_reload.txt"
 ZERO_AES_KEY = "00000000000000000000000000000000"
 
 
@@ -423,7 +424,7 @@ def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str =
                     # (Supervisor may not have written options.json yet when user adds quickly)
                     write_json_atomic(OPTIONS_JSON, options)
                     key_info = f"key={key[:4]}..." if key else "no key"
-                    msg = f"Meter {meter_id} ({driver}) added via Supervisor API. {key_info}. Restart addon to apply."
+                    msg = f"Meter {meter_id} ({driver}) saved. {key_info}. Reloading pipeline to apply."
                     webui_add_event("ok", msg)
                     return True, msg
                 body = resp.read().decode("utf-8", errors="replace")
@@ -434,7 +435,7 @@ def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str =
     # Fallback: write directly (works outside HA, e.g. plain Docker)
     write_json_atomic(OPTIONS_JSON, options)
     key_info = f"key={key[:4]}..." if key else "no key"
-    msg = f"Meter {meter_id} ({driver}) added to options.json (file only — no SUPERVISOR_TOKEN). {key_info}."
+    msg = f"Meter {meter_id} ({driver}) saved to options.json (file only — no SUPERVISOR_TOKEN). {key_info}. Reloading pipeline to apply."
     webui_add_event("warn", msg)
     return True, msg
 
@@ -501,7 +502,7 @@ def remove_meter_from_options(meter_id: str) -> tuple[bool, str]:
                     write_json_atomic(OPTIONS_JSON, options)
                     # Remove from TSV immediately — bridge.sh won't clean it on its own
                     _remove_meter_from_tsv(meter_id)
-                    msg = f"Meter {meter_id} removed. Restart addon to apply."
+                    msg = f"Meter {meter_id} removed. Reloading pipeline to apply."
                     webui_add_event("ok", msg)
                     return True, msg
                 body = resp.read().decode("utf-8", errors="replace")
@@ -513,7 +514,7 @@ def remove_meter_from_options(meter_id: str) -> tuple[bool, str]:
     # Fallback
     write_json_atomic(OPTIONS_JSON, options)
     _remove_meter_from_tsv(meter_id)
-    msg = f"Meter {meter_id} removed (file only — no SUPERVISOR_TOKEN)."
+    msg = f"Meter {meter_id} removed (file only — no SUPERVISOR_TOKEN). Reloading pipeline to apply."
     webui_add_event("warn", msg)
     return True, msg
 
@@ -587,7 +588,7 @@ def state(include_ignored: bool = False) -> dict:
     options = read_options()
     meters = read_tsv(
         METERS_TSV,
-        ["id", "name", "driver", "media", "value_key", "value", "last_seen", "discovery", "seen_count", "avg_interval_s", "seen_15m", "seen_60m"],
+        ["id", "name", "driver", "media", "value_key", "value", "last_seen", "discovery", "seen_count", "avg_interval_s", "seen_15m", "seen_60m", "value_parts"],
     )
     candidates = read_tsv(
         CANDIDATES_TSV,
@@ -778,16 +779,20 @@ def status_model(data: dict) -> dict:
             # inflated value from stale TSV counters / short elapsed_min at startup.
             raw_per_min = float(esp_total)
 
-    # Pending restart: options.json is newer than status_bridge_start.txt.
-    # status_bridge_start.txt is written ONCE when bridge.sh starts, so its mtime
-    # is stable and reliable. status.json is rewritten every few seconds by bridge.sh,
-    # making opts > status.json comparison unreliable (options.json appears "old"
-    # within seconds of being written).
+    # Pending restart: options.json is newer than the last full bridge start or
+    # explicit soft pipeline reload requested by this UI. status.json is rewritten
+    # constantly, so it is not a reliable "config applied" marker.
     pending_restart = False
     try:
         opts_mtime         = OPTIONS_JSON.stat().st_mtime
         bridge_start_mtime = STATUS_BRIDGE_START_FILE.stat().st_mtime
-        pending_restart    = opts_mtime > bridge_start_mtime
+        reload_mtime = 0.0
+        try:
+            reload_mtime = STATUS_PIPELINE_RELOAD_FILE.stat().st_mtime
+        except OSError:
+            reload_mtime = 0.0
+        applied_mtime = max(bridge_start_mtime, reload_mtime)
+        pending_restart = opts_mtime > applied_mtime
     except OSError:
         pass
 
@@ -1289,6 +1294,7 @@ class Handler(BaseHTTPRequestHandler):
                 flag = BASE / '.reload_pipeline'
                 flag.parent.mkdir(parents=True, exist_ok=True)
                 flag.touch()
+                STATUS_PIPELINE_RELOAD_FILE.write_text(str(datetime.now(timezone.utc).timestamp()), encoding='utf-8')
                 webui_add_event('ok', 'Pipeline soft-reload requested.')
                 self._send_json(200, {"ok": True, "message": "Pipeline reload requested."})
             except Exception as exc:
