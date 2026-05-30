@@ -105,10 +105,10 @@ MEDIA_FILTERS = {"all", "water", "warm_water", "electricity", "heat", "other"}
 
 
 def normalize_meter_id(value: object) -> str:
-    mid = re.sub(r"\s+", "", str(value or "")).lower()
-    if mid.startswith("0x"):
+    mid = re.sub(r"\s+", "", str(value or "")).upper()
+    if mid.startswith("0X"):
         mid = mid[2:]
-    if not mid or not re.fullmatch(r"[0-9a-f]+", mid):
+    if not mid or not re.fullmatch(r"[0-9A-F]+", mid):
         return ""
     return mid.zfill(8) if len(mid) < 8 else mid
 
@@ -1216,7 +1216,8 @@ class Handler(BaseHTTPRequestHandler):
             # preview meter file so the LISTEN instance doesn't keep
             # decoding the same telegrams that DECODE now handles.
             if ok and meter_id:
-                preview_path = LISTEN_METER_DIR / f"meter-preview-{meter_id.lower()}"
+                meter_id_norm = normalize_meter_id(meter_id)
+                preview_path = LISTEN_METER_DIR / f"meter-preview-{meter_id_norm}"
                 try:
                     if preview_path.exists():
                         preview_path.unlink()
@@ -1231,9 +1232,9 @@ class Handler(BaseHTTPRequestHandler):
             # config dir. .reload_listen restarts an already-running LISTEN
             # instance; .reload_pipeline makes bridge.sh start LISTEN when it was
             # previously stopped because there were no configured meters.
-            cid = (params.get('id') or [''])[0].strip().lower()
+            cid = normalize_meter_id((params.get('id') or [''])[0])
             drv = (params.get('driver') or ['auto'])[0].strip()
-            if not re.match(r'^[0-9a-f]{8}$', cid):
+            if not VALID_ID_RE.match(cid):
                 self._send_json(400, {"ok": False, "message": f"Invalid id: {cid}"})
                 return
             try:
@@ -1253,8 +1254,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.endswith('/api/cancel-preview'):
             # Remove meter-preview-<id> file + its TSV row + reload LISTEN.
-            cid = (params.get('id') or [''])[0].strip().lower()
-            if not re.match(r'^[0-9a-f]{8}$', cid):
+            cid = normalize_meter_id((params.get('id') or [''])[0])
+            if not VALID_ID_RE.match(cid):
                 self._send_json(400, {"ok": False, "message": f"Invalid id: {cid}"})
                 return
             try:
@@ -1266,7 +1267,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     if STATUS_CANDIDATE_VALUES_FILE.exists():
                         lines = STATUS_CANDIDATE_VALUES_FILE.read_text(encoding='utf-8', errors='replace').splitlines()
-                        kept = [l for l in lines if not l.lower().startswith(cid + '\t')]
+                        kept = [l for l in lines if normalize_meter_id(l.split('\t')[0]) != cid]
                         STATUS_CANDIDATE_VALUES_FILE.write_text('\n'.join(kept) + ('\n' if kept else ''), encoding='utf-8')
                 except OSError:
                     pass

@@ -123,9 +123,9 @@
   }
 
   function normalizeMeterId(value) {
-    let mid = String(value || "").replace(/\s+/g, "").toLowerCase();
-    if (mid.startsWith("0x")) mid = mid.slice(2);
-    if (!/^[0-9a-f]+$/.test(mid)) return "";
+    let mid = String(value || "").replace(/\s+/g, "").toUpperCase();
+    if (mid.startsWith("0X")) mid = mid.slice(2);
+    if (!/^[0-9A-F]+$/.test(mid)) return "";
     return mid.length < 8 ? mid.padStart(8, "0") : mid;
   }
 
@@ -396,6 +396,17 @@
     });
   }
 
+  function fmtClock(value) {
+    if (!value) return "";
+    const date = new Date(String(value));
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  }
+
   function pill(ok, label) {
     const cls = ok ? "ok" : "bad";
     return `<span class="pill ${cls}"><span class="dot"></span>${escapeHtml(label)}</span>`;
@@ -539,24 +550,21 @@
       .join("")}</nav>`;
   }
 
-  function languageSelect() {
+  function languageSelect(placement = "top") {
     const i18n = state.data?.i18n || {};
     const current = i18n.lang || "en";
     const labels = i18n.labels || {};
     const supported = asArray(i18n.supported).length ? i18n.supported : ["en", "pl", "de", "cs", "sk"];
+    const label = t("language_label", "Language");
     return `
-      <div class="lang-menu">
-        <button class="lang-button" type="button" data-action="toggle-language" aria-label="${escapeHtml(t("webui_language", "Language"))}">
-          <span class="flag flag-${escapeHtml(current)}"></span>
-          <span>${escapeHtml(labels[current] || current.toUpperCase())}</span>
-        </button>
-        <div class="lang-options" hidden>
+      <div class="lang-panel lang-panel-${escapeHtml(placement)}" aria-label="${escapeHtml(label)}">
+        <div class="lang-label">${escapeHtml(label)}</div>
+        <div class="lang-buttons">
           ${supported
             .map(
               (lang) => `
-                <button class="${lang === current ? "active" : ""}" type="button" data-action="language" data-lang="${escapeHtml(lang)}">
+                <button class="lang-choice ${lang === current ? "active" : ""}" type="button" data-action="language" data-lang="${escapeHtml(lang)}" title="${escapeHtml(labels[lang] || lang.toUpperCase())}" aria-label="${escapeHtml(labels[lang] || lang.toUpperCase())}" aria-current="${lang === current ? "true" : "false"}">
                   <span class="flag flag-${escapeHtml(lang)}"></span>
-                  <span>${escapeHtml(labels[lang] || lang)}</span>
                 </button>
               `,
             )
@@ -590,6 +598,7 @@
           </div>
           ${navHtml(false)}
           <div class="sidebar-foot">
+            ${languageSelect("sidebar")}
             <span>${escapeHtml(runtime)}</span>
           </div>
         </aside>
@@ -601,7 +610,7 @@
               <p>${escapeHtml(t("webui_updated", "Updated"))} ${fmtTime(updatedAt)}</p>
             </div>
             <div class="top-actions">
-              ${languageSelect()}
+              ${languageSelect("top")}
               <span class="pill ${state.liveConnected ? "ok" : "muted"}"><span class="dot"></span>${state.liveConnected ? "LIVE" : "POLL"}</span>
               <button class="btn danger" data-action="restart">${escapeHtml(t("webui_restart", "Restart"))}</button>
             </div>
@@ -905,6 +914,12 @@
       : t("pipeline_wmbus_listen_only", "LISTEN");   // single instance, no decode targets yet
     const wmbusOk = !!model.wmbus_ok;
     const wmbusWarn = candidateCount > 0 && meterCount === 0;  // hearing but nothing configured
+    const haPublishedTime = fmtClock(pipe.discovery_published_at || "");
+    const haStatus = model.discovery_ok
+      ? (haPublishedTime
+          ? t("pipeline_ha_published_at", "published at {time}", {time: haPublishedTime})
+          : t("pipeline_ha_published", "published"))
+      : t("pipeline_ha_pending", "pending");
 
     return `
       <section class="section">
@@ -934,7 +949,7 @@
           <button class="${cls("ha")}" data-action="open-workspace" data-ws="ha" type="button">
             <div class="pipeline-icon">🏠</div>
             <div class="pipeline-title">HA</div>
-            <div class="pipeline-meta">${dot(!!model.discovery_ok, meterCount === 0, !!model.discovery_ok)} ${escapeHtml(model.discovery_ok ? t("pipeline_ha_published", "published") : t("pipeline_ha_pending", "pending"))}</div>
+            <div class="pipeline-meta">${dot(!!model.discovery_ok, meterCount === 0, !!model.discovery_ok)} ${escapeHtml(haStatus)}</div>
             <div class="pipeline-sub">${meterCount} ${escapeHtml(t("pipeline_ha_entities_short", "entit."))}</div>
           </button>
         </div>
@@ -1775,6 +1790,16 @@
     return text.slice(0, 140) || (payloadStr || "").slice(0, 80);
   }
 
+  function espDeviceFromTopic(topic) {
+    const parts = String(topic || "").split("/");
+    return parts.length >= 3 && parts[0] === "wmbus" ? parts[1] : "";
+  }
+
+  function filterEspEventsByActiveDevices(rows, activeDevices) {
+    if (!(activeDevices instanceof Set) || activeDevices.size === 0) return rows;
+    return rows.filter(row => activeDevices.has(espDeviceFromTopic(row.topic)));
+  }
+
   function espEventsTable(rows, activeDevices) {
     if (!rows.length) return `<div class="empty">${escapeHtml(t("webui_no_events", "No events yet."))}</div>`;
     // activeDevices may be a Set (new caller in espLogsPage) or a single
@@ -1782,10 +1807,10 @@
     const activeSet = activeDevices instanceof Set
       ? activeDevices
       : (typeof activeDevices === "string" && activeDevices ? new Set([activeDevices]) : new Set());
-    // All distinct devices in the event log. When >1 we dim "inactive" ones
-    // (i.e. devices that have NOT sent a summary in the active window).
-    const allDevices = new Set(rows.map(r => (r.topic || "").split("/")[1]).filter(Boolean));
-    const multiDevice = allDevices.size > 1;
+    const visibleRows = filterEspEventsByActiveDevices(rows, activeSet);
+    if (!visibleRows.length) {
+      return `<div class="empty">${escapeHtml(t("esp_no_active_events", "No events for the active ESP yet."))}</div>`;
+    }
     return `
       <div class="table-wrap">
         <table class="esp-events-tbl">
@@ -1798,20 +1823,19 @@
             </tr>
           </thead>
           <tbody>
-            ${rows.map(row => {
+            ${visibleRows.map(row => {
               const evtype     = row.evtype || "unknown";
               const color      = ESP_COLORS[evtype] || "#607a88";
               const icon       = ESP_ICONS[evtype]  || "·";
               const epoch      = Number(row.epoch || 0);
               const timeStr    = epoch ? new Date(epoch * 1000).toLocaleString() : "-";
               const topic      = (row.topic || "").split("/").slice(-3).join("/");
-              const rowDevice  = (row.topic || "").split("/")[1] || "";
+              const rowDevice  = espDeviceFromTopic(row.topic);
               const isActive   = rowDevice && activeSet.has(rowDevice);
-              const rowOpacity = multiDevice && !isActive ? "opacity:0.45;" : "";
               const activeDot  = isActive ? `<span style="color:#00e5ff;margin-left:3px;font-size:9px;" title="active ESP">●</span>` : "";
               const summary    = espEventSummary(row.payload || "", evtype);
               return `
-                <tr style="${rowOpacity}">
+                <tr>
                   <td style="white-space:nowrap;color:#9eafba;font-size:11px;">${escapeHtml(timeStr)}</td>
                   <td style="white-space:nowrap;">
                     <span style="color:${color};font-weight:700;">${icon} ${escapeHtml(evtype)}</span>
@@ -1882,12 +1906,13 @@
         .filter(d => d && d.active && d.name)
         .map(d => d.name)
     );
+    const visibleEvents = filterEspEventsByActiveDevices(events, activeDevices);
 
     // Badge — one pill per active device. When the list is empty we don't
     // render any badge.
     const activeDeviceBadges = devices
       .filter(d => d && d.active && d.name)
-      .map(d => `<span class="pill ${d.health === "warn" ? "warn" : "ok"}" style="font-size:11px;margin-left:6px;">📡 ${escapeHtml(d.name)}</span>`)
+      .map(d => `<span class="pill ${d.health === "warn" ? "warn" : "ok"}" style="font-size:11px;margin-left:6px;">📡 ${escapeHtml(t("active_filter", "Active"))}: ${escapeHtml(d.name)}</span>`)
       .join("");
 
     // Help notice — shown only when NO active ESP has diag enabled. When
@@ -1910,7 +1935,7 @@
       <section class="section">
         <div class="section-head">
           <h2>${escapeHtml(t("webui_esp_events", "ESP events"))}</h2>
-          <span>${events.length} ${escapeHtml(t("webui_rows", "rows"))}${activeDeviceBadges}</span>
+          <span>${visibleEvents.length} ${escapeHtml(t("webui_rows", "rows"))}${activeDeviceBadges}</span>
         </div>
         ${helpNotice}
         ${espEventsTable(events, activeDevices)}
@@ -2164,16 +2189,8 @@
     if (!target) return;
     const action = target.dataset.action;
 
-    if (action === "toggle-language") {
-      const menu = target.closest(".lang-menu")?.querySelector(".lang-options");
-      if (menu) menu.hidden = !menu.hidden;
-      return;
-    }
-
     if (action === "language") {
       const lang = target.dataset.lang || "";
-      const menu = target.closest(".lang-options");
-      if (menu) menu.hidden = true;
       if (liveSource) {
         liveSource.close();
         liveSource = null;

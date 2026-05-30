@@ -216,59 +216,50 @@ button {
   justify-content: flex-end;
 }
 
-.lang-menu {
-  position: relative;
+.lang-panel {
+  display: grid;
+  gap: 6px;
 }
 
-.lang-button,
-.lang-options button {
+.lang-panel-top {
+  display: none;
+}
+
+.lang-label {
+  color: var(--quiet);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.lang-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.lang-choice {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-height: 34px;
+  justify-content: center;
+  width: 36px;
+  height: 30px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--panel-soft);
   color: var(--text);
-  padding: 6px 10px;
-  font-weight: 720;
+  padding: 0;
+  cursor: pointer;
 }
 
-.lang-button {
-  min-width: 116px;
-  justify-content: flex-start;
+.lang-choice:hover {
+  border-color: var(--accent);
 }
 
-.lang-options {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  z-index: 30;
-  display: grid;
-  gap: 2px;
-  min-width: 150px;
-  padding: 5px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #202226;
-  box-shadow: var(--shadow);
-}
-
-.lang-options[hidden] {
-  display: none;
-}
-
-.lang-options button {
-  width: 100%;
-  border-color: transparent;
-  background: transparent;
-  border-radius: 5px;
-  justify-content: flex-start;
-}
-
-.lang-options button:hover,
-.lang-options button.active {
-  background: #31403e;
+.lang-choice.active {
+  border-color: #197d72;
+  background: #243a37;
 }
 
 .flag {
@@ -988,6 +979,10 @@ tr:last-child td {
   .top-actions {
     width: 100%;
     justify-content: flex-start;
+  }
+
+  .lang-panel-top {
+    display: grid;
   }
 
   .content {
