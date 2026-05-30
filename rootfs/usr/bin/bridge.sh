@@ -59,6 +59,14 @@ STATUS_CANDIDATE_VALUES_FILE="${BASE}/status_candidate_values.tsv"
 STATUS_ESP_TELEGRAM_DEVICES_FILE="${BASE}/status_esp_telegram_devices.tsv"
 SEARCH_MATCHES_FILE="${BASE}/search_matches.tsv"
 SEARCH_STATUS_FILE="${BASE}/search_status.json"
+# discovery_published flag — file-backed (see write_status_json). The raw-counter
+# and decode loops run in SEPARATE subshells, each with its own isolated copy of
+# STATUS_* vars. A shell-var-only flag gets clobbered back to false by the
+# frequent raw-counter writes. The file is the shared source of truth. Cleared
+# once per add-on start so the HA tile shows "pending" until discovery is
+# (re)published this session.
+STATUS_DISCOVERY_FLAG="${BASE}/status_discovery_published.flag"
+rm -f "${STATUS_DISCOVERY_FLAG}" 2>/dev/null || true
 
 STATUS_MQTT_CONNECTED="false"
 STATUS_WMBUSMETERS_RUNNING="false"
@@ -397,7 +405,14 @@ write_status_json() {
   # would overwrite raw_count back to 0.
   STATUS_RAW_COUNT="$(status_read_raw_count)"
   STATUS_LAST_RAW_SEEN="$(status_read_last_raw_seen)"
-  jq -n     --arg updated_at "$(iso_now)"     --arg raw_topic "${RAW_TOPIC:-}"     --arg state_prefix "${STATE_PREFIX:-}"     --arg discovery_prefix "${DISCOVERY_PREFIX:-}"     --arg search_mode "${SEARCH_MODE:-false}"     --arg loglevel "${LOGLEVEL:-}"     --arg mqtt_host "${MQTT_HOST:-}"     --arg mqtt_port "${MQTT_PORT:-}"     --arg mqtt_connected "${STATUS_MQTT_CONNECTED}"     --arg wmbusmeters_running "${STATUS_WMBUSMETERS_RUNNING}"     --arg raw_count "${STATUS_RAW_COUNT}"     --arg decoded_count "${STATUS_DECODED_COUNT}"     --arg discovery_published "${STATUS_DISCOVERY_PUBLISHED}"     --arg discovery_published_at "${STATUS_DISCOVERY_PUBLISHED_AT}"     --arg last_raw_seen "${STATUS_LAST_RAW_SEEN}"     --arg last_decoded_seen "${STATUS_LAST_DECODED_SEEN}"     --arg last_error "${STATUS_LAST_ERROR}"     --arg last_event "${STATUS_LAST_EVENT}"     '{updated_at:$updated_at,
+  # discovery_published is file-backed too (see STATUS_DISCOVERY_FLAG) so the
+  # frequent raw-counter subshell can't clobber a 'true' set by the decode loop.
+  local _disc_pub="${STATUS_DISCOVERY_PUBLISHED}" _disc_at="${STATUS_DISCOVERY_PUBLISHED_AT}"
+  if [[ -s "${STATUS_DISCOVERY_FLAG}" ]]; then
+    _disc_pub="true"
+    _disc_at="$(head -n1 "${STATUS_DISCOVERY_FLAG}" 2>/dev/null || true)"
+  fi
+  jq -n     --arg updated_at "$(iso_now)"     --arg raw_topic "${RAW_TOPIC:-}"     --arg state_prefix "${STATE_PREFIX:-}"     --arg discovery_prefix "${DISCOVERY_PREFIX:-}"     --arg search_mode "${SEARCH_MODE:-false}"     --arg loglevel "${LOGLEVEL:-}"     --arg mqtt_host "${MQTT_HOST:-}"     --arg mqtt_port "${MQTT_PORT:-}"     --arg mqtt_connected "${STATUS_MQTT_CONNECTED}"     --arg wmbusmeters_running "${STATUS_WMBUSMETERS_RUNNING}"     --arg raw_count "${STATUS_RAW_COUNT}"     --arg decoded_count "${STATUS_DECODED_COUNT}"     --arg discovery_published "${_disc_pub}"     --arg discovery_published_at "${_disc_at}"     --arg last_raw_seen "${STATUS_LAST_RAW_SEEN}"     --arg last_decoded_seen "${STATUS_LAST_DECODED_SEEN}"     --arg last_error "${STATUS_LAST_ERROR}"     --arg last_event "${STATUS_LAST_EVENT}"     '{updated_at:$updated_at,
       config:{raw_topic:$raw_topic,state_prefix:$state_prefix,discovery_prefix:$discovery_prefix,search_mode:($search_mode=="true"),loglevel:$loglevel},
       mqtt:{host:$mqtt_host,port:$mqtt_port,connected:($mqtt_connected=="true")},
       pipeline:{raw_count:($raw_count|tonumber? // 0),decoded_count:($decoded_count|tonumber? // 0),wmbusmeters_running:($wmbusmeters_running=="true"),discovery_published:($discovery_published=="true"),discovery_published_at:$discovery_published_at,last_raw_seen:$last_raw_seen,last_decoded_seen:$last_decoded_seen,last_error:$last_error,last_event:$last_event}}'     > "${tmp}" 2>/dev/null && mv "${tmp}" "${STATUS_JSON}" 2>/dev/null || true
@@ -406,6 +421,12 @@ write_status_json() {
 status_mark_discovery_published() {
   STATUS_DISCOVERY_PUBLISHED="true"
   STATUS_DISCOVERY_PUBLISHED_AT="$(iso_now)"
+  # Persist to a file so the flag survives subshell isolation — every other
+  # subshell's write_status_json reads it (see STATUS_DISCOVERY_FLAG). Without
+  # this, the raw-counter subshell (stale STATUS_DISCOVERY_PUBLISHED=false)
+  # overwrites status.json back to "pending" on every raw telegram.
+  printf '%s\n' "${STATUS_DISCOVERY_PUBLISHED_AT}" > "${STATUS_DISCOVERY_FLAG}.tmp" 2>/dev/null \
+    && mv "${STATUS_DISCOVERY_FLAG}.tmp" "${STATUS_DISCOVERY_FLAG}" 2>/dev/null || true
 }
 
 status_raw_seen() {
@@ -2187,10 +2208,18 @@ while true; do
   if [[ "${RESTART_ON_EXIT}" != "true" ]]; then
     exit ${rc}
   fi
-  warn "Pipeline exited (rc=${rc}), restarting in 2s..."
   STATUS_WMBUSMETERS_RUNNING="false"
-  STATUS_LAST_ERROR="pipeline exited rc=${rc}"
-  status_add_event "error" "Pipeline exited rc=${rc}"
+  if [[ "${rc}" -eq 0 ]]; then
+    # rc=0 is a clean, intentional exit — typically a soft pipeline reload
+    # requested via the WebUI (.reload_pipeline) to pick up added/removed
+    # meters. Not an error: the loop just respawns the pipeline.
+    log "Pipeline exited cleanly (rc=0), reloading in 2s..."
+    status_add_event "ok" "Pipeline reloaded"
+  else
+    warn "Pipeline exited (rc=${rc}), restarting in 2s..."
+    STATUS_LAST_ERROR="pipeline exited rc=${rc}"
+    status_add_event "error" "Pipeline exited rc=${rc}"
+  fi
   write_status_json
   sleep 2
   # continue
