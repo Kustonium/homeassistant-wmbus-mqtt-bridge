@@ -432,10 +432,16 @@ def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str =
         except Exception as exc:
             webui_add_event("error", f"Supervisor API options failed: {exc}, falling back to file write")
 
-    # Fallback: write directly (works outside HA, e.g. plain Docker)
+    # Fallback: write directly. Reached EITHER outside HA (no token, plain
+    # Docker) OR when the Supervisor API call failed/raised (e.g. HTTP 400).
+    # Distinguish the two so the log doesn't blame a missing token when the
+    # token was present but Supervisor rejected the options.
     write_json_atomic(OPTIONS_JSON, options)
     key_info = f"key={key[:4]}..." if key else "no key"
-    msg = f"Meter {meter_id} ({driver}) saved to options.json (file only — no SUPERVISOR_TOKEN). {key_info}. Reloading pipeline to apply."
+    if token:
+        msg = f"Meter {meter_id} ({driver}) saved to options.json as a fallback — Supervisor API rejected the change, so it will NOT survive an HA restart. {key_info}. Reloading pipeline to apply."
+    else:
+        msg = f"Meter {meter_id} ({driver}) saved to options.json (file only — no SUPERVISOR_TOKEN). {key_info}. Reloading pipeline to apply."
     webui_add_event("warn", msg)
     return True, msg
 

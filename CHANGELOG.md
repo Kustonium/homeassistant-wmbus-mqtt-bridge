@@ -1,5 +1,4 @@
-## 1.5.14 (2026-05-30)
+## 1.5.15 (2026-05-30)
 
-- fix(bridge): obsluz hex ID licznikow
-- fix(webui): pokaz aktywne ESP i czas publikacji HA
-- fix(webui): ustabilizuj wybor jezyka
+- fix: driver type jako str (koniec HTTP 400), rc=0 nie jako ERROR, uczciwy log fallbacku
+- fix(bridge): kafelek HA wisial na 'oczekuje' mimo opublikowanej discovery
