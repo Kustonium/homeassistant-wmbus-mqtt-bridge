@@ -959,24 +959,24 @@ meter_id_from_raw_hex() {
 
 status_raw_candidate_seen() {
   local raw="$1"
-  local id driver type_line mfr
+  local id mfr
 
   raw="$(echo "${raw}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
   id="$(meter_id_from_raw_hex "${raw}")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
 
-  driver="auto"
-  type_line="wMBus telegram"
-
-  # Diehl/SAP IZAR frames sometimes do not surface as listen candidates from
-  # wmbusmeters, but the link-layer A-field is still enough to show the meter.
+  # This runs on EVERY raw telegram (status_raw_seen) and OVERWRITES the
+  # candidate row. Only register straight from the link-layer A-field for
+  # Diehl/SAP IZAR (mfct 0x304C), which sometimes does NOT surface as a
+  # wmbusmeters listen candidate. For every other manufacturer the normal
+  # listen/decode path already provides the candidate WITH its real
+  # driver/media — emitting a generic "auto / wMBus telegram" row here would
+  # clobber that real classification on every raw telegram (the "auto / inne"
+  # bug).
   mfr="${raw:4:4}"
-  if [[ "${mfr}" == "304C" ]]; then
-    driver="izarv2"
-    type_line="Water meter (0x07)"
-  fi
+  [[ "${mfr}" == "304C" ]] || return 0
 
-  status_candidate_seen "${id}" "${driver}" "${type_line}" "false"
+  status_candidate_seen "${id}" "izarv2" "Water meter (0x07)" "false"
 }
 
 normalize_meter_id() {
@@ -1908,8 +1908,16 @@ status_candidate_seen_from_json() {
   IFS=$'\t' read -r existing_driver existing_type < <(
     awk -F '\t' -v id="${id}" '$1==id {print $2 "\t" $3; exit}' "${STATUS_CANDIDATES_FILE}" 2>/dev/null || true
   )
-  [[ -n "${existing_driver}" ]] && driver="${existing_driver}"
-  [[ -n "${existing_type}" ]] && type_line="${existing_type}"
+  # Decoded JSON wins: .meter is the real driver, .media the medium. Fall back
+  # to a stored value only when the JSON gave none, and ignore the generic
+  # placeholders ("auto" / "wMBus telegram") so a real decode heals a candidate
+  # first registered from the raw A-field.
+  if [[ "${driver}" == "auto" && -n "${existing_driver}" && "${existing_driver}" != "auto" ]]; then
+    driver="${existing_driver}"
+  fi
+  if [[ -z "${type_line}" && -n "${existing_type}" && "${existing_type}" != "wMBus telegram" ]]; then
+    type_line="${existing_type}"
+  fi
   [[ -n "${type_line}" ]] || type_line="decoded"
 
   status_candidate_seen "${id}" "${driver}" "${type_line}"
