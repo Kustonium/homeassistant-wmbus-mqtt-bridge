@@ -52,41 +52,17 @@ jobs:
           echo "Dev version: ${DEV_VER} → stable: ${VERSION}"
           echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Generate changelog from dev commits
+      - name: Copy changelog from dev
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${{ steps.version.outputs.VERSION }}"
 
-          MAJOR="$(echo "${VERSION}" | cut -d. -f1)"
-          MINOR="$(echo "${VERSION}" | cut -d. -f2)"
-          PATCH="$(echo "${VERSION}" | cut -d. -f3)"
-          PREV_BASE="${MAJOR}.${MINOR}.$((PATCH - 1))"
-
-          # Find the last commit in dev where the previous base version was present
-          BOUNDARY_SHA=""
-          while IFS= read -r sha; do
-            if git -C _dev show "${sha}:config.yaml" 2>/dev/null | grep -qE "^version:.*${PREV_BASE}"; then
-              BOUNDARY_SHA="${sha}"
-              break
-            fi
-          done < <(git -C _dev log --pretty=format:"%H" -- config.yaml)
-
-          # Collect meaningful commits since that boundary
-          if [[ -n "${BOUNDARY_SHA}" ]]; then
-            CHANGES="$(git -C _dev log "${BOUNDARY_SHA}..HEAD" --pretty=format:"- %s" \
-              | grep -vE "^- ci\(dev\): |^- chore: bump dev base |^- Merge " || true)"
-          else
-            CHANGES="$(git -C _dev log -50 --pretty=format:"- %s" \
-              | grep -vE "^- ci\(dev\): |^- chore: bump dev base |^- Merge " || true)"
+          if [[ ! -s _dev/CHANGELOG.md ]]; then
+            echo "ERROR: _dev/CHANGELOG.md is missing or empty"
+            exit 1
           fi
 
-          if [[ -z "${CHANGES}" ]]; then
-            CHANGES="- Minor improvements and bug fixes"
-          fi
-
-          DATE="$(date +%Y-%m-%d)"
-          printf "## %s (%s)\n\n%s\n" "${VERSION}" "${DATE}" "${CHANGES}" > CHANGELOG.md
+          cp _dev/CHANGELOG.md CHANGELOG.md
 
           echo "--- CHANGELOG.md ---"
           cat CHANGELOG.md
