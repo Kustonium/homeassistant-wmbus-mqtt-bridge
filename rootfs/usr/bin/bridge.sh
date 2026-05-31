@@ -957,9 +957,27 @@ meter_id_from_raw_hex() {
   echo "${id_le:6:2}${id_le:4:2}${id_le:2:2}${id_le:0:2}"
 }
 
+# Map an OMS device-type byte (A/TYPE, raw[18:20]) to a human label. Covers the
+# device types seen in practice plus a safe fallback — no need for a full
+# 0x00-0xFF table.
+map_device_type() {
+  local dt="${1^^}"
+  case "${dt}" in
+    02) echo "Electricity meter (0x02)" ;;
+    03) echo "Gas meter (0x03)" ;;
+    04) echo "Heat meter (0x04)" ;;
+    06) echo "Warm water meter (0x06)" ;;
+    07) echo "Water meter (0x07)" ;;
+    08) echo "Heat Cost Allocator (0x08)" ;;
+    0C) echo "Heat meter inlet (0x0C)" ;;
+    16) echo "Cold water meter (0x16)" ;;
+    *)  printf 'Unknown meter type (0x%s)' "${dt}" ;;
+  esac
+}
+
 status_raw_candidate_seen() {
   local raw="$1"
-  local id mfr
+  local id mfr dev_type existing_driver
 
   raw="$(echo "${raw}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
   id="$(meter_id_from_raw_hex "${raw}")"
@@ -976,7 +994,29 @@ status_raw_candidate_seen() {
   mfr="${raw:4:4}"
   [[ "${mfr}" == "304C" ]] || return 0
 
-  status_candidate_seen "${id}" "izarv2" "Water meter (0x07)" "false"
+  # Hard priority: a real LISTEN classification beats this RAW fallback. Without
+  # this guard the fallback re-runs on every SAP telegram and keeps clobbering a
+  # driver that LISTEN already resolved (e.g. non-water Diehl flapping
+  # auto -> sharky -> auto). If the candidate already has a concrete driver
+  # (anything other than "auto"), leave the existing row untouched.
+  existing_driver="$(
+    awk -F '\t' -v id="${id}" '
+      $1 == id { print $2; exit }
+    ' "${STATUS_CANDIDATES_FILE}" 2>/dev/null || true
+  )"
+  if [[ -n "${existing_driver}" && "${existing_driver}" != "auto" ]]; then
+    return 0
+  fi
+
+  # A/TYPE = raw[18:20]. Diehl/SAP water (0x07) keeps the izarv2 fallback exactly
+  # as before. Any other device type registers as auto + mapped label so we never
+  # force izarv2 on non-water Diehl and LISTEN can later supply the real driver.
+  dev_type="${raw:18:2}"
+  if [[ "${dev_type}" == "07" ]]; then
+    status_candidate_seen "${id}" "izarv2" "Water meter (0x07)" "false"
+  else
+    status_candidate_seen "${id}" "auto" "$(map_device_type "${dev_type}")" "false"
+  fi
 }
 
 normalize_meter_id() {
