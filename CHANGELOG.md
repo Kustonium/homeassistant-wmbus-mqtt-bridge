@@ -1,3 +1,3 @@
-## 1.5.17 (2026-05-30)
+## 1.5.18 (2026-05-31)
 
-- fix(bridge): kandydaci nie-Diehl pokazywali auto/wMBus telegram/inne zamiast realnego drivera
+- Fix FU-001/FU-002/FU-005 from reference PRD §14; bump 1.5.18-dev
