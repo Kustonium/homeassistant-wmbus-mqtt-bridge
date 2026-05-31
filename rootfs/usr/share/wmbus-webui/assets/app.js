@@ -122,10 +122,22 @@
     return Array.isArray(value) ? value : [];
   }
 
+  function meterIdFromRawHex(hexValue) {
+    const hex = String(hexValue || "").toUpperCase();
+    if (!/^[0-9A-F]+$/.test(hex)) return "";
+    if (hex.length < 22 || hex.length % 2 !== 0) return "";
+    const lengthField = Number.parseInt(hex.slice(0, 2), 16);
+    if (!Number.isFinite(lengthField) || lengthField !== (hex.length / 2) - 1) return "";
+    // wMBus A-field stores the 4-byte meter ID little-endian after L/C/M-field.
+    const idLe = hex.slice(8, 16);
+    return `${idLe.slice(6, 8)}${idLe.slice(4, 6)}${idLe.slice(2, 4)}${idLe.slice(0, 2)}`;
+  }
+
   function normalizeMeterId(value) {
-    let mid = String(value || "").replace(/\s+/g, "").toLowerCase();
-    if (mid.startsWith("0x")) mid = mid.slice(2);
-    if (!/^[0-9a-f]+$/.test(mid)) return "";
+    let mid = String(value || "").replace(/\s+/g, "").toUpperCase();
+    if (mid.startsWith("0X")) mid = mid.slice(2);
+    if (!/^[0-9A-F]+$/.test(mid)) return "";
+    if (mid.length > 8) return meterIdFromRawHex(mid);
     return mid.length < 8 ? mid.padStart(8, "0") : mid;
   }
 
@@ -236,6 +248,69 @@
     return "";
   }
 
+  function parseValueParts(row) {
+    const raw = String(row?.value_parts || "").trim();
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((part) => {
+          const label = String(part?.label || "").trim();
+          const key = String(part?.key || "").trim();
+          const value = Number(part?.value);
+          if (!label || !Number.isFinite(value)) return null;
+          return {label, key, value};
+        })
+        .filter(Boolean);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function formatFlowValue(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return String(value ?? "");
+    return n.toFixed(3).replace(/\.?0+$/, "");
+  }
+
+  function tariffFlowHtml(row) {
+    const key = String(row?.value_key || "").toLowerCase();
+    if (!key.includes("total_energy_consumption")) return "";
+    const parts = parseValueParts(row);
+    if (!parts.length) return "";
+    const totalValue = row?.value && row.value !== "-" ? formatFlowValue(row.value) : "";
+    const totalLabel = t("webui_total", "total");
+    const chips = parts.map((part) => `
+      <span title="${escapeHtml(part.key)}" style="display:inline-flex;align-items:center;gap:3px;padding:2px 5px;border:1px solid #264859;border-radius:4px;background:#0c1820;color:#8fb5c8;">
+        <span style="color:#6f8796;">${escapeHtml(part.label)}</span>
+        <strong style="color:#cfe9f7;font-weight:700;">${escapeHtml(formatFlowValue(part.value))}</strong>
+      </span>
+    `).join(`<span style="color:#4a6070;">+</span>`);
+    return `
+      <div class="mono" style="margin-top:5px;display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:10px;line-height:1.35;">
+        ${chips}
+        <span style="color:#4a6070;">=</span>
+        <span style="display:inline-flex;align-items:center;gap:3px;padding:2px 5px;border:1px solid #1c6b50;border-radius:4px;background:#082017;color:#4df08d;font-weight:700;">
+          <span>${escapeHtml(totalLabel)}</span>
+          ${totalValue ? `<strong style="color:#d8ffe8;font-weight:700;">${escapeHtml(totalValue)}</strong>` : ""}
+        </span>
+      </div>
+    `;
+  }
+
+  function meterValueCell(row) {
+    const unit = unitFromKey(row.value_key || "");
+    const hasValue = !!(row.value && row.value !== "-");
+    const valueStr = hasValue ? row.value : "—";
+    const valueColor = hasValue ? "#4df08d" : "#9eafba";
+    return `
+      <span style="font-weight:700;color:${valueColor};">${escapeHtml(valueStr)}</span>${unit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(unit)}</span>` : ""}
+      ${tariffFlowHtml(row)}
+      ${row.value_key ? `<div class="mono" style="font-size:10px;color:#4a6070;">${escapeHtml(row.value_key)}</div>` : ""}
+    `;
+  }
+
   // ── #5 Signal bars + meter health ────────────────────────────────────────
   function signalBars(seen15m) {
     const n = seen15m >= 10 ? 4 : seen15m >= 5 ? 3 : seen15m >= 2 ? 2 : seen15m > 0 ? 1 : 0;
@@ -277,11 +352,10 @@
     return `~${(n / 3600).toFixed(1)} h`;
   }
 
-  // ── #7 Pending-restart banner ─────────────────────────────────────────────
-  // Shown when:
-  //   a) options.json is newer than status.json (mtime check), OR
-  //   b) options.json contains meters that are not yet decoded (reliable signal
-  //      even when bridge.sh frequently re-writes status.json resetting the mtime flag).
+  // ── #7 Pending meter banner ───────────────────────────────────────────────
+  // Shows a restart action only when the backend explicitly says the running
+  // bridge has not applied current options. Otherwise pending meters are simply
+  // waiting for their first decoded telegram after the soft reload.
   function pendingRestartBanner() {
     const data  = state.data || {};
     const model = data.model || {};
@@ -293,17 +367,23 @@
       return mid && !decodedIds.has(mid);
     }).length;
 
-    if (!model.pending_restart && pendingCount === 0) return "";
+    const needsRestart = !!model.pending_restart;
+    if (!needsRestart && pendingCount === 0) return "";
 
-    const detail = t("pending_text", "These meters are saved in options.json but the add-on hasn't picked them up yet. Restart the add-on to apply.");
+    const title = needsRestart
+      ? t("pending_title", "Pending changes — waiting for restart")
+      : t("waiting_for_telegrams_title", "Waiting for first telegram");
+    const detail = needsRestart
+      ? t("pending_text", "These meters are saved in options.json but the add-on hasn't picked them up yet. Restart the add-on to apply.")
+      : t("waiting_for_telegrams_text", "These meters are configured but haven't sent a telegram yet.");
 
     return `
       <div class="notice warn" style="margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
         <div>
-          <strong>⚠ ${escapeHtml(t("pending_title", "Pending changes — waiting for restart"))}</strong>
+          <strong>${escapeHtml(title)}</strong>
           <div style="font-size:11px;color:#b0a060;margin-top:3px;">${escapeHtml(detail)}</div>
         </div>
-        <button class="btn warn" data-action="restart" style="white-space:nowrap;flex-shrink:0;">${escapeHtml(t("restart_addon", "Restart add-on"))}</button>
+        ${needsRestart ? `<button class="btn warn" data-action="restart" style="white-space:nowrap;flex-shrink:0;">${escapeHtml(t("restart_addon", "Restart add-on"))}</button>` : ""}
       </div>
     `;
   }
@@ -322,6 +402,17 @@
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  }
+
+  function fmtClock(value) {
+    if (!value) return "";
+    const date = new Date(String(value));
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleTimeString(undefined, {
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
@@ -347,6 +438,11 @@
       state.toast = null;
       render();
     }, 4800);
+  }
+
+  function clearToast() {
+    state.toast = null;
+    window.clearTimeout(toast.timer);
   }
 
   function currentLang() {
@@ -395,8 +491,10 @@
   // newly added/removed meters take effect WITHOUT a full container restart.
   // The webui process and MQTT broker connection stay alive — only the
   // decode wmbusmeters is recycled.
-  function triggerSoftReload() {
+  function triggerSoftReload(message = "") {
     state.softReloading = true;
+    state.softReloadingText = message || t("reloading_pipeline", "Applying meter changes…");
+    clearToast();
     render();
     (async () => {
       try {
@@ -404,9 +502,11 @@
       } catch (_) {
         // Endpoint failed — fall back to a normal refresh after a short wait.
       }
+      await fetchData(currentLang());
       // Give bridge.sh ~5 s: 2 s flag poll + 2-3 s decode pipeline respawn.
       await new Promise(r => setTimeout(r, 5000));
       state.softReloading = false;
+      state.softReloadingText = "";
       await fetchData(currentLang());
     })();
   }
@@ -462,24 +562,21 @@
       .join("")}</nav>`;
   }
 
-  function languageSelect() {
+  function languageSelect(placement = "top") {
     const i18n = state.data?.i18n || {};
     const current = i18n.lang || "en";
     const labels = i18n.labels || {};
     const supported = asArray(i18n.supported).length ? i18n.supported : ["en", "pl", "de", "cs", "sk"];
+    const label = t("language_label", "Language");
     return `
-      <div class="lang-menu">
-        <button class="lang-button" type="button" data-action="toggle-language" aria-label="${escapeHtml(t("webui_language", "Language"))}">
-          <span class="flag flag-${escapeHtml(current)}"></span>
-          <span>${escapeHtml(labels[current] || current.toUpperCase())}</span>
-        </button>
-        <div class="lang-options" hidden>
+      <div class="lang-panel lang-panel-${escapeHtml(placement)}" aria-label="${escapeHtml(label)}">
+        <div class="lang-label">${escapeHtml(label)}</div>
+        <div class="lang-buttons">
           ${supported
             .map(
               (lang) => `
-                <button class="${lang === current ? "active" : ""}" type="button" data-action="language" data-lang="${escapeHtml(lang)}">
+                <button class="lang-choice ${lang === current ? "active" : ""}" type="button" data-action="language" data-lang="${escapeHtml(lang)}" title="${escapeHtml(labels[lang] || lang.toUpperCase())}" aria-label="${escapeHtml(labels[lang] || lang.toUpperCase())}" aria-current="${lang === current ? "true" : "false"}">
                   <span class="flag flag-${escapeHtml(lang)}"></span>
-                  <span>${escapeHtml(labels[lang] || lang)}</span>
                 </button>
               `,
             )
@@ -513,6 +610,7 @@
           </div>
           ${navHtml(false)}
           <div class="sidebar-foot">
+            ${languageSelect("sidebar")}
             <span>${escapeHtml(runtime)}</span>
           </div>
         </aside>
@@ -524,7 +622,7 @@
               <p>${escapeHtml(t("webui_updated", "Updated"))} ${fmtTime(updatedAt)}</p>
             </div>
             <div class="top-actions">
-              ${languageSelect()}
+              ${languageSelect("top")}
               <span class="pill ${state.liveConnected ? "ok" : "muted"}"><span class="dot"></span>${state.liveConnected ? "LIVE" : "POLL"}</span>
               <button class="btn danger" data-action="restart">${escapeHtml(t("webui_restart", "Restart"))}</button>
             </div>
@@ -544,7 +642,7 @@
       ${state.softReloading ? `
         <div style="position:fixed;right:18px;bottom:18px;background:#1d2a18;color:#a3d870;border:1px solid #4a7332;padding:10px 16px;border-radius:8px;z-index:35;display:flex;align-items:center;gap:10px;font-size:13px;">
           <span style="font-size:18px;">⏳</span>
-          <span>${escapeHtml(t("reloading_pipeline", "Loading new meter…"))}</span>
+          <span>${escapeHtml(state.softReloadingText || t("reloading_pipeline", "Applying meter changes…"))}</span>
         </div>` : ""}
       ${state.toast ? `<div class="toast ${state.toast.isError ? "error" : ""}">${escapeHtml(state.toast.message)}</div>` : ""}
     `;
@@ -747,7 +845,7 @@
     const pipe = model.pipe || {};
     const mqtt = model.mqtt || {};
     const esp  = (data.esp || {}).diag || {};
-    const espActive = model.rate_source === "esp";
+    const espRateFromDiag = model.rate_source === "esp";
     const cur  = Number(model.rate_current_min || 0);
     const rateLabel = `${cur}/min`;
 
@@ -765,27 +863,34 @@
     const decodedCount   = Number(model.decoded_count || 0);
     const hasLiveRate    = cur > 0;
 
-    // Multi-ESP support: webui.py exposes esp.devices[] (each entry carries
-    // an `active` flag set from wmbus/+/telegram, or from a fresh
-    // wmbus/+/diag/summary heartbeat). devices_count holds the ACTIVE count.
+    // Multi-ESP support: webui.py exposes esp.devices[] with status based on
+    // the primary wmbus/+/telegram topic: online <=2 min, warn <=5 min,
+    // offline after that. diag/summary is displayed as context only.
     const espDevicesAll    = asArray((data.esp || {}).devices);
     const espActiveDevices = espDevicesAll.filter(d => d && d.active);
+    const espOnlineDevices = espDevicesAll.filter(d => d && d.health === "online");
+    const espWarnDevices   = espDevicesAll.filter(d => d && d.health === "warn");
     const espCount         = Number((data.esp || {}).devices_count || espActiveDevices.length || 0);
     const isMultiEsp       = espCount > 1;
     const espTitle         = isMultiEsp ? `${espCount} × ESP` : "ESP";
     const raw15m           = Number(model.raw_15m || 0);
-    const espOk            = espActive || espActiveDevices.length > 0 || (esp && Object.keys(esp).length > 0)
-                          || (raw15m > 0 && espDevicesAll.length > 0);
+    const espOnline        = espOnlineDevices.length > 0;
+    const espWarn          = !espOnline && espWarnDevices.length > 0;
+    const espSeen          = espDevicesAll.length > 0 || (esp && Object.keys(esp).length > 0) || raw15m > 0;
     const espRssi          = esp.avg_ok_rssi ? `${esp.avg_ok_rssi} dBm` : "—";
 
     // Status text + rate. The rate comes from model.rate_current_min which
     // status_model() already populates either from ESP's diag.total (when
     // rate_source=="esp") or from bridge.sh's own per-minute counter.
     const rateSuffix = cur > 0 ? ` · ${cur}/min` : "";
-    const espStatus = espActive
-      ? t("pipeline_esp_active", "active") + rateSuffix
-      : (espOk ? t("pipeline_esp_seen", "seen") + rateSuffix
-                : t("pipeline_esp_none", "n/a"));
+    let espStatus = t("pipeline_esp_none", "n/a");
+    if (espOnline) {
+      espStatus = t("pipeline_esp_active", "active") + rateSuffix;
+    } else if (espWarn) {
+      espStatus = t("silent_label", "silent") + rateSuffix;
+    } else if (espSeen) {
+      espStatus = t("offline_label", "offline") + rateSuffix;
+    }
 
     // Source topic — the device segment of the primary (most recent) ESP.
     // Falls back to esp.diag._topic if events are empty (e.g. fresh start
@@ -821,6 +926,12 @@
       : t("pipeline_wmbus_listen_only", "LISTEN");   // single instance, no decode targets yet
     const wmbusOk = !!model.wmbus_ok;
     const wmbusWarn = candidateCount > 0 && meterCount === 0;  // hearing but nothing configured
+    const haPublishedTime = fmtClock(pipe.discovery_published_at || "");
+    const haStatus = model.discovery_ok
+      ? (haPublishedTime
+          ? t("pipeline_ha_published_at", "published at {time}", {time: haPublishedTime})
+          : t("pipeline_ha_published", "published"))
+      : t("pipeline_ha_pending", "pending");
 
     return `
       <section class="section">
@@ -828,7 +939,7 @@
           <button class="${cls("esp")}" data-action="open-workspace" data-ws="esp" type="button">
             <div class="pipeline-icon">📡</div>
             <div class="pipeline-title">${escapeHtml(espTitle)}</div>
-            <div class="pipeline-meta">${dot(espOk, false, espActive && hasLiveRate)} ${escapeHtml(espStatus)}</div>
+            <div class="pipeline-meta">${dot(espOnline, espWarn, espOnline && hasLiveRate && espRateFromDiag)} ${escapeHtml(espStatus)}</div>
             <div class="pipeline-sub">${escapeHtml(espVisibleLine)}</div>
             <div class="pipeline-sub pipeline-device" title="${escapeHtml(primaryTopic || "")}">${escapeHtml(espDeviceLine)}</div>
           </button>
@@ -850,7 +961,7 @@
           <button class="${cls("ha")}" data-action="open-workspace" data-ws="ha" type="button">
             <div class="pipeline-icon">🏠</div>
             <div class="pipeline-title">HA</div>
-            <div class="pipeline-meta">${dot(!!model.discovery_ok, meterCount === 0, !!model.discovery_ok)} ${escapeHtml(model.discovery_ok ? t("pipeline_ha_published", "published") : t("pipeline_ha_pending", "pending"))}</div>
+            <div class="pipeline-meta">${dot(!!model.discovery_ok, meterCount === 0, !!model.discovery_ok)} ${escapeHtml(haStatus)}</div>
             <div class="pipeline-sub">${meterCount} ${escapeHtml(t("pipeline_ha_entities_short", "entit."))}</div>
           </button>
         </div>
@@ -871,14 +982,11 @@
     let body = "";
     if (state.workspace === "esp") {
       const esp = data.esp || {};
-      const diag = esp.diag || {};
       const sug  = esp.suggestion || {};
       const devices = asArray(esp.devices);
-      const hasDiag = Object.keys(diag).length > 0;
       // Multi-device table — one row per ESP receiver heard by the bridge.
-      // Active devices first (green dot), then stale "ghost" entries from
-      // MQTT retained messages or past sessions (dimmed grey). Counter in
-      // the header reads "N active / M total" when there are stale entries.
+      // Green = telegram heard within 2 minutes, orange = telegram silence
+      // between 2 and 5 minutes, red = no telegram for more than 5 minutes.
       const activeDevs = devices.filter(d => d && d.active);
       const totalDevs  = devices.length;
       const counter    = (totalDevs > activeDevs.length)
@@ -904,11 +1012,15 @@
               ${devices.map(d => {
                 const epoch = Number(d.last_seen_epoch || 0);
                 const when = epoch > 0 ? new Date(epoch * 1000).toLocaleString() : "—";
-                const isAct = !!d.active;
-                const rowStyle = isAct ? "" : "opacity:0.55;";
-                const statusCell = isAct
-                  ? `<span class="dot ok live" style="margin-right:5px;"></span>${escapeHtml(t("pipeline_esp_active", "active"))}`
-                  : `<span class="dot" style="margin-right:5px;"></span>${escapeHtml(t("workspace_esp_device_stale", "stale (retained?)"))}`;
+                const health = String(d.health || (d.active ? "online" : "offline"));
+                const isOffline = health === "offline";
+                const rowStyle = isOffline ? "opacity:0.65;" : "";
+                const statusMeta = health === "online"
+                  ? {cls: "ok live", label: t("pipeline_esp_active", "active")}
+                  : (health === "warn"
+                      ? {cls: "warn", label: t("silent_label", "silent")}
+                      : {cls: "bad", label: t("offline_label", "offline")});
+                const statusCell = `<span class="dot ${statusMeta.cls}" style="margin-right:5px;"></span>${escapeHtml(statusMeta.label)}`;
                 const tgCount = Number(d.telegram_count || 0);
                 const tgCell  = tgCount > 0 ? String(tgCount) : "—";
                 const diagCell = d.has_diag
@@ -931,8 +1043,6 @@
       body = `
         <h3>📡 ESP — ${escapeHtml(t("workspace_esp_title", "ESP diagnostics"))}</h3>
         ${devicesTable}
-        <h4 style="margin-top:14px;">${escapeHtml(t("workspace_esp_latest_diag", "Latest diagnostic summary"))}</h4>
-        ${hasDiag ? objectKv(diag) : `<div class="empty">${escapeHtml(t("webui_no_diagnostics", "No diagnostic summary."))}</div>`}
         ${Object.keys(sug).length ? `<h4 style="margin-top:14px;">💡 ${escapeHtml(t("webui_suggestion", "Suggestion"))}</h4>${objectKv(sug)}` : ""}
       `;
     } else if (state.workspace === "mqtt") {
@@ -1192,8 +1302,6 @@
                 const seen15m = ageS > 15 * 60 ? 0 : Number(row.seen_15m || 0);
                 const seen60m = ageS > 60 * 60 ? 0 : Number(row.seen_60m || 0);
                 const {label: statusLabel, color: statusColor} = meterStatusLabel(seen15m, seen60m);
-                const unit    = unitFromKey(row.value_key || "");
-                const valueStr = (row.value && row.value !== "-") ? row.value : "—";
                 const {icon: mIcon} = mediaIcon(row.media || "", row.driver || "");
                 return `
                   <tr>
@@ -1201,8 +1309,7 @@
                     <td><span style="margin-right:5px;font-size:15px;vertical-align:middle;">${mIcon}</span>${escapeHtml(row.name || row.id || "-")}</td>
                     <td>${escapeHtml(row.driver || "-")}</td>
                     <td>
-                      <span>${escapeHtml(valueStr)}${unit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(unit)}</span>` : ""}</span>
-                      ${row.value_key ? `<div class="mono" style="font-size:10px;color:#4a6070;">${escapeHtml(row.value_key)}</div>` : ""}
+                      ${meterValueCell(row)}
                     </td>
                     <td>${fmtTime(row.last_seen)}</td>
                     <td style="white-space:nowrap;">
@@ -1251,7 +1358,7 @@
               ${withActions ? "<th></th>" : ""}
             </tr>
           </thead>
-          <tbody>
+          <tbody id="discover-candidates-tbody">
             ${rows
               .map((row) => {
                 const id     = row.id || "";
@@ -1397,21 +1504,16 @@
   // The value column lets the user identify which configured ID is which
   // physical meter by just reading the live counter.
   //
-  // The "filter by value" input above the table replaces the legacy SEARCH-mode
-  // workflow: instead of typing an expected value blind, the user sees all
-  // live values and types a target — matching rows stay visible, others hide.
-  // Filtering is pure client-side DOM (rows have data-value); no re-render,
-  // no focus loss on every keystroke.
-  function discoverConfiguredPanel(rows) {
-    if (!rows.length) return "";
+  // The "filter by value" bar on the Discover page replaces the legacy
+  // SEARCH-mode workflow: instead of typing an expected value blind, the user
+  // sees all live values and types a target — matching rows stay visible,
+  // others hide. Filtering is pure client-side DOM (rows have data-value);
+  // no re-render, no focus loss on every keystroke.
+  function discoverValueFilterBar(rowCount) {
+    if (!rowCount) return "";
     return `
       <section class="section">
-        <div class="section-head">
-          <h2>${escapeHtml(t("configured_meters_panel_title", "Configured meters on air"))}</h2>
-          <span id="discover-configured-count">${rows.length}</span>
-        </div>
-        <p style="font-size:11px;color:#607a88;margin:0 0 10px;">${escapeHtml(t("configured_meters_panel_sub", "These IDs are already in your options.json. The parallel listen instance keeps their reception stats live."))}</p>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;padding:8px 12px;background:#0e1a23;border:1px solid #1e3040;border-radius:6px;">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 12px;background:#0e1a23;border:1px solid #1e3040;border-radius:6px;">
           <label for="discover-search-value" style="font-size:12px;color:#9eafba;">${escapeHtml(t("filter_by_value", "Filter by value"))}:</label>
           <input id="discover-search-value" type="text" inputmode="decimal" placeholder="e.g. 23.91"
             style="background:#0a1217;border:1px solid #2a4555;color:#e8f1f8;border-radius:4px;padding:5px 8px;font-size:12px;width:120px;font-family:monospace;"
@@ -1422,8 +1524,21 @@
             oninput="window.__discoverFilterByValue && window.__discoverFilterByValue()">
           <button type="button" class="btn"
             style="font-size:11px;padding:4px 10px;"
-            onclick="var v=document.getElementById('discover-search-value'); if(v){v.value='';} window.__discoverFilterByValue && window.__discoverFilterByValue();">${escapeHtml(t("filter_clear", "Clear"))}</button>
+            onclick="window.__discoverClearValueFilter && window.__discoverClearValueFilter();">${escapeHtml(t("filter_clear", "Clear"))}</button>
         </div>
+      </section>
+    `;
+  }
+
+  function discoverConfiguredPanel(rows) {
+    if (!rows.length) return "";
+    return `
+      <section class="section">
+        <div class="section-head">
+          <h2>${escapeHtml(t("configured_meters_panel_title", "Configured meters on air"))}</h2>
+          <span id="discover-configured-count" data-default="${rows.length}">${rows.length}</span>
+        </div>
+        <p style="font-size:11px;color:#607a88;margin:0 0 10px;">${escapeHtml(t("configured_meters_panel_sub", "These IDs are already in your options.json. The parallel listen instance keeps their reception stats live."))}</p>
         <div class="table-wrap">
           <table>
             <thead>
@@ -1451,7 +1566,6 @@
                 const seen60mAdj = ageS > 60 * 60 ? 0 : Number(row.seen_60m || 0);
                 const {icon: mIcon, mc} = mediaIcon(row.media || "", row.driver || "");
                 const mediaLabel = t(`media_${mc}`, mc);
-                const unit       = unitFromKey(row.value_key || "");
                 const valueStr   = (row.value && row.value !== "-") ? row.value : "—";
                 // data-value carries the parsed numeric value for the filter.
                 // Non-numeric ("—") becomes empty so the row is hidden when
@@ -1465,8 +1579,7 @@
                     <td>${escapeHtml(row.driver || "-")}</td>
                     <td>${escapeHtml(mediaLabel)}</td>
                     <td>
-                      <span style="font-weight:700;">${escapeHtml(valueStr)}</span>${unit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(unit)}</span>` : ""}
-                      ${row.value_key ? `<div class="mono" style="font-size:10px;color:#4a6070;">${escapeHtml(row.value_key)}</div>` : ""}
+                      ${meterValueCell(row)}
                     </td>
                     <td>${fmtTime(row.last_seen)}</td>
                     <td>${escapeHtml(String(seen15mAdj))}</td>
@@ -1482,7 +1595,7 @@
     `;
   }
 
-  // Live value filter for the discover-configured table.
+  // Live value filter for the Discover page tables.
   // Exposed on window so inline `oninput=` handlers in the rendered HTML
   // can call it without going through the IIFE closure. Operates on DOM
   // directly (display:none on non-matching rows) — no re-render, no focus
@@ -1490,35 +1603,40 @@
   window.__discoverFilterByValue = function () {
     const valInp = document.getElementById("discover-search-value");
     const tolInp = document.getElementById("discover-search-tolerance");
-    const tbody  = document.getElementById("discover-configured-tbody");
-    const countEl = document.getElementById("discover-configured-count");
-    if (!tbody) return;
-    const trs = Array.from(tbody.querySelectorAll("tr"));
-    const total = trs.length;
+    const tables = [
+      {tbody: document.getElementById("discover-configured-tbody"), count: document.getElementById("discover-configured-count"), suffix: ""},
+      {tbody: document.getElementById("discover-candidates-tbody"), count: document.getElementById("discover-candidate-count"), suffix: ` ${t("webui_visible", "visible")}`},
+    ].filter(x => x.tbody);
 
     const searchStr = ((valInp && valInp.value) || "").trim();
-    if (searchStr === "") {
-      trs.forEach(r => { r.style.display = ""; });
-      if (countEl) countEl.textContent = String(total);
-      return;
-    }
     const searchVal = parseFloat(searchStr.replace(",", "."));
     const tolerance = parseFloat(((tolInp && tolInp.value) || "0.05").replace(",", ".")) || 0.05;
-    if (!Number.isFinite(searchVal)) {
-      // Invalid input — show all rows so the user isn't left with an empty table.
-      trs.forEach(r => { r.style.display = ""; });
-      if (countEl) countEl.textContent = String(total);
-      return;
-    }
+    const active = searchStr !== "" && Number.isFinite(searchVal);
 
-    let matched = 0;
-    trs.forEach(r => {
-      const rowVal = parseFloat(r.dataset.value);
-      const match  = Number.isFinite(rowVal) && Math.abs(rowVal - searchVal) <= tolerance;
-      r.style.display = match ? "" : "none";
-      if (match) matched++;
+    tables.forEach(({tbody, count, suffix}) => {
+      const trs = Array.from(tbody.querySelectorAll("tr"));
+      const total = trs.length;
+      if (!active) {
+        trs.forEach(r => { r.style.display = ""; });
+        if (count) count.textContent = count.dataset.default || `${total}${suffix}`;
+        return;
+      }
+
+      let matched = 0;
+      trs.forEach(r => {
+        const rowVal = parseFloat(r.dataset.value);
+        const match  = Number.isFinite(rowVal) && Math.abs(rowVal - searchVal) <= tolerance;
+        r.style.display = match ? "" : "none";
+        if (match) matched++;
+      });
+      if (count) count.textContent = `${matched} / ${total}${suffix}`;
     });
-    if (countEl) countEl.textContent = `${matched} / ${total}`;
+  };
+
+  window.__discoverClearValueFilter = function () {
+    const valInp = document.getElementById("discover-search-value");
+    if (valInp) valInp.value = "";
+    window.__discoverFilterByValue && window.__discoverFilterByValue();
   };
 
   function discoverPage() {
@@ -1527,12 +1645,21 @@
     const filteredCandidates = applyMediaFilter(allCandidates, "type");
     const allMeters = asArray(data.meters);
     const filteredMeters = applyMediaFilter(allMeters, "media");
+    const knownIds = new Set(allMeters.map(m => normalizeMeterId(m.id)));
+    const optMeters = asArray((data.options || {}).meters);
+    const pending = optMeters.filter(m => {
+      const mid = normalizeMeterId(m.meter_id);
+      return mid && !knownIds.has(mid);
+    });
+    const candidateCountLabel = `${filteredCandidates.length}${filteredCandidates.length !== allCandidates.length ? `/${allCandidates.length}` : ""} ${t("webui_visible", "visible")}`;
     return `
+      ${discoverValueFilterBar(filteredMeters.length + filteredCandidates.length)}
       ${discoverConfiguredPanel(filteredMeters)}
+      ${pending.length ? pendingMetersSection(pending, data.analysis || {}) : ""}
       <section class="section">
         <div class="section-head">
           <h2>${escapeHtml(t("detected_candidates", "Detected candidates"))}</h2>
-          <span>${filteredCandidates.length}${filteredCandidates.length !== allCandidates.length ? `/${allCandidates.length}` : ""} ${escapeHtml(t("webui_visible", "visible"))}</span>
+          <span id="discover-candidate-count" data-default="${escapeHtml(candidateCountLabel)}">${escapeHtml(candidateCountLabel)}</span>
         </div>
         ${filterChips()}
         ${candidateTable(filteredCandidates, true)}
@@ -1675,6 +1802,16 @@
     return text.slice(0, 140) || (payloadStr || "").slice(0, 80);
   }
 
+  function espDeviceFromTopic(topic) {
+    const parts = String(topic || "").split("/");
+    return parts.length >= 3 && parts[0] === "wmbus" ? parts[1] : "";
+  }
+
+  function filterEspEventsByActiveDevices(rows, activeDevices) {
+    if (!(activeDevices instanceof Set) || activeDevices.size === 0) return rows;
+    return rows.filter(row => activeDevices.has(espDeviceFromTopic(row.topic)));
+  }
+
   function espEventsTable(rows, activeDevices) {
     if (!rows.length) return `<div class="empty">${escapeHtml(t("webui_no_events", "No events yet."))}</div>`;
     // activeDevices may be a Set (new caller in espLogsPage) or a single
@@ -1682,10 +1819,10 @@
     const activeSet = activeDevices instanceof Set
       ? activeDevices
       : (typeof activeDevices === "string" && activeDevices ? new Set([activeDevices]) : new Set());
-    // All distinct devices in the event log. When >1 we dim "inactive" ones
-    // (i.e. devices that have NOT sent a summary in the active window).
-    const allDevices = new Set(rows.map(r => (r.topic || "").split("/")[1]).filter(Boolean));
-    const multiDevice = allDevices.size > 1;
+    const visibleRows = filterEspEventsByActiveDevices(rows, activeSet);
+    if (!visibleRows.length) {
+      return `<div class="empty">${escapeHtml(t("esp_no_active_events", "No events for the active ESP yet."))}</div>`;
+    }
     return `
       <div class="table-wrap">
         <table class="esp-events-tbl">
@@ -1698,20 +1835,19 @@
             </tr>
           </thead>
           <tbody>
-            ${rows.map(row => {
+            ${visibleRows.map(row => {
               const evtype     = row.evtype || "unknown";
               const color      = ESP_COLORS[evtype] || "#607a88";
               const icon       = ESP_ICONS[evtype]  || "·";
               const epoch      = Number(row.epoch || 0);
               const timeStr    = epoch ? new Date(epoch * 1000).toLocaleString() : "-";
               const topic      = (row.topic || "").split("/").slice(-3).join("/");
-              const rowDevice  = (row.topic || "").split("/")[1] || "";
+              const rowDevice  = espDeviceFromTopic(row.topic);
               const isActive   = rowDevice && activeSet.has(rowDevice);
-              const rowOpacity = multiDevice && !isActive ? "opacity:0.45;" : "";
               const activeDot  = isActive ? `<span style="color:#00e5ff;margin-left:3px;font-size:9px;" title="active ESP">●</span>` : "";
               const summary    = espEventSummary(row.payload || "", evtype);
               return `
-                <tr style="${rowOpacity}">
+                <tr>
                   <td style="white-space:nowrap;color:#9eafba;font-size:11px;">${escapeHtml(timeStr)}</td>
                   <td style="white-space:nowrap;">
                     <span style="color:${color};font-weight:700;">${icon} ${escapeHtml(evtype)}</span>
@@ -1773,20 +1909,22 @@
     const suggestion = esp.suggestion || {};
     const events = asArray(esp.events);
 
-    // Use the backend's single source of truth for ESP activity. It combines
-    // wmbus/+/telegram with the optional wmbus/+/diag/summary heartbeat; boot
-    // and other diag events remain log-only and do not mark a device active.
+    // Use the backend's single source of truth for ESP activity. It is based
+    // on wmbus/+/telegram freshness; diag/summary and other diag events remain
+    // log-only context and do not keep a device active.
     const devices = asArray(esp.devices);
     const activeDevices = new Set(
       devices
         .filter(d => d && d.active && d.name)
         .map(d => d.name)
     );
+    const visibleEvents = filterEspEventsByActiveDevices(events, activeDevices);
 
     // Badge — one pill per active device. When the list is empty we don't
     // render any badge.
-    const activeDeviceBadges = [...activeDevices]
-      .map(dev => `<span class="pill ok" style="font-size:11px;margin-left:6px;">📡 ${escapeHtml(dev)}</span>`)
+    const activeDeviceBadges = devices
+      .filter(d => d && d.active && d.name)
+      .map(d => `<span class="pill ${d.health === "warn" ? "warn" : "ok"}" style="font-size:11px;margin-left:6px;">📡 ${escapeHtml(t("active_filter", "Active"))}: ${escapeHtml(d.name)}</span>`)
       .join("");
 
     // Help notice — shown only when NO active ESP has diag enabled. When
@@ -1809,7 +1947,7 @@
       <section class="section">
         <div class="section-head">
           <h2>${escapeHtml(t("webui_esp_events", "ESP events"))}</h2>
-          <span>${events.length} ${escapeHtml(t("webui_rows", "rows"))}${activeDeviceBadges}</span>
+          <span>${visibleEvents.length} ${escapeHtml(t("webui_rows", "rows"))}${activeDeviceBadges}</span>
         </div>
         ${helpNotice}
         ${espEventsTable(events, activeDevices)}
@@ -1966,7 +2104,7 @@
               <div class="form-grid" style="grid-template-columns:1fr">
                 <div class="field">
                   <label for="meter-id">${escapeHtml(t("meter_id", "Meter ID"))}</label>
-                  <input id="meter-id" name="meter_id" value="${escapeHtml(modal.id || "")}" required pattern="[0-9A-Fa-f]{8}">
+                  <input id="meter-id" name="meter_id" value="${escapeHtml(modal.id || "")}" required pattern="(?:0[xX])?[0-9A-Fa-f\\s]{8,}">
                 </div>
                 <div class="field">
                   <label for="meter-name">${escapeHtml(t("webui_meter_name", "Name"))}</label>
@@ -2053,6 +2191,9 @@
       // Fallback when morphdom.min.js failed to load.
       app.innerHTML = newHtml;
     }
+    if (state.route === "discover" && window.__discoverFilterByValue) {
+      window.__discoverFilterByValue();
+    }
   }
 
   document.addEventListener("click", async (event) => {
@@ -2060,16 +2201,8 @@
     if (!target) return;
     const action = target.dataset.action;
 
-    if (action === "toggle-language") {
-      const menu = target.closest(".lang-menu")?.querySelector(".lang-options");
-      if (menu) menu.hidden = !menu.hidden;
-      return;
-    }
-
     if (action === "language") {
       const lang = target.dataset.lang || "";
-      const menu = target.closest(".lang-options");
-      if (menu) menu.hidden = true;
       if (liveSource) {
         liveSource.close();
         liveSource = null;
@@ -2114,9 +2247,8 @@
       const id = target.dataset.id || "";
       if (!id || !window.confirm(t("webui_remove_confirm", "Remove meter {id}?", {id}))) return;
       try {
-        const result = await postApi("remove-meter", {meter_id: id});
-        toast(result.message || t("webui_meter_removed", "Meter removed."));
-        await fetchData(currentLang());
+        await postApi("remove-meter", {meter_id: id});
+        triggerSoftReload(`${t("webui_meter_removed", "Meter removed.")} ${t("reloading_pipeline", "Applying meter changes…")}`);
       } catch (error) {
         toast(error.message, true);
       }
@@ -2163,6 +2295,14 @@
 
     if (action === "restart") {
       if (!window.confirm(t("webui_restart_confirm", "Restart the Home Assistant add-on?"))) return;
+      // Docker standalone has no Supervisor API, so /api/restart-bridge can only
+      // return a 400 — nothing actually restarts. Surface a clear instruction
+      // instead of entering the "restarting" overlay and falsely reporting success.
+      const meta = (state.data || {}).meta || {};
+      if (meta.runtime === "docker") {
+        toast(t("restart_docker_manual", "Cannot restart from the WebUI in Docker mode — run 'docker restart <container>' on the host."), true);
+        return;
+      }
       // Send restart request. A 502/network error is expected — the add-on goes down.
       // Treat any response (or connection drop) as "restarting", then poll until back.
       try {
@@ -2202,15 +2342,16 @@
     if (event.target.id === "add-meter-form") {
       event.preventDefault();
       const form = new FormData(event.target);
+      const payload = Object.fromEntries(form.entries());
+      payload.meter_id = normalizeMeterId(payload.meter_id);
       try {
-        const result = await postApi("add-meter", Object.fromEntries(form.entries()));
+        await postApi("add-meter", payload);
         state.modal = null;
-        toast(result.message || t("webui_meter_added", "Meter added."));
         // Soft pipeline reload so the new meter starts decoding without
         // a full container restart. bridge.sh's watcher picks up the
         // flag within 2 s, restarts the decode pipeline (~2-3 s), and
         // the new meter is live without touching the container.
-        triggerSoftReload();
+        triggerSoftReload(`${t("webui_meter_added", "Meter added.")} ${t("reloading_pipeline", "Applying meter changes…")}`);
       } catch (error) {
         toast(error.message, true);
       }

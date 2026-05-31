@@ -61,6 +61,7 @@ STATUS_ESP_TELEGRAM_DEVICES_FILE = BASE / "status_esp_telegram_devices.tsv"
 LISTEN_METER_DIR = BASE / "listen" / "etc" / "wmbusmeters.d"
 RELOAD_LISTEN_FLAG = BASE / ".reload_listen"
 RELOAD_PIPELINE_FLAG = BASE / ".reload_pipeline"
+STATUS_PIPELINE_RELOAD_FILE = BASE / "status_pipeline_reload.txt"
 ZERO_AES_KEY = "00000000000000000000000000000000"
 
 
@@ -103,12 +104,30 @@ VALID_ID_RE = re.compile(r"^[0-9A-Fa-f]{8}$")
 MEDIA_FILTERS = {"all", "water", "warm_water", "electricity", "heat", "other"}
 
 
-def normalize_meter_id(value: object) -> str:
-    mid = re.sub(r"\s+", "", str(value or "")).lower()
-    if mid.startswith("0x"):
-        mid = mid[2:]
-    if not mid or not re.fullmatch(r"[0-9a-f]+", mid):
+def meter_id_from_raw_hex(hex_value: str) -> str:
+    if not re.fullmatch(r"[0-9A-F]+", hex_value or ""):
         return ""
+    if len(hex_value) < 22 or len(hex_value) % 2:
+        return ""
+    try:
+        length_field = int(hex_value[:2], 16)
+    except ValueError:
+        return ""
+    if length_field != (len(hex_value) // 2) - 1:
+        return ""
+    # wMBus A-field stores the 4-byte meter ID little-endian after L/C/M-field.
+    id_le = hex_value[8:16]
+    return id_le[6:8] + id_le[4:6] + id_le[2:4] + id_le[0:2]
+
+
+def normalize_meter_id(value: object) -> str:
+    mid = re.sub(r"\s+", "", str(value or "")).upper()
+    if mid.startswith("0X"):
+        mid = mid[2:]
+    if not mid or not re.fullmatch(r"[0-9A-F]+", mid):
+        return ""
+    if len(mid) > 8:
+        return meter_id_from_raw_hex(mid)
     return mid.zfill(8) if len(mid) < 8 else mid
 
 
@@ -423,7 +442,7 @@ def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str =
                     # (Supervisor may not have written options.json yet when user adds quickly)
                     write_json_atomic(OPTIONS_JSON, options)
                     key_info = f"key={key[:4]}..." if key else "no key"
-                    msg = f"Meter {meter_id} ({driver}) added via Supervisor API. {key_info}. Restart addon to apply."
+                    msg = f"Meter {meter_id} ({driver}) saved. {key_info}. Reloading pipeline to apply."
                     webui_add_event("ok", msg)
                     return True, msg
                 body = resp.read().decode("utf-8", errors="replace")
@@ -431,10 +450,16 @@ def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str =
         except Exception as exc:
             webui_add_event("error", f"Supervisor API options failed: {exc}, falling back to file write")
 
-    # Fallback: write directly (works outside HA, e.g. plain Docker)
+    # Fallback: write directly. Reached EITHER outside HA (no token, plain
+    # Docker) OR when the Supervisor API call failed/raised (e.g. HTTP 400).
+    # Distinguish the two so the log doesn't blame a missing token when the
+    # token was present but Supervisor rejected the options.
     write_json_atomic(OPTIONS_JSON, options)
     key_info = f"key={key[:4]}..." if key else "no key"
-    msg = f"Meter {meter_id} ({driver}) added to options.json (file only — no SUPERVISOR_TOKEN). {key_info}."
+    if token:
+        msg = f"Meter {meter_id} ({driver}) saved to options.json as a fallback — Supervisor API rejected the change, so it will NOT survive an HA restart. {key_info}. Reloading pipeline to apply."
+    else:
+        msg = f"Meter {meter_id} ({driver}) saved to options.json (file only — no SUPERVISOR_TOKEN). {key_info}. Reloading pipeline to apply."
     webui_add_event("warn", msg)
     return True, msg
 
@@ -501,7 +526,7 @@ def remove_meter_from_options(meter_id: str) -> tuple[bool, str]:
                     write_json_atomic(OPTIONS_JSON, options)
                     # Remove from TSV immediately — bridge.sh won't clean it on its own
                     _remove_meter_from_tsv(meter_id)
-                    msg = f"Meter {meter_id} removed. Restart addon to apply."
+                    msg = f"Meter {meter_id} removed. Reloading pipeline to apply."
                     webui_add_event("ok", msg)
                     return True, msg
                 body = resp.read().decode("utf-8", errors="replace")
@@ -513,7 +538,7 @@ def remove_meter_from_options(meter_id: str) -> tuple[bool, str]:
     # Fallback
     write_json_atomic(OPTIONS_JSON, options)
     _remove_meter_from_tsv(meter_id)
-    msg = f"Meter {meter_id} removed (file only — no SUPERVISOR_TOKEN)."
+    msg = f"Meter {meter_id} removed (file only — no SUPERVISOR_TOKEN). Reloading pipeline to apply."
     webui_add_event("warn", msg)
     return True, msg
 
@@ -587,7 +612,7 @@ def state(include_ignored: bool = False) -> dict:
     options = read_options()
     meters = read_tsv(
         METERS_TSV,
-        ["id", "name", "driver", "media", "value_key", "value", "last_seen", "discovery", "seen_count", "avg_interval_s", "seen_15m", "seen_60m"],
+        ["id", "name", "driver", "media", "value_key", "value", "last_seen", "discovery", "seen_count", "avg_interval_s", "seen_15m", "seen_60m", "value_parts"],
     )
     candidates = read_tsv(
         CANDIDATES_TSV,
@@ -778,16 +803,20 @@ def status_model(data: dict) -> dict:
             # inflated value from stale TSV counters / short elapsed_min at startup.
             raw_per_min = float(esp_total)
 
-    # Pending restart: options.json is newer than status_bridge_start.txt.
-    # status_bridge_start.txt is written ONCE when bridge.sh starts, so its mtime
-    # is stable and reliable. status.json is rewritten every few seconds by bridge.sh,
-    # making opts > status.json comparison unreliable (options.json appears "old"
-    # within seconds of being written).
+    # Pending restart: options.json is newer than the last full bridge start or
+    # explicit soft pipeline reload requested by this UI. status.json is rewritten
+    # constantly, so it is not a reliable "config applied" marker.
     pending_restart = False
     try:
         opts_mtime         = OPTIONS_JSON.stat().st_mtime
         bridge_start_mtime = STATUS_BRIDGE_START_FILE.stat().st_mtime
-        pending_restart    = opts_mtime > bridge_start_mtime
+        reload_mtime = 0.0
+        try:
+            reload_mtime = STATUS_PIPELINE_RELOAD_FILE.stat().st_mtime
+        except OSError:
+            reload_mtime = 0.0
+        applied_mtime = max(bridge_start_mtime, reload_mtime)
+        pending_restart = opts_mtime > applied_mtime
     except OSError:
         pass
 
@@ -880,7 +909,8 @@ def _esp_payload() -> dict:
     events     = read_tsv(STATUS_ESP_EVENTS_FILE, ["epoch", "evtype", "topic", "payload"], limit=100, reverse=True)
     telegram_rows = read_tsv(STATUS_ESP_TELEGRAM_DEVICES_FILE, ["name", "last_telegram_epoch", "topic", "telegram_count"])
 
-    ACTIVE_WINDOW_S = 5 * 60
+    WARN_AFTER_S = 2 * 60
+    OFFLINE_AFTER_S = 5 * 60
     now_epoch       = int(_time.time())
     SUMMARY_TOPIC_SUFFIX = "/diag/summary"
 
@@ -965,13 +995,26 @@ def _esp_payload() -> dict:
                 entry["last_evtype"] = evtype
 
     # ── Finalize display + active flag ──
-    # Telegram rows are session-scoped, so any telegram in the current bridge
-    # run counts as detected. diag/summary is a heartbeat, so it must be fresh.
+    # ESP receiver status is based on the primary telegram topic only. A fresh
+    # wmbus/<device>/telegram means green; after 2 minutes without telegrams it
+    # becomes warning; after 5 minutes it is offline. diag/summary remains
+    # optional context and never keeps a receiver green by itself.
     for entry in devices.values():
         last_tg  = entry.get("last_telegram_epoch", 0)
         last_sum = entry.get("last_summary_epoch", 0)
-        fresh_sum = last_sum > 0 and (now_epoch - last_sum) <= ACTIVE_WINDOW_S
-        entry["active"] = bool(last_tg > 0 or fresh_sum)
+        telegram_age_s = max(0, now_epoch - last_tg) if last_tg > 0 else 0
+        if last_tg <= 0 or telegram_age_s > OFFLINE_AFTER_S:
+            health = "offline"
+            active = False
+        elif telegram_age_s > WARN_AFTER_S:
+            health = "warn"
+            active = True
+        else:
+            health = "online"
+            active = True
+        entry["telegram_age_s"] = telegram_age_s
+        entry["health"] = health
+        entry["active"] = active
         # has_diag tells the frontend whether this ESP exposes diag/events
         # (useful for the "diag required" notice — we can soften it when
         # at least one ESP IS publishing diag).
@@ -1197,7 +1240,8 @@ class Handler(BaseHTTPRequestHandler):
             # preview meter file so the LISTEN instance doesn't keep
             # decoding the same telegrams that DECODE now handles.
             if ok and meter_id:
-                preview_path = LISTEN_METER_DIR / f"meter-preview-{meter_id.lower()}"
+                meter_id_norm = normalize_meter_id(meter_id)
+                preview_path = LISTEN_METER_DIR / f"meter-preview-{meter_id_norm}"
                 try:
                     if preview_path.exists():
                         preview_path.unlink()
@@ -1212,9 +1256,9 @@ class Handler(BaseHTTPRequestHandler):
             # config dir. .reload_listen restarts an already-running LISTEN
             # instance; .reload_pipeline makes bridge.sh start LISTEN when it was
             # previously stopped because there were no configured meters.
-            cid = (params.get('id') or [''])[0].strip().lower()
+            cid = normalize_meter_id((params.get('id') or [''])[0])
             drv = (params.get('driver') or ['auto'])[0].strip()
-            if not re.match(r'^[0-9a-f]{8}$', cid):
+            if not VALID_ID_RE.match(cid):
                 self._send_json(400, {"ok": False, "message": f"Invalid id: {cid}"})
                 return
             try:
@@ -1234,8 +1278,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.endswith('/api/cancel-preview'):
             # Remove meter-preview-<id> file + its TSV row + reload LISTEN.
-            cid = (params.get('id') or [''])[0].strip().lower()
-            if not re.match(r'^[0-9a-f]{8}$', cid):
+            cid = normalize_meter_id((params.get('id') or [''])[0])
+            if not VALID_ID_RE.match(cid):
                 self._send_json(400, {"ok": False, "message": f"Invalid id: {cid}"})
                 return
             try:
@@ -1247,7 +1291,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     if STATUS_CANDIDATE_VALUES_FILE.exists():
                         lines = STATUS_CANDIDATE_VALUES_FILE.read_text(encoding='utf-8', errors='replace').splitlines()
-                        kept = [l for l in lines if not l.lower().startswith(cid + '\t')]
+                        kept = [l for l in lines if normalize_meter_id(l.split('\t')[0]) != cid]
                         STATUS_CANDIDATE_VALUES_FILE.write_text('\n'.join(kept) + ('\n' if kept else ''), encoding='utf-8')
                 except OSError:
                     pass
@@ -1289,6 +1333,7 @@ class Handler(BaseHTTPRequestHandler):
                 flag = BASE / '.reload_pipeline'
                 flag.parent.mkdir(parents=True, exist_ok=True)
                 flag.touch()
+                STATUS_PIPELINE_RELOAD_FILE.write_text(str(datetime.now(timezone.utc).timestamp()), encoding='utf-8')
                 webui_add_event('ok', 'Pipeline soft-reload requested.')
                 self._send_json(200, {"ok": True, "message": "Pipeline reload requested."})
             except Exception as exc:
