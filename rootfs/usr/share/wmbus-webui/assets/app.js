@@ -335,15 +335,29 @@
   function encBadge(enc, note) {
     const e = (enc || "").toLowerCase();
     if (!e) return `<span class="pill muted" title="${escapeHtml(t("enc_unknown", "Not yet analyzed"))}">?</span>`;
-    const bad  = ["encrypted", "aes_required", "aes"].includes(e);
-    const good = ["not_encrypted", "no_aes", "plain", "unencrypted", "unknown"].includes(e);
-    const label = bad ? t("enc_aes_req", "AES req.") : t("enc_no_aes", "no AES");
-    const cls   = bad ? "bad" : "ok";
+    const bad     = ["encrypted", "aes_required", "aes"].includes(e);
+    const unknown = e === "unknown";
+    const label   = bad     ? t("enc_aes_req", "AES req.")
+                  : unknown ? t("enc_unknown", "Not yet analyzed")
+                  :            t("enc_no_aes", "no AES");
+    const cls     = bad ? "bad" : unknown ? "muted" : "ok";
     const title = note ? ` title="${escapeHtml(note)}"` : "";
     return `<span class="pill ${cls}"${title}>${escapeHtml(label)}</span>`;
   }
 
-  // ── #6 Reception interval formatter ──────────────────────────────────────
+  // ── #6 Manufacturer compact formatter ────────────────────────────────────
+  // "(MAD) Maddalena, Italy (0x3424)" → "MAD · Maddalena"
+  // Returns empty string for missing/empty input (caller shows "—").
+  function compactManufacturer(mfr) {
+    if (!mfr) return "";
+    const m = mfr.match(/^\(([^)]+)\)\s*(.*)/);
+    if (!m) return mfr.split(",")[0].trim();
+    const code = m[1];
+    const name = m[2].split(",")[0].trim();
+    return (code && name) ? `${code} · ${name}` : (name || code || mfr);
+  }
+
+  // ── #7 Reception interval formatter ──────────────────────────────────────
   function fmtInterval(seconds) {
     const n = Number(seconds);
     if (!n || n <= 0) return t("not_enough_data", "not enough data");
@@ -356,16 +370,95 @@
   // Shows a restart action only when the backend explicitly says the running
   // bridge has not applied current options. Otherwise pending meters are simply
   // waiting for their first decoded telegram after the soft reload.
+  function pendingMeters() {
+    const data = state.data || {};
+    if (Array.isArray(data.pending_meters)) {
+      return data.pending_meters;
+    }
+
+    const decodedIds = new Set(asArray(data.meters).map(m => normalizeMeterId(m.id)));
+    return asArray((data.options || {}).meters).filter(m => {
+      const mid = normalizeMeterId(m.meter_id);
+      return mid && !decodedIds.has(mid);
+    });
+  }
+
+  function pendingPreviewDecoded(row) {
+    const previewState = String(row.preview_state || "").trim();
+    return previewState === "decoded_value" || previewState === "decoded_without_numeric_value";
+  }
+
+  function pendingMeterHeader() {
+    return `
+      <tr>
+        <th>${escapeHtml(t("webui_id", "ID"))}</th>
+        <th>${escapeHtml(t("driver", "Driver"))}</th>
+        <th>${escapeHtml(t("manufacturer_col", "Manufacturer"))}</th>
+        <th>${escapeHtml(t("encryption_label", "Encryption"))}</th>
+        <th>${escapeHtml(t("preview_value_col", "Value"))}</th>
+        <th>${escapeHtml(t("last_telegram", "Last telegram"))}</th>
+        <th>15M</th>
+        <th>60M</th>
+        <th>${escapeHtml(t("reception", "Reception"))}</th>
+        <th>${escapeHtml(t("aes_key_label", "AES key"))}</th>
+        <th></th>
+      </tr>
+    `;
+  }
+
+  function pendingMeterRow(row, analysis) {
+    const mid = normalizeMeterId(row.meter_id);
+    const driver = row.driver || (row.type === "other" ? (row.type_other || "other") : (row.type || "auto"));
+    const hasKey = row.has_key === true || row.has_key === "true" || !!(row.key && row.key.trim());
+    const a = analysis[mid] || analysis[mid.toUpperCase()] || {};
+    const previewState = String(row.preview_state || "").trim();
+    const previewVal = String(row.preview_value || "").trim();
+    const previewKey = String(row.preview_value_key || "").trim();
+    const previewUnit = previewKey ? unitFromKey(previewKey) : "";
+    const rawEnc = String(row.encryption || a.encryption || "").toLowerCase();
+    const note = String(row.analysis_note || a.note || "");
+    const effectiveEnc = (rawEnc === "unknown" && pendingPreviewDecoded(row)) ? "no_aes" : rawEnc;
+    const mfrRaw = String(row.manufacturer || "").trim();
+    const mfrCompact = compactManufacturer(mfrRaw);
+    const stateText = pendingPreviewDecoded(row) || previewVal
+      ? t("pending_preview_confirmed", "Added to configuration — waiting for first official reading")
+      : t("pending_waiting_first_official", "Waiting for first telegram");
+    const previewCell = previewVal
+      ? `<span style="font-weight:700;color:#4df08d;">${escapeHtml(previewVal)}</span>${previewUnit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(previewUnit)}</span>` : ""}<div style="font-size:10px;color:#8ea4b1;">${escapeHtml(t("cached_preview_value", "Cached preview value"))}</div>${previewKey ? `<div class="mono" style="font-size:10px;color:#4a6070;">${escapeHtml(previewKey)}</div>` : ""}`
+      : previewState === "decoded_without_numeric_value"
+        ? `<span style="font-size:11px;color:#9eafba;">${escapeHtml(t("preview_no_value", "no value in telegram"))}</span><div style="font-size:10px;color:#8ea4b1;">${escapeHtml(t("cached_preview_value", "Cached preview value"))}</div>`
+        : `<span style="color:#4a6070;">—</span>`;
+
+    return `
+      <tr>
+        <td><strong>${escapeHtml(mid)}</strong><div style="font-size:10px;color:#8ea4b1;margin-top:2px;">${escapeHtml(stateText)}</div></td>
+        <td style="color:#9eafba;font-size:12px;">${escapeHtml(driver)}</td>
+        <td>${mfrCompact ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>` : `<span style="color:#4a6070;">—</span>`}</td>
+        <td>${encBadge(effectiveEnc, note)}</td>
+        <td>${previewCell}</td>
+        <td>${fmtTime(row.last_seen)}</td>
+        <td>${escapeHtml(String(row.seen_15m || 0))}</td>
+        <td>${escapeHtml(String(row.seen_60m || 0))}</td>
+        <td style="color:#607a88;font-size:12px;">${escapeHtml(fmtInterval(row.avg_interval_s))}</td>
+        <td>${hasKey
+          ? `<span class="pill ok">${escapeHtml(t("aes_key_set", "AES key set"))}</span>`
+          : `<span class="pill muted">${escapeHtml(t("no_key", "No key"))}</span>`}
+        </td>
+        <td><div class="actions">
+          ${row.preview_active === "true" ? `<button class="btn" data-action="cancel-preview" data-id="${escapeHtml(mid)}">${escapeHtml(t("cancel_preview", "Cancel preview"))}</button>` : ""}
+          <button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(mid)}">${escapeHtml(t("webui_remove", "Remove"))}</button>
+        </div></td>
+      </tr>
+    `;
+  }
+
   function pendingRestartBanner() {
     const data  = state.data || {};
     const model = data.model || {};
 
-    // Compute pending meter count: in options.json but NOT yet in decoded meters TSV.
-    const decodedIds   = new Set(asArray(data.meters).map(m => normalizeMeterId(m.id)));
-    const pendingCount = asArray((data.options || {}).meters).filter(m => {
-      const mid = normalizeMeterId(m.meter_id);
-      return mid && !decodedIds.has(mid);
-    }).length;
+    const pending = pendingMeters();
+    const pendingCount = pending.length;
+    const hasPreview = pending.some(row => pendingPreviewDecoded(row) || String(row.preview_value || "").trim());
 
     const needsRestart = !!model.pending_restart;
     if (!needsRestart && pendingCount === 0) return "";
@@ -375,7 +468,9 @@
       : t("waiting_for_telegrams_title", "Waiting for first telegram");
     const detail = needsRestart
       ? t("pending_text", "These meters are saved in options.json but the add-on hasn't picked them up yet. Restart the add-on to apply.")
-      : t("waiting_for_telegrams_text", "These meters are configured but haven't sent a telegram yet.");
+      : hasPreview
+        ? t("pending_preview_confirmed", "Added to configuration — waiting for first official reading")
+        : t("pending_waiting_first_official", "Waiting for first telegram");
 
     return `
       <div class="notice warn" style="margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
@@ -757,6 +852,7 @@
     if (pending.length === 0) return "";
 
     const needsRestart = !!model.pending_restart;
+    const hasPreview = pending.some(row => pendingPreviewDecoded(row) || String(row.preview_value || "").trim());
 
     const title = needsRestart
       ? t("pending_title", "Pending changes — waiting for restart")
@@ -764,27 +860,11 @@
 
     const text = needsRestart
       ? t("pending_text", "These meters are saved in options.json but the add-on hasn't picked them up yet. Restart the add-on to apply.")
-      : t("waiting_for_telegrams_text", "These meters are configured but haven't sent a telegram yet.");
+      : hasPreview
+        ? t("pending_preview_confirmed", "Added to configuration — waiting for first official reading")
+        : t("pending_waiting_first_official", "Waiting for first telegram");
 
-    const rows = pending.map(m => {
-      const mid    = normalizeMeterId(m.meter_id);
-      const type   = m.type === "other" ? (m.type_other || "other") : (m.type || "auto");
-      const hasKey = !!(m.key && m.key.trim());
-      const a      = analysis[mid] || analysis[mid.toUpperCase()] || {};
-      const enc    = String(a.encryption || "").toLowerCase();
-      const note   = String(a.note || "");
-      return `
-        <tr>
-          <td><strong>${escapeHtml(mid)}</strong></td>
-          <td style="color:#9eafba;font-size:12px;">${escapeHtml(type)}</td>
-          <td>${encBadge(enc, note)}</td>
-          <td>${hasKey
-            ? `<span class="pill ok">✓ set</span>`
-            : `<span class="pill muted">${escapeHtml(t("no_key", "No key"))}</span>`}
-          </td>
-          <td><button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(mid)}">${escapeHtml(t("webui_remove", "Remove"))}</button></td>
-        </tr>`;
-    }).join("");
+    const rows = pending.map(m => pendingMeterRow(m, analysis)).join("");
 
     return `
       <div class="notice warn" style="margin-bottom:14px;">
@@ -798,13 +878,7 @@
         <div class="table-wrap" style="margin-top:4px;">
           <table>
             <thead>
-              <tr>
-                <th>${escapeHtml(t("webui_id", "ID"))}</th>
-                <th>${escapeHtml(t("driver", "Driver"))}</th>
-                <th>${escapeHtml(t("encryption_label", "Encryption"))}</th>
-                <th>${escapeHtml(t("aes_key_label", "AES key"))}</th>
-                <th></th>
-              </tr>
+              ${pendingMeterHeader()}
             </thead>
             <tbody>${rows}</tbody>
           </table>
@@ -1217,12 +1291,7 @@
     const meterCount = Number(model.meter_count || 0);
     const candidateCount = Number(model.candidate_count || 0);
 
-    // Pending = in options.json but not yet decoded (same logic as metersPage)
-    const decodedIds = new Set(asArray(data.meters).map(m => normalizeMeterId(m.id)));
-    const pending    = asArray((data.options || {}).meters).filter(m => {
-      const mid = normalizeMeterId(m.meter_id);
-      return mid && !decodedIds.has(mid);
-    });
+    const pending = pendingMeters();
 
     // Top section depends on selected dashboard view.
     const topSection = state.dashboardView === "stats"
@@ -1283,6 +1352,7 @@
               <th>${escapeHtml(t("webui_id", "ID"))}</th>
               <th>${escapeHtml(t("webui_name", "Name"))}</th>
               <th>${escapeHtml(t("driver", "Driver"))}</th>
+              <th>${escapeHtml(t("manufacturer_col", "Manufacturer"))}</th>
               <th>${escapeHtml(t("webui_value", "Value"))}</th>
               <th>${escapeHtml(t("webui_last_seen", "Last seen"))}</th>
               <th>${escapeHtml(t("reception", "Reception"))}</th>
@@ -1303,11 +1373,17 @@
                 const seen60m = ageS > 60 * 60 ? 0 : Number(row.seen_60m || 0);
                 const {label: statusLabel, color: statusColor} = meterStatusLabel(seen15m, seen60m);
                 const {icon: mIcon} = mediaIcon(row.media || "", row.driver || "");
+                const mfrRaw     = String(row.manufacturer || "").trim();
+                const mfrCompact = compactManufacturer(mfrRaw);
+                const mfrCell    = mfrCompact
+                  ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>`
+                  : `<span style="color:#4a6070;">—</span>`;
                 return `
                   <tr>
                     <td><strong>${escapeHtml(id)}</strong></td>
                     <td><span style="margin-right:5px;font-size:15px;vertical-align:middle;">${mIcon}</span>${escapeHtml(row.name || row.id || "-")}</td>
                     <td>${escapeHtml(row.driver || "-")}</td>
+                    <td>${mfrCell}</td>
                     <td>
                       ${meterValueCell(row)}
                     </td>
@@ -1349,6 +1425,7 @@
               <th>${escapeHtml(t("driver", "Driver"))}</th>
               <th>${escapeHtml(t("webui_type", "Type"))}</th>
               <th>${escapeHtml(t("media", "Medium"))}</th>
+              <th>${escapeHtml(t("manufacturer_col", "Manufacturer"))}</th>
               <th>${escapeHtml(t("encryption_label", "Encryption"))}</th>
               <th>${escapeHtml(t("preview_value_col", "Preview value"))}</th>
               <th>${escapeHtml(t("webui_last_seen", "Last seen"))}</th>
@@ -1384,19 +1461,38 @@
                 const previewVal    = String(row.preview_value || "").trim();
                 const previewKey    = String(row.preview_value_key || "").trim();
                 const previewUnit   = previewKey ? unitFromKey(previewKey) : "";
-                const aesRequired = enc === "encrypted" || enc === "aes_required" || enc === "aes";
+                const previewState  = String(row.preview_state || "").trim();
+                // Parallel LISTEN decoded a valid JSON telegram without an AES key →
+                // encryption is resolved as no_aes. Override "unknown" for display only;
+                // status_candidate_analysis.tsv is updated asynchronously by bridge.sh.
+                const effectiveEnc  = (enc === "unknown" &&
+                                       (previewState === "decoded_value" ||
+                                        previewState === "decoded_without_numeric_value"))
+                                      ? "no_aes"
+                                      : enc;
+                const aesRequired   = effectiveEnc === "encrypted" || effectiveEnc === "aes_required" || effectiveEnc === "aes";
                 const previewCell   = previewVal
                   ? `<span style="font-weight:700;color:#4df08d;">${escapeHtml(previewVal)}</span>${previewUnit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(previewUnit)}</span>` : ""}${previewKey ? `<div class="mono" style="font-size:10px;color:#4a6070;">${escapeHtml(previewKey)}</div>` : ""}`
+                  : previewState === "decoded_without_numeric_value"
+                      ? `<span style="font-size:11px;color:#9eafba;">${escapeHtml(t("preview_no_value", "no value in telegram"))}</span>`
+                  : previewState === "no_decode_result"
+                      ? `<span style="font-size:11px;color:#607a88;">${escapeHtml(t("preview_no_decode_result", "no decode result"))}</span>`
                   : (!aesRequired
                       ? `<span style="font-size:11px;color:#f3c84b;">${escapeHtml(t("preview_pending", "decoding…"))}</span>`
                       : `<span style="color:#4a6070;">—</span>`);
+                const mfrRaw     = String(row.manufacturer || "").trim();
+                const mfrCompact = compactManufacturer(mfrRaw);
+                const mfrCell    = mfrCompact
+                  ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>`
+                  : `<span style="color:#4a6070;">—</span>`;
                 return `
                   <tr data-value="${escapeHtml(previewVal)}">
                     <td><strong>${escapeHtml(id)}</strong></td>
                     <td>${escapeHtml(driver)}</td>
                     <td style="color:#9eafba;font-size:12px;">${escapeHtml(row.type || "-")}</td>
                     <td>${mediaIconHtml(row.type || "", driver)} ${escapeHtml(mediaLabel)}</td>
-                    <td>${encBadge(enc, note)}</td>
+                    <td>${mfrCell}</td>
+                    <td>${encBadge(effectiveEnc, note)}</td>
                     <td>${previewCell}</td>
                     <td>${fmtTime(row.last_seen)}</td>
                     <td>${escapeHtml(String(seen15mAdj))}</td>
@@ -1407,6 +1503,7 @@
                         ? `<td><div class="actions">
                             <button class="btn primary" data-action="open-add" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(driver)}">${escapeHtml(t("webui_add", "Add"))}</button>
                             <button class="btn" data-action="ignore" data-id="${escapeHtml(id)}">${escapeHtml(t("ignore", "Ignore"))}</button>
+                            ${row.preview_active === "true" ? `<button class="btn" data-action="cancel-preview" data-id="${escapeHtml(id)}">${escapeHtml(t("cancel_preview", "Cancel preview"))}</button>` : ""}
                           </div></td>`
                         : ""
                     }
@@ -1421,6 +1518,10 @@
   }
 
   function pendingMetersSection(rows, analysis) {
+    const hasPreview = rows.some(row => pendingPreviewDecoded(row) || String(row.preview_value || "").trim());
+    const sectionText = hasPreview
+      ? t("pending_preview_confirmed", "Added to configuration — waiting for first official reading")
+      : t("pending_waiting_first_official", "Waiting for first telegram");
     return `
       <div style="margin-top:20px;">
         <div class="section-head" style="margin-bottom:4px;">
@@ -1429,40 +1530,14 @@
           </h3>
           <span>${rows.length}</span>
         </div>
-        <p style="font-size:11px;color:#607a88;margin:0 0 10px;">${escapeHtml(t("waiting_for_telegrams_text", "These meters are configured but haven't sent a telegram yet."))}</p>
+        <p style="font-size:11px;color:#607a88;margin:0 0 10px;">${escapeHtml(sectionText)}</p>
         <div class="table-wrap">
           <table>
             <thead>
-              <tr>
-                <th>${escapeHtml(t("webui_id", "ID"))}</th>
-                <th>${escapeHtml(t("driver", "Driver"))}</th>
-                <th>${escapeHtml(t("encryption_label", "Encryption"))}</th>
-                <th>${escapeHtml(t("aes_key_label", "AES key"))}</th>
-                <th></th>
-              </tr>
+              ${pendingMeterHeader()}
             </thead>
             <tbody>
-              ${rows.map(m => {
-                const mid    = normalizeMeterId(m.meter_id);
-                const type   = m.type === "other" ? (m.type_other || "other") : (m.type || "auto");
-                const hasKey = !!(m.key && m.key.trim());
-                // analysis keyed by id as written by bridge.sh (may be lowercase or uppercase)
-                const a   = analysis[mid] || analysis[mid.toUpperCase()] || {};
-                const enc = String(a.encryption || "").toLowerCase();
-                const note = String(a.note || "");
-                return `
-                  <tr>
-                    <td><strong>${escapeHtml(mid)}</strong></td>
-                    <td style="color:#9eafba;font-size:12px;">${escapeHtml(type)}</td>
-                    <td>${encBadge(enc, note)}</td>
-                    <td>${hasKey
-                      ? `<span class="pill ok">✓ set</span>`
-                      : `<span class="pill muted">${escapeHtml(t("no_key", "No key"))}</span>`}
-                    </td>
-                    <td><button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(mid)}">${escapeHtml(t("webui_remove", "Remove"))}</button></td>
-                  </tr>
-                `;
-              }).join("")}
+              ${rows.map(m => pendingMeterRow(m, analysis)).join("")}
             </tbody>
           </table>
         </div>
@@ -1475,13 +1550,7 @@
     const all = asArray(data.meters);
     const filtered = applyMediaFilter(all, "media");
 
-    // Pending = in options.json but not yet decoded (not in status_meters.tsv)
-    const knownIds  = new Set(all.map(m => normalizeMeterId(m.id)));
-    const optMeters = asArray((data.options || {}).meters);
-    const pending   = optMeters.filter(m => {
-      const mid = normalizeMeterId(m.meter_id);
-      return mid && !knownIds.has(mid);
-    });
+    const pending = pendingMeters();
 
     return `
       ${pendingRestartBanner()}
@@ -1546,6 +1615,7 @@
                 <th>${escapeHtml(t("webui_id", "ID"))}</th>
                 <th>${escapeHtml(t("webui_name", "Name"))}</th>
                 <th>${escapeHtml(t("driver", "Driver"))}</th>
+                <th>${escapeHtml(t("manufacturer_col", "Manufacturer"))}</th>
                 <th>${escapeHtml(t("media", "Medium"))}</th>
                 <th>${escapeHtml(t("value_label", "Value"))}</th>
                 <th>${escapeHtml(t("webui_last_seen", "Last seen"))}</th>
@@ -1572,11 +1642,17 @@
                 // any filter is active (no value to compare against).
                 const numericVal = parseFloat(valueStr);
                 const dataVal    = Number.isFinite(numericVal) ? String(numericVal) : "";
+                const mfrRaw     = String(row.manufacturer || "").trim();
+                const mfrCompact = compactManufacturer(mfrRaw);
+                const mfrCell    = mfrCompact
+                  ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>`
+                  : `<span style="color:#4a6070;">—</span>`;
                 return `
                   <tr data-value="${escapeHtml(dataVal)}">
                     <td><strong>${escapeHtml(id)}</strong></td>
                     <td><span style="margin-right:5px;font-size:15px;vertical-align:middle;">${mIcon}</span>${escapeHtml(row.name || id || "-")}</td>
                     <td>${escapeHtml(row.driver || "-")}</td>
+                    <td>${mfrCell}</td>
                     <td>${escapeHtml(mediaLabel)}</td>
                     <td>
                       ${meterValueCell(row)}
@@ -1585,7 +1661,10 @@
                     <td>${escapeHtml(String(seen15mAdj))}</td>
                     <td>${escapeHtml(String(seen60mAdj))}</td>
                     <td style="color:#607a88;font-size:12px;">${escapeHtml(fmtInterval(row.avg_interval_s))}</td>
-                    <td><button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(id)}">${escapeHtml(t("remove_from_config", "Remove from config"))}</button></td>
+                    <td><div class="actions">
+                      ${row.preview_active === "true" ? `<button class="btn" data-action="cancel-preview" data-id="${escapeHtml(id)}">${escapeHtml(t("cancel_preview", "Cancel preview"))}</button>` : ""}
+                      <button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(id)}">${escapeHtml(t("remove_from_config", "Remove from config"))}</button>
+                    </div></td>
                   </tr>`;
               }).join("")}
             </tbody>
@@ -1645,12 +1724,7 @@
     const filteredCandidates = applyMediaFilter(allCandidates, "type");
     const allMeters = asArray(data.meters);
     const filteredMeters = applyMediaFilter(allMeters, "media");
-    const knownIds = new Set(allMeters.map(m => normalizeMeterId(m.id)));
-    const optMeters = asArray((data.options || {}).meters);
-    const pending = optMeters.filter(m => {
-      const mid = normalizeMeterId(m.meter_id);
-      return mid && !knownIds.has(mid);
-    });
+    const pending = pendingMeters();
     const candidateCountLabel = `${filteredCandidates.length}${filteredCandidates.length !== allCandidates.length ? `/${allCandidates.length}` : ""} ${t("webui_visible", "visible")}`;
     return `
       ${discoverValueFilterBar(filteredMeters.length + filteredCandidates.length)}
@@ -2286,6 +2360,19 @@
       try {
         const result = await postApi(action, {id: target.dataset.id || ""});
         toast(result.message || t("webui_updated_ok", "Updated."));
+        await fetchData(currentLang());
+      } catch (error) {
+        toast(error.message, true);
+      }
+      return;
+    }
+
+    if (action === "cancel-preview") {
+      const id = target.dataset.id || "";
+      if (!id) return;
+      try {
+        await postApi("cancel-preview", {id});
+        toast(t("preview_removed", "Preview removed."));
         await fetchData(currentLang());
       } catch (error) {
         toast(error.message, true);

@@ -50,6 +50,8 @@ STATUS_ESP_BOOT_FILE = BASE / "status_esp_boot.json"
 # Per-candidate preview values written by bridge.sh's parallel LISTEN instance
 # when it has a meter-preview-<id> file in LISTEN_BASE/etc/wmbusmeters.d/.
 STATUS_CANDIDATE_VALUES_FILE = BASE / "status_candidate_values.tsv"
+# Per-candidate preview lifecycle state: pending | decoded_value | decoded_without_numeric_value
+STATUS_CANDIDATE_PREVIEW_STATE_FILE = BASE / "status_candidate_preview_state.tsv"
 # Per-ESP-device telegram tracking — written by bridge.sh's background
 # subscriber listening to RAW_TOPIC. The PRIMARY source of truth for which
 # ESPs were seen in the current bridge session (works without ESP diagnostics).
@@ -473,15 +475,44 @@ def _remove_meter_from_tsv(meter_id: str) -> None:
     addon restart (when bridge.sh stops receiving telegrams for the removed meter
     and the row naturally ages out — which can take hours).
     """
+    _remove_id_from_tsv(METERS_TSV, meter_id)
+
+
+def _remove_id_from_tsv(path: Path, meter_id: str) -> None:
     try:
-        if not METERS_TSV.exists():
+        if not path.exists():
             return
-        lines = METERS_TSV.read_text(encoding="utf-8", errors="replace").splitlines()
         meter_id = normalize_meter_id(meter_id)
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         new_lines = [l for l in lines if normalize_meter_id(l.split("\t")[0]) != meter_id]
-        write_lines_atomic(METERS_TSV, new_lines)
+        write_lines_atomic(path, new_lines)
     except Exception:
         pass  # non-fatal — worst case the row disappears after restart
+
+
+def _cleanup_preview_cache(meter_id: str, remove_preview_file: bool = True) -> None:
+    meter_id = normalize_meter_id(meter_id)
+    if not VALID_ID_RE.match(meter_id):
+        return
+
+    _remove_id_from_tsv(STATUS_CANDIDATE_VALUES_FILE, meter_id)
+    _remove_id_from_tsv(STATUS_CANDIDATE_PREVIEW_STATE_FILE, meter_id)
+
+    try:
+        attempt_file = BASE / ".preview_attempts" / meter_id
+        if attempt_file.exists():
+            attempt_file.unlink()
+    except OSError:
+        pass
+
+    if remove_preview_file:
+        try:
+            preview_file = LISTEN_METER_DIR / f"meter-preview-{meter_id}"
+            if preview_file.exists():
+                preview_file.unlink()
+                RELOAD_LISTEN_FLAG.touch()
+        except OSError:
+            pass
 
 
 def remove_meter_from_options(meter_id: str) -> tuple[bool, str]:
@@ -503,7 +534,9 @@ def remove_meter_from_options(meter_id: str) -> tuple[bool, str]:
     before = len(meters)
     meters = [m for m in meters if not (isinstance(m, dict) and normalize_meter_id(m.get("meter_id")) == meter_id)]
     if len(meters) == before:
-        return False, f"Meter {meter_id} not found in options."
+        _remove_meter_from_tsv(meter_id)
+        _cleanup_preview_cache(meter_id)
+        return True, f"Meter {meter_id} was already absent from options; removed stale runtime row if present."
 
     options["meters"] = meters
 
@@ -526,6 +559,7 @@ def remove_meter_from_options(meter_id: str) -> tuple[bool, str]:
                     write_json_atomic(OPTIONS_JSON, options)
                     # Remove from TSV immediately — bridge.sh won't clean it on its own
                     _remove_meter_from_tsv(meter_id)
+                    _cleanup_preview_cache(meter_id)
                     msg = f"Meter {meter_id} removed. Reloading pipeline to apply."
                     webui_add_event("ok", msg)
                     return True, msg
@@ -538,6 +572,7 @@ def remove_meter_from_options(meter_id: str) -> tuple[bool, str]:
     # Fallback
     write_json_atomic(OPTIONS_JSON, options)
     _remove_meter_from_tsv(meter_id)
+    _cleanup_preview_cache(meter_id)
     msg = f"Meter {meter_id} removed (file only — no SUPERVISOR_TOKEN). Reloading pipeline to apply."
     webui_add_event("warn", msg)
     return True, msg
@@ -616,7 +651,7 @@ def state(include_ignored: bool = False) -> dict:
     )
     candidates = read_tsv(
         CANDIDATES_TSV,
-        ["id", "driver", "type", "last_seen", "seen_count", "avg_interval_s", "seen_15m", "seen_60m"],
+        ["id", "driver", "type", "last_seen", "seen_count", "avg_interval_s", "seen_15m", "seen_60m", "manufacturer"],
     )
     events = read_tsv(EVENTS_TSV, ["time", "level", "message"], limit=80, reverse=True)
     search_candidates = read_search_candidates()
@@ -631,9 +666,24 @@ def state(include_ignored: bool = False) -> dict:
         ["id", "preview_value", "preview_value_key", "preview_ts"],
     )
     preview_by_id = {normalize_meter_id(r.get("id")): r for r in preview_rows if normalize_meter_id(r.get("id"))}
+    preview_state_rows = read_tsv(
+        STATUS_CANDIDATE_PREVIEW_STATE_FILE,
+        ["id", "state", "ts", "note"],
+    )
+    preview_state_by_id = {normalize_meter_id(r.get("id")): r for r in preview_state_rows if normalize_meter_id(r.get("id"))}
+    candidate_by_id = {
+        normalize_meter_id(c.get("id")): c
+        for c in candidates
+        if normalize_meter_id(c.get("id"))
+    }
+    analysis_by_id = {
+        normalize_meter_id(v.get("id") or k): v
+        for k, v in analysis.items()
+        if normalize_meter_id(v.get("id") or k)
+    }
     for c in candidates:
         c["ignored"] = "true" if c.get("id") in ignored else "false"
-        c["analysis"] = analysis.get(c.get("id") or "", {})
+        c["analysis"] = analysis_by_id.get(normalize_meter_id(c.get("id")), {})
         # preview_active = there's a meter-preview-<id> file in the LISTEN config dir.
         # Single source of truth = filesystem; the TSV row may linger for a brief
         # window after cancel until the next .reload_listen cycle clears it.
@@ -646,23 +696,63 @@ def state(include_ignored: bool = False) -> dict:
                 c["preview_value"]     = pv.get("preview_value", "")
                 c["preview_value_key"] = pv.get("preview_value_key", "")
                 c["preview_ts"]        = pv.get("preview_ts", "")
+            ps = preview_state_by_id.get(cid)
+            c["preview_state"] = ps.get("state", "") if ps else ""
 
     # Build normalized options_meter_ids early — used both for TSV filtering and
     # candidate dedup. Do not write back to status_meters.tsv from this read path.
     options_meters_list = options.get("meters") if isinstance(options, dict) and "meters" in options else None
+    options_meters_valid = isinstance(options_meters_list, list)
     options_meter_ids = {
         normalize_meter_id(m.get("meter_id"))
-        for m in (options_meters_list or [])
+        for m in (options_meters_list if options_meters_valid else [])
         if isinstance(m, dict) and normalize_meter_id(m.get("meter_id"))
     }
 
-    # Filter in memory only when options contain meter ids. Empty/default options
-    # must not hide or delete live decoded rows from a previous valid runtime.
-    if options_meter_ids:
+    # Filter in memory whenever options.json contains a valid meters list.
+    # An empty list is a valid empty config; missing/invalid options keep the
+    # cautious fallback and do not hide runtime rows automatically.
+    if options_meters_valid:
         meters = [m for m in meters if normalize_meter_id(m.get("id")) in options_meter_ids]
 
     # Remove candidates that are already in configured meters (decoded)
     configured_ids = {normalize_meter_id(m.get("id")) for m in meters if normalize_meter_id(m.get("id"))}
+    pending_meters: list[dict] = []
+    if options_meters_valid:
+        for opt in options_meters_list:
+            if not isinstance(opt, dict):
+                continue
+            mid = normalize_meter_id(opt.get("meter_id"))
+            if not mid or mid in configured_ids:
+                continue
+            opt_type = str(opt.get("type") or "auto")
+            opt_type_other = str(opt.get("type_other") or "")
+            candidate = candidate_by_id.get(mid, {})
+            preview = preview_by_id.get(mid, {})
+            preview_state = preview_state_by_id.get(mid, {})
+            candidate_analysis = analysis_by_id.get(mid, {})
+            driver = opt_type_other if opt_type == "other" and opt_type_other else opt_type
+            if not driver or driver in ("unknown", "auto"):
+                driver = candidate.get("driver") or driver or "auto"
+            pending_meters.append({
+                "meter_id": mid,
+                "type": opt_type,
+                "type_other": opt_type_other,
+                "driver": driver,
+                "has_key": bool(str(opt.get("key") or "").strip()),
+                "manufacturer": candidate.get("manufacturer", ""),
+                "preview_value": preview.get("preview_value", ""),
+                "preview_value_key": preview.get("preview_value_key", ""),
+                "preview_state": preview_state.get("state", ""),
+                "preview_ts": preview.get("preview_ts", "") or preview_state.get("ts", ""),
+                "preview_active": "true" if (LISTEN_METER_DIR / f"meter-preview-{mid}").exists() else "false",
+                "encryption": candidate_analysis.get("encryption", ""),
+                "analysis_note": candidate_analysis.get("note", ""),
+                "last_seen": candidate.get("last_seen", ""),
+                "seen_15m": candidate.get("seen_15m", ""),
+                "seen_60m": candidate.get("seen_60m", ""),
+                "avg_interval_s": candidate.get("avg_interval_s", ""),
+            })
     candidates = [c for c in candidates if normalize_meter_id(c.get("id")) not in configured_ids]
 
     # Also remove candidates that are pending (in options.json but not yet decoded)
@@ -673,6 +763,12 @@ def state(include_ignored: bool = False) -> dict:
     if not include_ignored:
         candidates = [c for c in candidates if c.get("ignored") != "true"]
     meters = sorted(meters, key=lambda m: (m.get("last_seen") or ""), reverse=True)
+    for m in meters:
+        mid = normalize_meter_id(m.get("id") or "")
+        if mid:
+            m["preview_active"] = "true" if (LISTEN_METER_DIR / f"meter-preview-{mid}").exists() else "false"
+            if not m.get("manufacturer"):
+                m["manufacturer"] = candidate_by_id.get(mid, {}).get("manufacturer", "")
     candidates = sorted(
         candidates,
         key=lambda c: (
@@ -683,7 +779,7 @@ def state(include_ignored: bool = False) -> dict:
         ),
         reverse=True,
     )
-    return {"status": status, "options": options, "meters": meters, "candidates": candidates, "events": events, "ignored": sorted(ignored), "search_candidates": search_candidates, "search_matches": search_matches, "search_status": search_status, "analysis": analysis}
+    return {"status": status, "options": options, "meters": meters, "pending_meters": pending_meters, "candidates": candidates, "events": events, "ignored": sorted(ignored), "search_candidates": search_candidates, "search_matches": search_matches, "search_status": search_status, "analysis": analysis}
 
 
 def search_config_model(data: dict) -> dict:
@@ -1283,18 +1379,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"ok": False, "message": f"Invalid id: {cid}"})
                 return
             try:
-                pf = LISTEN_METER_DIR / f"meter-preview-{cid}"
-                if pf.exists():
-                    pf.unlink()
-                # Best-effort: also strip the row from the TSV so the WebGUI
-                # stops showing a stale value while waiting for LISTEN reload.
-                try:
-                    if STATUS_CANDIDATE_VALUES_FILE.exists():
-                        lines = STATUS_CANDIDATE_VALUES_FILE.read_text(encoding='utf-8', errors='replace').splitlines()
-                        kept = [l for l in lines if normalize_meter_id(l.split('\t')[0]) != cid]
-                        STATUS_CANDIDATE_VALUES_FILE.write_text('\n'.join(kept) + ('\n' if kept else ''), encoding='utf-8')
-                except OSError:
-                    pass
+                _cleanup_preview_cache(cid)
                 RELOAD_LISTEN_FLAG.touch()
                 RELOAD_PIPELINE_FLAG.touch()
                 webui_add_event('ok', f'Preview canceled for {cid}.')
