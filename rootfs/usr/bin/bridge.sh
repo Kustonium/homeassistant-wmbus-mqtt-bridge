@@ -1123,6 +1123,70 @@ meter_id_from_raw_hex() {
   echo "${id_le:6:2}${id_le:4:2}${id_le:2:2}${id_le:0:2}"
 }
 
+# Decode the 3-letter EN 13757 manufacturer code from a raw wMBus telegram.
+# Frame layout (hex chars): L=0:2 C=2:4 M=4:8 A=8:20. The 2-byte M-field is
+# little-endian; the 16-bit value packs three 5-bit letters (1..26 -> A..Z):
+#   value = (L1<<10) | (L2<<5) | L3 , letter = code + 64.
+# Returns the 3-letter code (e.g. "SAP", "DME") or "" when the field does not
+# decode to three A..Z letters. Used only as a manufacturer fallback when the
+# full wmbusmeters text name is not available (JSON-only candidate path).
+mfct_code_from_raw_hex() {
+  local raw="$1" m val l1 l2 l3
+  raw="${raw//[[:space:]]/}"
+  [[ "${#raw}" -ge 8 ]] || { echo ""; return 0; }
+  m="${raw:4:4}"
+  [[ "${m}" =~ ^[0-9A-Fa-f]{4}$ ]] || { echo ""; return 0; }
+  # Byte-swap (little-endian) to get the 16-bit manufacturer value.
+  val=$(( 16#${m:2:2}${m:0:2} ))
+  l1=$(( (val >> 10) & 0x1f ))
+  l2=$(( (val >> 5) & 0x1f ))
+  l3=$(( val & 0x1f ))
+  (( l1 >= 1 && l1 <= 26 && l2 >= 1 && l2 <= 26 && l3 >= 1 && l3 <= 26 )) \
+    || { echo ""; return 0; }
+  awk -v a="$((l1 + 64))" -v b="$((l2 + 64))" -v c="$((l3 + 64))" \
+    'BEGIN { printf "%c%c%c", a, b, c }'
+}
+
+# Fallback fill of the manufacturer column (9) for an EXISTING candidate row
+# whose manufacturer is still empty. Deliberately conservative:
+#   - never creates a row (would spawn a phantom candidate for an official meter),
+#   - only writes when column 9 is empty, so the richer full-text name captured
+#     by the LISTEN text path (e.g. "DME ...") is never downgraded to the bare
+#     code, and a later text update still overwrites the code via
+#     _upsert_candidate_row,
+#   - touches no reception stats and emits no events (no double counting).
+candidate_fill_manufacturer_code() {
+  local _id="$1" _code="$2"
+  [[ "${_id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
+  [[ -n "${_code}" ]] || return 0
+  local _file="${STATUS_CANDIDATES_FILE}"
+  [[ -f "${_file}" ]] || return 0
+  # Cheap lock-free pre-check: only take the lock when a fillable row exists.
+  awk -F '\t' -v id="${_id}" \
+    '$1 == id && (NF < 9 || $9 == "") { found = 1 } END { exit found ? 0 : 1 }' \
+    "${_file}" 2>/dev/null || return 0
+  (
+    flock -x 9
+    local _tmp
+    _tmp="$(mktemp "${_file}.tmp.XXXXXX")" || return 1
+    if ! awk -F $'\t' -v OFS=$'\t' -v id="${_id}" -v code="${_code}" '
+        $1 == id {
+          while (NF < 9) { $(NF + 1) = "" }
+          if ($9 == "") { $9 = code }
+        }
+        { print }
+      ' "${_file}" > "${_tmp}"; then
+      rm -f "${_tmp}"
+      return 1
+    fi
+    if ! mv "${_tmp}" "${_file}"; then
+      rm -f "${_tmp}"
+      return 1
+    fi
+    log_debug "[DIAG] candidate ${_id}: filled manufacturer fallback code=${_code}"
+  ) 9>"${STATUS_CANDIDATES_FILE}.lock"
+}
+
 # Map an OMS device-type byte (A/TYPE, raw[18:20]) to a human label. Covers the
 # device types seen in practice plus a safe fallback — no need for a full
 # 0x00-0xFF table.
@@ -1148,6 +1212,17 @@ status_raw_candidate_seen() {
   raw="$(echo "${raw}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
   id="$(meter_id_from_raw_hex "${raw}")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
+
+  # Manufacturer fallback: every raw telegram carries the M-field, so decode the
+  # EN 13757 3-letter code and fill it into an existing candidate row that has no
+  # manufacturer yet. This heals candidates whose only updates arrive via the
+  # JSON path (a meter-preview-<id> file makes the parallel LISTEN decode the
+  # telegram to JSON, which carries no manufacturer text), independent of LISTEN
+  # reloads. Fill-only-when-empty keeps the full text name from the LISTEN text
+  # path authoritative. Does NOT create rows or touch stats.
+  local _mfct_code
+  _mfct_code="$(mfct_code_from_raw_hex "${raw}")"
+  [[ -n "${_mfct_code}" ]] && candidate_fill_manufacturer_code "${id}" "${_mfct_code}"
 
   # This runs on EVERY raw telegram (status_raw_seen) and OVERWRITES the
   # candidate row. Only register straight from the link-layer A-field for
