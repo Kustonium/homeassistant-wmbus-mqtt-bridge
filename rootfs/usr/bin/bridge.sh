@@ -49,6 +49,9 @@ STATUS_CANDIDATE_RAW_FILE="${BASE}/status_candidate_raw.tsv"
 # the parallel LISTEN instance has a meter-preview-<id> file in its config dir.
 # Format: id<TAB>value<TAB>value_key<TAB>iso_timestamp
 STATUS_CANDIDATE_VALUES_FILE="${BASE}/status_candidate_values.tsv"
+# Per-candidate preview lifecycle state: pending | decoded_value | decoded_without_numeric_value
+# Format: id<TAB>state<TAB>iso_timestamp<TAB>note
+STATUS_CANDIDATE_PREVIEW_STATE_FILE="${BASE}/status_candidate_preview_state.tsv"
 # Per-ESP-device telegram tracking — written by the background MQTT subscriber
 # that listens to the RAW topic itself. The "+" wildcard segment carries the
 # device name (e.g. wmbus/xiaoseed/telegram → "xiaoseed"). Lets the WebGUI
@@ -91,7 +94,13 @@ RAW_RATE_CUR_MIN_EPOCH=0
 RAW_RATE_CUR_MIN_COUNT=0
 RAW_RATE_PREV_MIN_COUNT=0
 
-touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}"
+touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}"
+# Remove any orphaned pending-reload marker left by a hard stop during deferred sleep.
+rm -rf "${BASE}/.reload_listen_pending" 2>/dev/null || true
+# Session-scoped attempt counter dir — counts text-only telegrams per preview candidate
+# without JSON. Cleared on every bridge start so stale counts never carry over.
+rm -rf "${BASE}/.preview_attempts" 2>/dev/null || true
+mkdir -p "${BASE}/.preview_attempts" 2>/dev/null || true
 : > "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" 2>/dev/null || true
 # Preview values are session-scoped — clear stale entries from previous runs
 # so the WebGUI doesn't show outdated readings (or the legacy first-numeric-field
@@ -225,6 +234,105 @@ status_find_recent_raw_for_id() {
   done
 }
 
+# Atomic, serialized replace-or-insert for a single-keyed TSV file.
+# Holds an exclusive flock on FILE.lock for the entire read-modify-write.
+# Uses mktemp so concurrent writers never collide on a shared .tmp path.
+_tsv_upsert() {
+  local file="$1" id="$2" row="$3"
+  (
+    flock -x 9
+    local _tmp
+    _tmp="$(mktemp "${file}.tmp.XXXXXX")" || return 1
+    awk -F '\t' -v id="${id}" '$1 != id {print}' "${file}" 2>/dev/null > "${_tmp}" || true
+    printf '%s\n' "${row}" >> "${_tmp}"
+    mv "${_tmp}" "${file}" 2>/dev/null || { rm -f "${_tmp}"; true; }
+  ) 9>"${file}.lock"
+}
+
+_upsert_candidate_row() {
+  local _id="$1" _driver="$2" _type="$3" _last_seen="$4" _seen_count="$5"
+  local _avg_interval_s="$6" _seen_15m="$7" _seen_60m="$8" _manufacturer="${9:-}"
+  local _file="${STATUS_CANDIDATES_FILE}"
+  (
+    flock -x 9
+    local _tmp
+    _tmp="$(mktemp "${_file}.tmp.XXXXXX")" || return 1
+    if ! awk -F $'\t' -v OFS=$'\t' \
+      -v id="${_id}" \
+      -v driver="${_driver}" \
+      -v type_line="${_type}" \
+      -v last_seen="${_last_seen}" \
+      -v seen_count="${_seen_count}" \
+      -v avg_interval_s="${_avg_interval_s}" \
+      -v seen_15m="${_seen_15m}" \
+      -v seen_60m="${_seen_60m}" \
+      -v manufacturer="${_manufacturer}" '
+        BEGIN { final_manufacturer = manufacturer }
+        $1 == id {
+          if (final_manufacturer == "" && NF >= 9 && $9 != "") {
+            final_manufacturer = $9
+          }
+          next
+        }
+        { print }
+        END {
+          print id, driver, type_line, last_seen, seen_count, avg_interval_s, seen_15m, seen_60m, final_manufacturer
+        }
+      ' "${_file}" > "${_tmp}"; then
+      rm -f "${_tmp}"
+      return 1
+    fi
+    if ! mv "${_tmp}" "${_file}"; then
+      rm -f "${_tmp}"
+      return 1
+    fi
+  ) 9>"${STATUS_CANDIDATES_FILE}.lock"
+}
+
+# Write or update a per-candidate preview lifecycle state row.
+# States: pending | decoded_value | decoded_without_numeric_value | no_decode_result
+_set_preview_state() {
+  local id="$1" state="$2" note="${3:-}"
+  _tsv_upsert "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" "${id}" \
+    "$(printf '%s\t%s\t%s\t%s' "${id}" "${state}" "$(iso_now)" "${note}")"
+  # Discard the attempt counter once a terminal decode outcome is known.
+  case "${state}" in
+    decoded_value|decoded_without_numeric_value|no_decode_result)
+      rm -f "${BASE}/.preview_attempts/${id}" 2>/dev/null || true
+      ;;
+  esac
+}
+
+# Debounced .reload_listen trigger — at most one LISTEN restart per 10 seconds.
+# When called within the cooldown window a single deferred fire is scheduled via
+# a background sleep so all meter-preview-<id> files written during the burst are
+# picked up on the next restart (supervisor loop polls every 2 s).
+#
+# Pending marker: mkdir is atomic on POSIX — exactly one concurrent caller wins
+# the race and schedules the background worker; the others are silently no-ops.
+# The worker sleeps only the remaining cooldown time (not a full 10 s), so a
+# candidate detected near the end of a window reloads as soon as the gate opens.
+_request_listen_reload() {
+  local gate="${BASE}/.reload_listen_gate"
+  local pending="${BASE}/.reload_listen_pending"
+  local now last remaining
+  now="$(date +%s 2>/dev/null || echo 0)"
+  last="$(cat "${gate}" 2>/dev/null || echo 0)"
+  if (( now - last >= 10 )); then
+    log "[DIAG] reload_listen: immediate (elapsed=$(( now - last ))s >= 10s)"
+    printf '%s\n' "${now}" > "${gate}"
+    touch "${BASE}/.reload_listen" 2>/dev/null || true
+    log "[DIAG] reload_listen: touched .reload_listen"
+  elif mkdir "${pending}" 2>/dev/null; then
+    remaining=$(( 10 - (now - last) ))
+    (( remaining < 1 )) && remaining=1
+    log "[DIAG] reload_listen: deferred in ${remaining}s (elapsed=$(( now - last ))s < 10s)"
+    ( sleep "${remaining}"; rmdir "${pending}" 2>/dev/null; printf '%s\n' "$(date +%s)" > "${gate}"; touch "${BASE}/.reload_listen" 2>/dev/null; log "[DIAG] reload_listen: deferred fired, touched .reload_listen" ) 2>/dev/null &
+  else
+    log "[DIAG] reload_listen: suppressed (pending already set, elapsed=$(( now - last ))s)"
+  fi
+}
+
 status_upsert_candidate_analysis() {
   local id
   local encryption="$2"
@@ -233,16 +341,13 @@ status_upsert_candidate_analysis() {
   local security="${5:-}"
   local raw_len="${6:-0}"
   local last_seen="${7:-}"
-  local tmp
 
   id="$(normalize_meter_id "$1")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   [[ -n "${last_seen}" ]] || last_seen="$(iso_now)"
 
-  tmp="${STATUS_CANDIDATE_ANALYSIS_FILE}.tmp"
-  awk -F '\t' -v id="${id}" '$1 != id {print}' "${STATUS_CANDIDATE_ANALYSIS_FILE}" 2>/dev/null > "${tmp}" || true
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${id}" "${encryption:-unknown}" "${note:-}" "${ci:-}" "${security:-}" "${raw_len:-0}" "${last_seen}" >> "${tmp}"
-  mv "${tmp}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" 2>/dev/null || true
+  _tsv_upsert "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${id}" \
+    "$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s' "${id}" "${encryption:-unknown}" "${note:-}" "${ci:-}" "${security:-}" "${raw_len:-0}" "${last_seen}")"
 }
 
 candidate_autodecode_file() {
@@ -268,14 +373,18 @@ ensure_candidate_autodecode() {
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   file="$(candidate_autodecode_file "${id}")"
 
+  log "[DIAG] autodecode ${id}: file=${file} driver=${driver:-auto} type=${type_line:-?} reload=${reload}"
+
   if candidate_type_requires_aes "${type_line}"; then
+    log "[DIAG] autodecode ${id}: AES required, skipping preview"
     if [[ -f "${file}" ]]; then
       rm -f "${file}" 2>/dev/null || true
+      rm -f "${BASE}/.preview_attempts/${id}" 2>/dev/null || true
       if [[ "${reload}" == "true" ]]; then
         # Preview files live in LISTEN_METER_DIR — only the LISTEN instance
         # needs reloading. Do NOT touch RELOAD_FLAG/.reload_pipeline here: that
         # restarts the main DECODE pipeline on every new candidate (churn loop).
-        touch "${BASE}/.reload_listen" 2>/dev/null || true
+        _request_listen_reload
       fi
     fi
     return 0
@@ -293,14 +402,20 @@ ensure_candidate_autodecode() {
 
   if [[ ! -f "${file}" ]] || ! cmp -s "${tmp}" "${file}" 2>/dev/null; then
     mv "${tmp}" "${file}" 2>/dev/null || true
+    log "[DIAG] autodecode ${id}: wrote ${file} (driver=${driver:-auto})"
+    _set_preview_state "${id}" "pending"
+    rm -f "${BASE}/.preview_attempts/${id}" 2>/dev/null || true
     if [[ "${reload}" == "true" ]]; then
       # Only the LISTEN instance reads these preview files — reload just it.
       # Touching RELOAD_FLAG/.reload_pipeline would needlessly restart the main
       # DECODE pipeline on every newly heard candidate (the churn seen in logs).
-      touch "${BASE}/.reload_listen" 2>/dev/null || true
+      # _request_listen_reload debounces bursts (many new candidates at once)
+      # to at most one restart per 10 s, with a deferred fire for late arrivals.
+      _request_listen_reload
     fi
   else
     rm -f "${tmp}" 2>/dev/null || true
+    log "[DIAG] autodecode ${id}: ${file} unchanged, no reload triggered"
   fi
 }
 
@@ -318,16 +433,13 @@ status_record_candidate_raw() {
   local id
   local raw="$2"
   local ts="${3:-}"
-  local tmp
   id="$(normalize_meter_id "$1")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   [[ -n "${raw}" ]] || return 0
   [[ -n "${ts}" ]] || ts="$(iso_now)"
 
-  tmp="${STATUS_CANDIDATE_RAW_FILE}.tmp"
-  awk -F '\t' -v id="${id}" '$1 != id {print}' "${STATUS_CANDIDATE_RAW_FILE}" 2>/dev/null > "${tmp}" || true
-  printf '%s\t%s\t%s\t%s\n' "${id}" "${ts}" "${#raw}" "${raw}" >> "${tmp}"
-  mv "${tmp}" "${STATUS_CANDIDATE_RAW_FILE}" 2>/dev/null || true
+  _tsv_upsert "${STATUS_CANDIDATE_RAW_FILE}" "${id}" \
+    "$(printf '%s\t%s\t%s\t%s' "${id}" "${ts}" "${#raw}" "${raw}")"
 }
 
 status_analyze_candidate_from_text() {
@@ -490,7 +602,7 @@ status_raw_seen() {
 
 status_meter_seen() {
   local json_line="$1"
-  local id name meter media value_key value value_parts last_seen tmp
+  local id name meter media value_key value value_parts last_seen
   id="$(normalize_meter_id "$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   name="$(jq -r '.name // empty' <<<"${json_line}" 2>/dev/null || true)"
@@ -570,11 +682,8 @@ status_meter_seen() {
   status_record_seen "${id}" "meter"
   last_seen="$(iso_now)"
   IFS=$'\t' read -r seen_count avg_interval_s seen_15m seen_60m < <(status_seen_stats "${id}" "meter")
-  tmp="${STATUS_METERS_FILE}.tmp"
-  awk -F '	' -v id="${id}" '$1 != id {print}' "${STATUS_METERS_FILE}" 2>/dev/null > "${tmp}" || true
-  printf '%s	%s	%s	%s	%s	%s	%s	%s	%s	%s	%s	%s	%s
-' "${id}" "${name}" "${meter}" "${media}" "${value_key}" "${value}" "${last_seen}" "published" "${seen_count}" "${avg_interval_s}" "${seen_15m}" "${seen_60m}" "${value_parts}" >> "${tmp}"
-  mv "${tmp}" "${STATUS_METERS_FILE}" 2>/dev/null || true
+  _tsv_upsert "${STATUS_METERS_FILE}" "${id}" \
+    "$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "${id}" "${name}" "${meter}" "${media}" "${value_key}" "${value}" "${last_seen}" "published" "${seen_count}" "${avg_interval_s}" "${seen_15m}" "${seen_60m}" "${value_parts}")"
 }
 
 status_candidate_seen() {
@@ -582,7 +691,8 @@ status_candidate_seen() {
   local driver="${2:-auto}"
   local type_line="${3:-}"
   local update_status="${4:-true}"
-  local now tmp
+  local manufacturer="${5:-}"
+  local now
   STATUS_WMBUSMETERS_RUNNING="true"
   id="$(normalize_meter_id "$1")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
@@ -593,11 +703,7 @@ status_candidate_seen() {
   status_record_seen "${id}" "candidate"
   now="$(iso_now)"
   IFS=$'\t' read -r seen_count avg_interval_s seen_15m seen_60m < <(status_seen_stats "${id}" "candidate")
-  tmp="${STATUS_CANDIDATES_FILE}.tmp"
-  awk -F '	' -v id="${id}" '$1 != id {print}' "${STATUS_CANDIDATES_FILE}" 2>/dev/null > "${tmp}" || true
-  printf '%s	%s	%s	%s	%s	%s	%s	%s
-' "${id}" "${driver}" "${type_line}" "${now}" "${seen_count}" "${avg_interval_s}" "${seen_15m}" "${seen_60m}" >> "${tmp}"
-  mv "${tmp}" "${STATUS_CANDIDATES_FILE}" 2>/dev/null || true
+  _upsert_candidate_row "${id}" "${driver}" "${type_line}" "${now}" "${seen_count}" "${avg_interval_s}" "${seen_15m}" "${seen_60m}" "${manufacturer}"
   status_analyze_candidate_from_text "${id}" "${driver}" "${type_line}"
   ensure_candidate_autodecode "${id}" "${driver:-auto}" "${type_line:-}"
   if [[ "${existed}" != "true" ]]; then
@@ -1517,7 +1623,6 @@ process_search_json() {
 refresh_meter_files() {
   rm -f "${METER_DIR}/meter-"* 2>/dev/null || true
 
-  METERS_COUNT=0
   OFFICIAL_METERS_COUNT=0
   local configured_count=0
   if [[ -f "${OPTIONS_JSON}" ]] && jq -e '.meters and (.meters|length>0)' "${OPTIONS_JSON}" >/dev/null 2>&1; then
@@ -1529,7 +1634,6 @@ refresh_meter_files() {
     local cached_count
     cached_count="$(create_search_meter_files_from_cache)"
     if [[ "${cached_count}" =~ ^[0-9]+$ && "${cached_count}" -gt 0 ]]; then
-      METERS_COUNT="${cached_count}"
       SEARCH_USING_TEMP_METERS="true"
       SEARCH_TEMP_METERS_LOADED="${cached_count}"
       warn "No user meters configured -> SEARCH MODE (temporary cached candidates=${cached_count}, expected=${SEARCH_EXPECTED_VALUE_M3} m3, tolerance=${SEARCH_TOLERANCE_M3} m3)."
@@ -1597,7 +1701,6 @@ refresh_meter_files() {
 
       log "meter: ${friendly_name} id=${mid} driver=${driver}"
     done < <(jq -c '.meters[]' "${OPTIONS_JSON}" 2>/dev/null || true)
-    METERS_COUNT="${loaded_count}"
     OFFICIAL_METERS_COUNT="${loaded_count}"
     if [[ "${loaded_count}" -gt 0 ]]; then
       write_search_status "configured" "official_meters_configured"
@@ -1616,8 +1719,8 @@ RELOAD_FLAG="${BASE}/.reload_pipeline"
 rm -f "${RELOAD_FLAG}" 2>/dev/null || true
 
 # Initial meter registration before the restart loop kicks in. Without
-# this, METERS_COUNT and OFFICIAL_METERS_COUNT would stay at their
-# default (0), and the first iteration would unconditionally go LISTEN.
+# this, OFFICIAL_METERS_COUNT would stay at 0 and parse_listen_candidates
+# would mis-guard candidate double-counting on the first pipeline start.
 refresh_meter_files
 
 # ------------------------------------------------------------
@@ -1837,13 +1940,14 @@ emit_snippet_if_new() {
   local id
   local driver="$2"
   local type_line="${3:-}"
+  local manufacturer="${4:-}"
   id="$(normalize_meter_id "$1")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
 
   # Update dashboard stats every time this candidate is heard.
   # Pass the real type_line from wmbusmeters output so the webui can
   # show encryption status (e.g. "Electricity meter (0x02) encrypted").
-  status_candidate_seen "${id}" "${driver:-auto}" "${type_line:-listen}"
+  status_candidate_seen "${id}" "${driver:-auto}" "${type_line:-listen}" "true" "${manufacturer}"
 
   if ! grep -qx "${id}" "${SNIPPET_STATE}" 2>/dev/null; then
     echo "${id}" >> "${SNIPPET_STATE}"
@@ -1888,7 +1992,7 @@ emit_snippet_if_new() {
 #   3. last resort: first numeric field
 _store_candidate_value() {
   local json_line="$1"
-  local id value_key value now tmp
+  local id value_key value now
   id="$(normalize_meter_id "$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null)")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   # Step 1 — cumulative meter reading. Excludes production/tariff registers and
@@ -1925,13 +2029,17 @@ _store_candidate_value() {
       ' <<<"${json_line}" 2>/dev/null | head -n 1
     )
   fi
-  [[ -n "${value}" ]] || return 0
+  if [[ -z "${value}" ]]; then
+    log "[DIAG] _store_candidate_value ${id}: no numeric value found, skipping"
+    _set_preview_state "${id}" "decoded_without_numeric_value"
+    return 0
+  fi
+  log "[DIAG] _store_candidate_value ${id}: value_key=${value_key} value=${value}"
   now="$(iso_now)"
-  tmp="${STATUS_CANDIDATE_VALUES_FILE}.tmp"
-  # Remove any previous row for this id, then append the new one.
-  awk -F '\t' -v id="${id}" '$1 != id {print}' "${STATUS_CANDIDATE_VALUES_FILE}" 2>/dev/null > "${tmp}" || true
-  printf '%s\t%s\t%s\t%s\n' "${id}" "${value}" "${value_key}" "${now}" >> "${tmp}"
-  mv "${tmp}" "${STATUS_CANDIDATE_VALUES_FILE}" 2>/dev/null || true
+  _tsv_upsert "${STATUS_CANDIDATE_VALUES_FILE}" "${id}" \
+    "$(printf '%s\t%s\t%s\t%s' "${id}" "${value}" "${value_key}" "${now}")"
+  _set_preview_state "${id}" "decoded_value"
+  log "[DIAG] _store_candidate_value ${id}: wrote to status_candidate_values.tsv"
 }
 
 status_candidate_seen_from_json() {
@@ -1963,49 +2071,105 @@ status_candidate_seen_from_json() {
   status_candidate_seen "${id}" "${driver}" "${type_line}"
 }
 
+# Process one completed text-output block from the parallel LISTEN instance.
+# Called with a delayed flush — when the next "Received telegram from:" line
+# arrives — so manufacturer: (which follows driver: in wmbusmeters output)
+# is always captured before the block is dispatched.
+# Arguments: id  driver  type  manufacturer
+_process_listen_text_block() {
+  local _id="$1" _drv="$2" _type="$3" _mfr="$4"
+  [[ -n "${_id}" && -n "${_drv}" ]] || return 0
+  # When there are no official meters, the primary pipeline already runs in
+  # LISTEN mode and updates candidate stats. A secondary LISTEN may still be
+  # running for preview decoding; do not double-count candidate receptions.
+  if [[ "${OFFICIAL_METERS_COUNT:-0}" -gt 0 ]]; then
+    if [[ "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
+      search_cache_candidate "${_id}" "${_drv}" "${_type}"
+    else
+      emit_snippet_if_new "${_id}" "${_drv}" "${_type}" "${_mfr}"
+    fi
+  fi
+  # Track text-only telegrams (no JSON) for preview candidates.
+  # When a preview file exists but wmbusmeters never emits JSON (driver not
+  # recognised or unsupported telegram variant), the state stays "pending"
+  # forever. After count >= 3 AND elapsed >= 60 s, set no_decode_result so
+  # the UI shows "brak wyniku dekodowania" instead of "dekoduję..." forever.
+  # JSON arriving later still overrides via _store_candidate_value → decoded_value
+  # or decoded_without_numeric_value (both use _tsv_upsert which replaces the row).
+  if ! candidate_type_requires_aes "${_type}"; then
+    local _pf _cur_state _cnt_file _cnt _start _now _elapsed _cnt_tmp
+    _pf="${LISTEN_METER_DIR}/meter-preview-${_id}"
+    if [[ -f "${_pf}" ]]; then
+      _cur_state="$(awk -F '\t' -v id="${_id}" '$1==id {print $2; exit}' \
+        "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" 2>/dev/null || true)"
+      if [[ "${_cur_state}" == "pending" ]]; then
+        _cnt_file="${BASE}/.preview_attempts/${_id}"
+        _cnt=0
+        _start=0
+        if [[ -f "${_cnt_file}" ]]; then
+          IFS=$'\t' read -r _cnt _start < "${_cnt_file}" 2>/dev/null || true
+          [[ "${_cnt}" =~ ^[0-9]+$ ]] || _cnt=0
+          [[ "${_start}" =~ ^[0-9]+$ ]] || _start=0
+        fi
+        _now="$(date +%s 2>/dev/null || echo 0)"
+        (( _start > 0 )) || _start="${_now}"
+        _cnt=$(( _cnt + 1 ))
+        _elapsed=$(( _now - _start ))
+        _cnt_tmp="$(mktemp "${_cnt_file}.tmp.XXXXXX" 2>/dev/null)" || true
+        if [[ -n "${_cnt_tmp}" ]]; then
+          printf '%d\t%d\n' "${_cnt}" "${_start}" > "${_cnt_tmp}"
+          mv "${_cnt_tmp}" "${_cnt_file}" 2>/dev/null \
+            || { rm -f "${_cnt_tmp}" 2>/dev/null || true; }
+        fi
+        if (( _cnt >= 3 && _elapsed >= 60 )); then
+          log "[DIAG] LISTEN-parse: no JSON after ${_cnt} text-only telegrams (${_elapsed}s) for ${_id} → no_decode_result"
+          _set_preview_state "${_id}" "no_decode_result"
+        else
+          log "[DIAG] LISTEN-parse: text-only telegram #${_cnt} for preview ${_id} (elapsed=${_elapsed}s, need count>=3 AND elapsed>=60)"
+        fi
+      fi
+    fi
+  fi
+}
+
 parse_listen_candidates() {
   # Suppress status.json writes from this subshell to prevent races
   # with the parent shell's pipeline writes.
   write_status_json() { :; }
 
-  local last_id="" last_driver="" last_type=""
+  local last_id="" last_driver="" last_type="" last_manufacturer=""
   while IFS= read -r line; do
     # Decoded JSON output — present only when LISTEN has a meter-preview-<id>
     # config matching this telegram's ID. Capture the primary numeric value
     # for the WebGUI "Preview value" feature.
     if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
+      log "[DIAG] LISTEN-parse: JSON telegram received: ${line:0:160}"
       if [[ "${OFFICIAL_METERS_COUNT:-0}" -gt 0 ]]; then
         status_candidate_seen_from_json "${line}"
       fi
+      log "[DIAG] LISTEN-parse: calling _store_candidate_value"
       _store_candidate_value "${line}"
       continue
     fi
     # Plain listen-mode text output — extract candidate metadata.
+    # Flush the previous block when a new telegram starts so manufacturer:
+    # (which follows driver: in wmbusmeters output) is captured before dispatch.
     if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9A-Fa-f]{8}) ]]; then
+      _process_listen_text_block "${last_id}" "${last_driver}" "${last_type}" "${last_manufacturer}"
       last_id="$(normalize_meter_id "${BASH_REMATCH[1]}")"
       last_type=""
       last_driver=""
+      last_manufacturer=""
     elif [[ "${line}" =~ ^[[:space:]]*type:[[:space:]]*(.*)$ ]]; then
       last_type="${BASH_REMATCH[1]}"
     elif [[ "${line}" =~ ^[[:space:]]*driver:\ ([a-zA-Z0-9_]+) ]]; then
       last_driver="${BASH_REMATCH[1]}"
-    fi
-    if [[ -n "${last_id}" && -n "${last_driver}" ]]; then
-      # When there are no official meters, the primary pipeline already runs in
-      # LISTEN mode and updates candidate stats. A secondary LISTEN may still be
-      # running for preview decoding; do not double-count candidate receptions.
-      if [[ "${OFFICIAL_METERS_COUNT:-0}" -gt 0 ]]; then
-        if [[ "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
-          search_cache_candidate "${last_id}" "${last_driver}" "${last_type}"
-        else
-          emit_snippet_if_new "${last_id}" "${last_driver}" "${last_type}"
-        fi
-      fi
-      last_id=""
-      last_driver=""
-      last_type=""
+    elif [[ "${line}" =~ ^[[:space:]]*manufacturer:[[:space:]]*(.*)$ ]]; then
+      last_manufacturer="${BASH_REMATCH[1]}"
     fi
   done
+  # Flush the last block after the stream ends.
+  _process_listen_text_block "${last_id}" "${last_driver}" "${last_type}" "${last_manufacturer}"
 }
 
 # ------------------------------------------------------------
@@ -2017,6 +2181,7 @@ run_once() {
   last_id=""
   last_driver=""
   last_type=""
+  last_manufacturer=""
 
   # ─── Soft-reload flag watcher ────────────────────────────────────────
   # Polls for ${RELOAD_FLAG} every 2 s. When present, removes it and kills
@@ -2100,9 +2265,13 @@ run_once() {
             last_id="$(normalize_meter_id "${BASH_REMATCH[1]}")"
             last_type=""
             last_driver=""
+            last_manufacturer=""
           fi
           if [[ "${line}" =~ ^[[:space:]]*type:[[:space:]]*(.*)$ ]]; then
             last_type="${BASH_REMATCH[1]}"
+          fi
+          if [[ "${line}" =~ ^[[:space:]]*manufacturer:[[:space:]]*(.*)$ ]]; then
+            last_manufacturer="${BASH_REMATCH[1]}"
           fi
           if [[ "${line}" =~ ^[[:space:]]*driver:\ ([a-zA-Z0-9_]+) ]]; then
             last_driver="${BASH_REMATCH[1]}"
@@ -2111,11 +2280,12 @@ run_once() {
             if [[ "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
               search_cache_candidate "${last_id}" "${last_driver}" "${last_type}"
             else
-              emit_snippet_if_new "${last_id}" "${last_driver}" "${last_type}"
+              emit_snippet_if_new "${last_id}" "${last_driver}" "${last_type}" "${last_manufacturer}"
             fi
             last_id=""
             last_driver=""
             last_type=""
+            last_manufacturer=""
           fi
         fi
 
@@ -2197,6 +2367,8 @@ start_listen_instance() {
     # files in /data/listen/etc/wmbusmeters.d/ without touching the DECODE
     # pipeline. Reload cycle ~2-3 s.
     while true; do
+      _diag_preview_count="$(find "${LISTEN_METER_DIR}" -maxdepth 1 -name 'meter-preview-*' 2>/dev/null | wc -l | tr -d ' ')"
+      log "[DIAG] LISTEN supervisor: starting pipeline (meter-preview-* count=${_diag_preview_count} in ${LISTEN_METER_DIR})"
       ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
         | awk '
             function ishex(s) { return (s ~ /^[0-9A-Fa-f]+$/) }
@@ -2212,13 +2384,16 @@ start_listen_instance() {
         | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${LISTEN_BASE}" 2>&1 \
         | parse_listen_candidates &
       pipeline_pid=$!
+      log "[DIAG] LISTEN supervisor: pipeline started (pid=${pipeline_pid})"
       # Poll for reload flag or natural exit.
       while kill -0 "${pipeline_pid}" 2>/dev/null; do
         if [[ -f "${BASE}/.reload_listen" ]]; then
+          log "[DIAG] LISTEN supervisor: .reload_listen detected, killing pid=${pipeline_pid}"
           rm -f "${BASE}/.reload_listen" 2>/dev/null || true
           pkill -TERM -P "${pipeline_pid}" 2>/dev/null || true
           kill -TERM "${pipeline_pid}" 2>/dev/null || true
           wait "${pipeline_pid}" 2>/dev/null || true
+          log "[DIAG] LISTEN supervisor: pipeline stopped, restarting"
           break
         fi
         sleep 2
@@ -2302,14 +2477,14 @@ while true; do
   # one more telegram to create its meter-preview file.
   sync_candidate_autodecode_files
 
-  # LISTEN is needed when DECODE is active, and also when preview files exist.
-  # In pure LISTEN mode the primary pipeline sees candidates, but only this
-  # separate config dir contains meter-preview-* files for value preview.
-  if [[ "${METERS_COUNT}" -gt 0 || "$(listen_preview_count)" -gt 0 ]]; then
-    start_listen_instance
-  else
-    stop_listen_instance
-  fi
+  # Parallel LISTEN always starts unconditionally, including pure LISTEN /
+  # Discover mode with no configured meters and no preview files yet.
+  # Without this, no supervisor is alive when the first candidate triggers
+  # ensure_candidate_autodecode() + _request_listen_reload(), so .reload_listen
+  # is never handled and preview decoding never begins.
+  # Double-counting in pure LISTEN mode is prevented inside parse_listen_candidates()
+  # by the OFFICIAL_METERS_COUNT guard — not at the instance-start level.
+  start_listen_instance
 
   run_once
   rc=$?

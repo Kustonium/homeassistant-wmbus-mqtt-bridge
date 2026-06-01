@@ -335,15 +335,29 @@
   function encBadge(enc, note) {
     const e = (enc || "").toLowerCase();
     if (!e) return `<span class="pill muted" title="${escapeHtml(t("enc_unknown", "Not yet analyzed"))}">?</span>`;
-    const bad  = ["encrypted", "aes_required", "aes"].includes(e);
-    const good = ["not_encrypted", "no_aes", "plain", "unencrypted", "unknown"].includes(e);
-    const label = bad ? t("enc_aes_req", "AES req.") : t("enc_no_aes", "no AES");
-    const cls   = bad ? "bad" : "ok";
+    const bad     = ["encrypted", "aes_required", "aes"].includes(e);
+    const unknown = e === "unknown";
+    const label   = bad     ? t("enc_aes_req", "AES req.")
+                  : unknown ? t("enc_unknown", "Not yet analyzed")
+                  :            t("enc_no_aes", "no AES");
+    const cls     = bad ? "bad" : unknown ? "muted" : "ok";
     const title = note ? ` title="${escapeHtml(note)}"` : "";
     return `<span class="pill ${cls}"${title}>${escapeHtml(label)}</span>`;
   }
 
-  // ── #6 Reception interval formatter ──────────────────────────────────────
+  // ── #6 Manufacturer compact formatter ────────────────────────────────────
+  // "(MAD) Maddalena, Italy (0x3424)" → "MAD · Maddalena"
+  // Returns empty string for missing/empty input (caller shows "—").
+  function compactManufacturer(mfr) {
+    if (!mfr) return "";
+    const m = mfr.match(/^\(([^)]+)\)\s*(.*)/);
+    if (!m) return mfr.split(",")[0].trim();
+    const code = m[1];
+    const name = m[2].split(",")[0].trim();
+    return (code && name) ? `${code} · ${name}` : (name || code || mfr);
+  }
+
+  // ── #7 Reception interval formatter ──────────────────────────────────────
   function fmtInterval(seconds) {
     const n = Number(seconds);
     if (!n || n <= 0) return t("not_enough_data", "not enough data");
@@ -1349,6 +1363,7 @@
               <th>${escapeHtml(t("driver", "Driver"))}</th>
               <th>${escapeHtml(t("webui_type", "Type"))}</th>
               <th>${escapeHtml(t("media", "Medium"))}</th>
+              <th>${escapeHtml(t("manufacturer_col", "Manufacturer"))}</th>
               <th>${escapeHtml(t("encryption_label", "Encryption"))}</th>
               <th>${escapeHtml(t("preview_value_col", "Preview value"))}</th>
               <th>${escapeHtml(t("webui_last_seen", "Last seen"))}</th>
@@ -1384,19 +1399,38 @@
                 const previewVal    = String(row.preview_value || "").trim();
                 const previewKey    = String(row.preview_value_key || "").trim();
                 const previewUnit   = previewKey ? unitFromKey(previewKey) : "";
-                const aesRequired = enc === "encrypted" || enc === "aes_required" || enc === "aes";
+                const previewState  = String(row.preview_state || "").trim();
+                // Parallel LISTEN decoded a valid JSON telegram without an AES key →
+                // encryption is resolved as no_aes. Override "unknown" for display only;
+                // status_candidate_analysis.tsv is updated asynchronously by bridge.sh.
+                const effectiveEnc  = (enc === "unknown" &&
+                                       (previewState === "decoded_value" ||
+                                        previewState === "decoded_without_numeric_value"))
+                                      ? "no_aes"
+                                      : enc;
+                const aesRequired   = effectiveEnc === "encrypted" || effectiveEnc === "aes_required" || effectiveEnc === "aes";
                 const previewCell   = previewVal
                   ? `<span style="font-weight:700;color:#4df08d;">${escapeHtml(previewVal)}</span>${previewUnit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(previewUnit)}</span>` : ""}${previewKey ? `<div class="mono" style="font-size:10px;color:#4a6070;">${escapeHtml(previewKey)}</div>` : ""}`
+                  : previewState === "decoded_without_numeric_value"
+                      ? `<span style="font-size:11px;color:#9eafba;">${escapeHtml(t("preview_no_value", "no value in telegram"))}</span>`
+                  : previewState === "no_decode_result"
+                      ? `<span style="font-size:11px;color:#607a88;">${escapeHtml(t("preview_no_decode_result", "no decode result"))}</span>`
                   : (!aesRequired
                       ? `<span style="font-size:11px;color:#f3c84b;">${escapeHtml(t("preview_pending", "decoding…"))}</span>`
                       : `<span style="color:#4a6070;">—</span>`);
+                const mfrRaw     = String(row.manufacturer || "").trim();
+                const mfrCompact = compactManufacturer(mfrRaw);
+                const mfrCell    = mfrCompact
+                  ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>`
+                  : `<span style="color:#4a6070;">—</span>`;
                 return `
                   <tr data-value="${escapeHtml(previewVal)}">
                     <td><strong>${escapeHtml(id)}</strong></td>
                     <td>${escapeHtml(driver)}</td>
                     <td style="color:#9eafba;font-size:12px;">${escapeHtml(row.type || "-")}</td>
                     <td>${mediaIconHtml(row.type || "", driver)} ${escapeHtml(mediaLabel)}</td>
-                    <td>${encBadge(enc, note)}</td>
+                    <td>${mfrCell}</td>
+                    <td>${encBadge(effectiveEnc, note)}</td>
                     <td>${previewCell}</td>
                     <td>${fmtTime(row.last_seen)}</td>
                     <td>${escapeHtml(String(seen15mAdj))}</td>

@@ -1,4 +1,4 @@
-## 1.5.19
+## 1.5.19-dev
 
 ### Fixed
 - FU-008: Diehl/SAP (mfct 0x304C) RAW fallback no longer hardcodes
