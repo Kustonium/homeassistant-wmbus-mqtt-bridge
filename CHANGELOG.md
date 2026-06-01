@@ -1,3 +1,22 @@
+## Unreleased
+
+### Fixed
+- Candidate `manufacturer` (column 9 of `status_candidates.tsv`) no longer
+  stays empty when official meters are configured. Once a candidate has a
+  `meter-preview-<id>` file, the parallel LISTEN instance decodes its
+  telegrams to JSON — which carries no manufacturer name — and
+  `status_candidate_seen_from_json()` updated the row without it, so
+  persisted candidates (and the configured-meters panel that borrows the
+  candidate's manufacturer) showed a blank `Producent`. Every raw telegram
+  carries the wMBus M-field, so `status_raw_candidate_seen()` now decodes
+  the 3-letter EN 13757 manufacturer code via the new
+  `mfct_code_from_raw_hex()` and fills it into an existing candidate row
+  through `candidate_fill_manufacturer_code()` only when the column is
+  empty. The full text name from the LISTEN text path stays authoritative
+  (a later text update still overwrites the bare code via
+  `_upsert_candidate_row`), no candidate rows are created, and reception
+  stats / events are untouched (no double counting). `bridge.sh` only.
+
 ## 1.5.21-dev
 
 ### Fixed
