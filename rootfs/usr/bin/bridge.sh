@@ -8,9 +8,11 @@ set -euo pipefail
 # - Home Assistant MQTT Discovery (generic): sensor per numeric JSON field
 # ============================================================
 
-log()  { echo "[wmbus-bridge] $*"; }
-warn() { echo "[wmbus-bridge][WARN] $*" >&2; }
-err()  { echo "[wmbus-bridge][ERR] $*" >&2; }
+log()         { echo "[wmbus-bridge] $*"; }
+warn()        { echo "[wmbus-bridge][WARN] $*" >&2; }
+err()         { echo "[wmbus-bridge][ERR] $*" >&2; }
+log_verbose() { [[ "${LOGLEVEL}" == "verbose" || "${LOGLEVEL}" == "debug" ]] && echo "[wmbus-bridge] $*" || true; }
+log_debug()   { [[ "${LOGLEVEL}" == "debug" ]] && echo "[wmbus-bridge] $*" || true; }
 
 need_bin() {
   command -v "$1" >/dev/null 2>&1 || { err "Missing binary: $1"; exit 1; }
@@ -319,17 +321,17 @@ _request_listen_reload() {
   now="$(date +%s 2>/dev/null || echo 0)"
   last="$(cat "${gate}" 2>/dev/null || echo 0)"
   if (( now - last >= 10 )); then
-    log "[DIAG] reload_listen: immediate (elapsed=$(( now - last ))s >= 10s)"
+    log_debug "[DIAG] reload_listen: immediate (elapsed=$(( now - last ))s >= 10s)"
     printf '%s\n' "${now}" > "${gate}"
     touch "${BASE}/.reload_listen" 2>/dev/null || true
-    log "[DIAG] reload_listen: touched .reload_listen"
+    log_debug "[DIAG] reload_listen: touched .reload_listen"
   elif mkdir "${pending}" 2>/dev/null; then
     remaining=$(( 10 - (now - last) ))
     (( remaining < 1 )) && remaining=1
-    log "[DIAG] reload_listen: deferred in ${remaining}s (elapsed=$(( now - last ))s < 10s)"
-    ( sleep "${remaining}"; rmdir "${pending}" 2>/dev/null; printf '%s\n' "$(date +%s)" > "${gate}"; touch "${BASE}/.reload_listen" 2>/dev/null; log "[DIAG] reload_listen: deferred fired, touched .reload_listen" ) 2>/dev/null &
+    log_debug "[DIAG] reload_listen: deferred in ${remaining}s (elapsed=$(( now - last ))s < 10s)"
+    ( sleep "${remaining}"; rmdir "${pending}" 2>/dev/null; printf '%s\n' "$(date +%s)" > "${gate}"; touch "${BASE}/.reload_listen" 2>/dev/null; log_debug "[DIAG] reload_listen: deferred fired, touched .reload_listen" ) 2>/dev/null &
   else
-    log "[DIAG] reload_listen: suppressed (pending already set, elapsed=$(( now - last ))s)"
+    log_debug "[DIAG] reload_listen: suppressed (pending already set, elapsed=$(( now - last ))s)"
   fi
 }
 
@@ -373,10 +375,23 @@ ensure_candidate_autodecode() {
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   file="$(candidate_autodecode_file "${id}")"
 
-  log "[DIAG] autodecode ${id}: file=${file} driver=${driver:-auto} type=${type_line:-?} reload=${reload}"
+  # Skip preview for officially configured meters — they decode via the primary pipeline.
+  # Checked via METER_DIR on disk so the guard works in LISTEN subshell forks where
+  # in-memory variables from the parent process are stale after a soft pipeline reload.
+  if grep -ql "^id=${id,,}$" "${METER_DIR}"/meter-* 2>/dev/null; then
+    if [[ -f "${file}" ]]; then
+      rm -f "${file}" 2>/dev/null || true
+      rm -f "${BASE}/.preview_attempts/${id}" 2>/dev/null || true
+      log "autodecode ${id}: skipped (official meter), pruned orphaned preview"
+      [[ "${reload}" == "true" ]] && _request_listen_reload
+    fi
+    return 0
+  fi
+
+  log_debug "[DIAG] autodecode ${id}: file=${file} driver=${driver:-auto} type=${type_line:-?} reload=${reload}"
 
   if candidate_type_requires_aes "${type_line}"; then
-    log "[DIAG] autodecode ${id}: AES required, skipping preview"
+    log_verbose "[DIAG] autodecode ${id}: AES required, skipping preview"
     if [[ -f "${file}" ]]; then
       rm -f "${file}" 2>/dev/null || true
       rm -f "${BASE}/.preview_attempts/${id}" 2>/dev/null || true
@@ -402,7 +417,7 @@ ensure_candidate_autodecode() {
 
   if [[ ! -f "${file}" ]] || ! cmp -s "${tmp}" "${file}" 2>/dev/null; then
     mv "${tmp}" "${file}" 2>/dev/null || true
-    log "[DIAG] autodecode ${id}: wrote ${file} (driver=${driver:-auto})"
+    log_verbose "[DIAG] autodecode ${id}: wrote ${file} (driver=${driver:-auto})"
     _set_preview_state "${id}" "pending"
     rm -f "${BASE}/.preview_attempts/${id}" 2>/dev/null || true
     if [[ "${reload}" == "true" ]]; then
@@ -415,7 +430,7 @@ ensure_candidate_autodecode() {
     fi
   else
     rm -f "${tmp}" 2>/dev/null || true
-    log "[DIAG] autodecode ${id}: ${file} unchanged, no reload triggered"
+    log_debug "[DIAG] autodecode ${id}: ${file} unchanged, no reload triggered"
   fi
 }
 
@@ -427,6 +442,29 @@ sync_candidate_autodecode_files() {
     [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || continue
     ensure_candidate_autodecode "${id}" "${driver:-auto}" "${type_line:-}" "false"
   done < "${STATUS_CANDIDATES_FILE}"
+}
+
+# Remove meter-preview-<id> files for IDs that are now official configured meters.
+# Called after sync_candidate_autodecode_files() to override any preview file it may
+# have written for a candidate that was concurrently promoted to official status.
+# Also removes the corresponding .preview_attempts/<id> counter.
+# Does NOT touch status_candidate_values.tsv or status_candidate_preview_state.tsv.
+prune_official_meter_previews() {
+  local mid pf _pruned=0
+  [[ -d "${METER_DIR}" ]] || return 0
+  for mf in "${METER_DIR}"/meter-*; do
+    [[ -f "${mf}" ]] || continue
+    mid="$(grep -m1 '^id=' "${mf}" | cut -d= -f2 | tr '[:lower:]' '[:upper:]')"
+    [[ "${mid}" =~ ^[0-9A-Fa-f]{8}$ ]] || continue
+    pf="${LISTEN_METER_DIR}/meter-preview-${mid}"
+    if [[ -f "${pf}" ]]; then
+      rm -f "${pf}" 2>/dev/null || true
+      rm -f "${BASE}/.preview_attempts/${mid}" 2>/dev/null || true
+      log "pruned orphaned meter-preview-${mid} (now official configured meter)"
+      _pruned=1
+    fi
+  done
+  [[ "${_pruned}" -eq 1 ]] && _request_listen_reload
 }
 
 status_record_candidate_raw() {
@@ -543,6 +581,30 @@ write_status_json() {
       pipeline:{raw_count:($raw_count|tonumber? // 0),decoded_count:($decoded_count|tonumber? // 0),wmbusmeters_running:($wmbusmeters_running=="true"),discovery_published:($discovery_published=="true"),discovery_published_at:$discovery_published_at,last_raw_seen:$last_raw_seen,last_decoded_seen:$last_decoded_seen,last_error:$last_error,last_event:$last_event}}'     > "${tmp}" 2>/dev/null && mv "${tmp}" "${STATUS_JSON}" 2>/dev/null || true
 }
 
+_select_primary_meter_value() {
+  local json_line="$1"
+  jq -r '
+    [ "total_m3",
+      "total_kwh",
+      "total_wh",
+      "total_energy_consumption_kwh",
+      "total_volume_m3" ] as $canonical
+    | (
+        [ $canonical[] as $k
+          | select((.[$k] | type) == "number")
+          | [$k, .[$k]]
+        ][0]
+        // [ to_entries[]
+          | select((.value|type)=="number")
+          | select(.key|test("(^total|_m3$|kwh|wh$|energy|volume)";"i"))
+          | select(.key|test("(last_month|last_year|previous_month|previous_year|previous|prev|at_history|history|historic|billing|due_date|target|backflow|fraud|leak|tamper|alarm|production|tariff)";"i")|not)
+          | [.key, .value]
+        ][0]
+      )
+    | if . == null then empty else @tsv end
+  ' <<<"${json_line}" 2>/dev/null | head -n 1 || true
+}
+
 status_mark_discovery_published() {
   STATUS_DISCOVERY_PUBLISHED="true"
   STATUS_DISCOVERY_PUBLISHED_AT="$(iso_now)"
@@ -626,10 +688,8 @@ status_meter_seen() {
   # total_energy_consumption_kwh (not the live kW draw). Exclude production,
   # raw tariff registers and fault/alarm counters on the first pass; if an
   # electricity meter only publishes consumption tariffs, sum them below.
-  value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(^total|_m3$|kwh|wh$|energy|volume)";"i")) | select(.key|test("(backflow|fraud|leak|tamper|alarm|production|tariff|target)";"i")|not) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
-  if [[ -n "${value_key}" ]]; then
-    value="$(jq -r --arg k "${value_key}" '.[$k] // empty' <<<"${json_line}" 2>/dev/null || true)"
-  else
+  IFS=$'\t' read -r value_key value < <(_select_primary_meter_value "${json_line}") || true
+  if [[ -z "${value_key}" ]]; then
     # Some electricity meters publish only per-tariff import registers. When
     # the aggregate total is missing, sum consumption tariffs and expose that
     # as the meter reading. Production tariffs remain excluded.
@@ -656,7 +716,7 @@ status_meter_seen() {
     IFS=$'\t' read -r prev_key prev_val prev_parts < <(awk -F '\t' -v id="${id}" '$1==id {print $5 "\t" $6 "\t" $13; exit}' "${STATUS_METERS_FILE}" 2>/dev/null || true)
     if [[ -n "${prev_key}" ]] \
        && printf '%s' "${prev_key}" | grep -qiE '(^total|_m3$|kwh|wh$|energy|volume)' \
-       && ! printf '%s' "${prev_key}" | grep -qiE '(backflow|fraud|leak|tamper|alarm|production|tariff|target)'; then
+       && ! printf '%s' "${prev_key}" | grep -qiE '(last_month|last_year|previous_month|previous_year|previous|prev|at_history|history|historic|billing|due_date|target|backflow|fraud|leak|tamper|alarm|production|tariff)'; then
       value_key="${prev_key}"
       value="${prev_val}"
       value_parts="${prev_parts}"
@@ -1985,8 +2045,8 @@ emit_snippet_if_new() {
 # Picks the SAME primary field as status_meter_seen() — keeps preview values
 # consistent with what the user sees on the Meters page after permanently adding
 # the meter. Heuristic (cumulative meter reading first):
-#   1. cumulative reading (total*, _m3, kwh, wh, energy, volume) — e.g. total_m3,
-#      total_energy_consumption_kwh. Skips production/tariff registers and
+#   1. canonical current totals (total_m3, total_energy_consumption_kwh, etc.),
+#      then other cumulative readings. Skips production/tariff registers and
 #      fault/diagnostic counters (backflow_m3, fraud_*, leak_*, tamper_*, alarm_*).
 #   2. instantaneous reading (_kw, _w, _m3h, _l_h) — only when no total exists.
 #   3. last resort: first numeric field
@@ -1995,10 +2055,11 @@ _store_candidate_value() {
   local id value_key value now
   id="$(normalize_meter_id "$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null)")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
-  # Step 1 — cumulative meter reading. Excludes production/tariff registers and
+  # Step 1 — cumulative meter reading. Excludes historical/helper fields,
+  # production/tariff registers and
   # fault counters that wmbusmeters sometimes emits with bogusly large values
   # (the bug that put 1291845 m³ of "backflow" in the WebGUI before).
-  value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(^total|_m3$|kwh|wh$|energy|volume)";"i")) | select(.key|test("(backflow|fraud|leak|tamper|alarm|production|tariff|target)";"i")|not) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+  IFS=$'\t' read -r value_key value < <(_select_primary_meter_value "${json_line}") || true
   if [[ -z "${value_key}" ]]; then
     IFS=$'\t' read -r value_key value < <(
       jq -r '
@@ -2030,16 +2091,16 @@ _store_candidate_value() {
     )
   fi
   if [[ -z "${value}" ]]; then
-    log "[DIAG] _store_candidate_value ${id}: no numeric value found, skipping"
+    log_verbose "[DIAG] _store_candidate_value ${id}: no numeric value found, skipping"
     _set_preview_state "${id}" "decoded_without_numeric_value"
     return 0
   fi
-  log "[DIAG] _store_candidate_value ${id}: value_key=${value_key} value=${value}"
+  log_debug "[DIAG] _store_candidate_value ${id}: value_key=${value_key} value=${value}"
   now="$(iso_now)"
   _tsv_upsert "${STATUS_CANDIDATE_VALUES_FILE}" "${id}" \
     "$(printf '%s\t%s\t%s\t%s' "${id}" "${value}" "${value_key}" "${now}")"
   _set_preview_state "${id}" "decoded_value"
-  log "[DIAG] _store_candidate_value ${id}: wrote to status_candidate_values.tsv"
+  log_debug "[DIAG] _store_candidate_value ${id}: wrote to status_candidate_values.tsv"
 }
 
 status_candidate_seen_from_json() {
@@ -2122,10 +2183,10 @@ _process_listen_text_block() {
             || { rm -f "${_cnt_tmp}" 2>/dev/null || true; }
         fi
         if (( _cnt >= 3 && _elapsed >= 60 )); then
-          log "[DIAG] LISTEN-parse: no JSON after ${_cnt} text-only telegrams (${_elapsed}s) for ${_id} → no_decode_result"
+          log_verbose "[DIAG] LISTEN-parse: no JSON after ${_cnt} text-only telegrams (${_elapsed}s) for ${_id} → no_decode_result"
           _set_preview_state "${_id}" "no_decode_result"
         else
-          log "[DIAG] LISTEN-parse: text-only telegram #${_cnt} for preview ${_id} (elapsed=${_elapsed}s, need count>=3 AND elapsed>=60)"
+          log_debug "[DIAG] LISTEN-parse: text-only telegram #${_cnt} for preview ${_id} (elapsed=${_elapsed}s, need count>=3 AND elapsed>=60)"
         fi
       fi
     fi
@@ -2143,11 +2204,11 @@ parse_listen_candidates() {
     # config matching this telegram's ID. Capture the primary numeric value
     # for the WebGUI "Preview value" feature.
     if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
-      log "[DIAG] LISTEN-parse: JSON telegram received: ${line:0:160}"
+      log_debug "[DIAG] LISTEN-parse: JSON telegram received: ${line:0:160}"
       if [[ "${OFFICIAL_METERS_COUNT:-0}" -gt 0 ]]; then
         status_candidate_seen_from_json "${line}"
       fi
-      log "[DIAG] LISTEN-parse: calling _store_candidate_value"
+      log_debug "[DIAG] LISTEN-parse: calling _store_candidate_value"
       _store_candidate_value "${line}"
       continue
     fi
@@ -2368,7 +2429,7 @@ start_listen_instance() {
     # pipeline. Reload cycle ~2-3 s.
     while true; do
       _diag_preview_count="$(find "${LISTEN_METER_DIR}" -maxdepth 1 -name 'meter-preview-*' 2>/dev/null | wc -l | tr -d ' ')"
-      log "[DIAG] LISTEN supervisor: starting pipeline (meter-preview-* count=${_diag_preview_count} in ${LISTEN_METER_DIR})"
+      log_verbose "[DIAG] LISTEN supervisor: starting pipeline (meter-preview-* count=${_diag_preview_count} in ${LISTEN_METER_DIR})"
       ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
         | awk '
             function ishex(s) { return (s ~ /^[0-9A-Fa-f]+$/) }
@@ -2384,16 +2445,16 @@ start_listen_instance() {
         | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${LISTEN_BASE}" 2>&1 \
         | parse_listen_candidates &
       pipeline_pid=$!
-      log "[DIAG] LISTEN supervisor: pipeline started (pid=${pipeline_pid})"
+      log_debug "[DIAG] LISTEN supervisor: pipeline started (pid=${pipeline_pid})"
       # Poll for reload flag or natural exit.
       while kill -0 "${pipeline_pid}" 2>/dev/null; do
         if [[ -f "${BASE}/.reload_listen" ]]; then
-          log "[DIAG] LISTEN supervisor: .reload_listen detected, killing pid=${pipeline_pid}"
+          log_verbose "[DIAG] LISTEN supervisor: .reload_listen detected, killing pid=${pipeline_pid}"
           rm -f "${BASE}/.reload_listen" 2>/dev/null || true
           pkill -TERM -P "${pipeline_pid}" 2>/dev/null || true
           kill -TERM "${pipeline_pid}" 2>/dev/null || true
           wait "${pipeline_pid}" 2>/dev/null || true
-          log "[DIAG] LISTEN supervisor: pipeline stopped, restarting"
+          log_verbose "[DIAG] LISTEN supervisor: pipeline stopped, restarting"
           break
         fi
         sleep 2
@@ -2476,6 +2537,12 @@ while true; do
   # secondary LISTEN immediately after restart, not only after each one sends
   # one more telegram to create its meter-preview file.
   sync_candidate_autodecode_files
+
+  # Remove any meter-preview-<id> that sync_candidate_autodecode_files just wrote
+  # for an ID that is already an official configured meter. Keeps the LISTEN
+  # instance free of redundant preview configs for meters the primary pipeline
+  # already decodes.
+  prune_official_meter_previews
 
   # Parallel LISTEN always starts unconditionally, including pure LISTEN /
   # Discover mode with no configured meters and no preview files yet.

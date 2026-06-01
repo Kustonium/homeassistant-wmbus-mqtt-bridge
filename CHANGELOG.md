@@ -1,3 +1,36 @@
+## 1.5.21-dev
+
+### Fixed
+- Correct `total_m3` selection for IZAR meters: the bridge now prefers
+  the current `total_m3` field over `last_month_total_m3` when both are
+  present in the decoded JSON. Previously, the historical monthly value
+  was selected over the live reading in some field-ordering situations.
+
+- Preserve preview context after a candidate is added to the
+  configuration: the cached preview value and state
+  (`status_candidate_preview_state.tsv`) are now kept visible in the
+  pending-meters panel until the first official DECODE telegram arrives,
+  instead of being cleared immediately on pipeline reload.
+
+- Self-heal orphaned `meter-preview-*` files: when a candidate is
+  officially configured, the bridge now removes its
+  `meter-preview-<id>` file and the `.preview_attempts/<id>` counter
+  on every restart-loop iteration. A guard in
+  `ensure_candidate_autodecode()` also prevents the file from being
+  re-created for officially configured meters on subsequent telegrams.
+  `status_candidate_values.tsv` and `status_candidate_preview_state.tsv`
+  are deliberately preserved.
+
+### Added
+- Manual "Usuń podgląd" / Cancel preview button in the new SPA WebGUI:
+  available in the candidates table, the pending-meters section, and the
+  configured-meters-on-air panel whenever `preview_active` is true.
+  Calls the existing `/api/cancel-preview` endpoint.
+
+- Regression tests for IZAR current total selection, covering real
+  user-reported HEX telegrams where `total_m3` and
+  `last_month_total_m3` co-exist in the decoded output.
+
 ## 1.5.19-dev
 
 ### Fixed
