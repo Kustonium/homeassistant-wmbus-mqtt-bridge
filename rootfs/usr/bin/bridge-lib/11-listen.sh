@@ -144,6 +144,12 @@ status_candidate_seen_from_json() {
 # Arguments: id  driver  type  manufacturer
 _process_listen_text_block() {
   local _id="$1" _drv="$2" _type="$3" _mfr="$4"
+  # Update manufacturer from text output before the driver guard so that the
+  # full text name (e.g. "(NES) NORA ELK MALZ SAN ve TIC") is stored even when
+  # wmbusmeters omits the driver: line (encrypted or unrecognised telegrams).
+  # candidate_update_manufacturer_text only overwrites empty or bare 3-letter
+  # codes; full names already in the TSV are left untouched.
+  [[ -n "${_id}" && -n "${_mfr}" ]] && candidate_update_manufacturer_text "${_id}" "${_mfr}"
   [[ -n "${_id}" && -n "${_drv}" ]] || return 0
   # When there are no official meters, the primary pipeline already runs in
   # LISTEN mode and updates candidate stats. A secondary LISTEN may still be

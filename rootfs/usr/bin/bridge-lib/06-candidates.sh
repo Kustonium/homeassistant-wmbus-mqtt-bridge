@@ -252,6 +252,45 @@ status_mark_search_decoded_no_aes() {
   fi
 }
 
+# Update the manufacturer column (9) of an EXISTING candidate row to the full
+# text form captured by the LISTEN text path (e.g. "(NES) NORA ELK MALZ SAN ve TIC").
+# Called from _process_listen_text_block BEFORE the driver guard so that
+# manufacturer is recorded even when wmbusmeters omits the driver: line
+# (e.g. for encrypted telegrams that can't be decrypted without the AES key).
+# Only writes when column 9 is empty or holds a legacy bare 3-letter code;
+# an existing full-text name is left untouched.
+# Never creates rows, never touches reception stats or events.
+candidate_update_manufacturer_text() {
+  local _id="$1" _mfr="$2"
+  [[ "${_id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
+  [[ -n "${_mfr}" ]] || return 0
+  local _file="${STATUS_CANDIDATES_FILE}"
+  [[ -f "${_file}" ]] || return 0
+  # Cheap lock-free pre-check: only take the lock when a fillable row exists.
+  awk -F '\t' -v id="${_id}" \
+    '$1 == id && (NF < 9 || $9 == "" || ($9 ~ /^[A-Z]{3}$/)) { found = 1 } END { exit found ? 0 : 1 }' \
+    "${_file}" 2>/dev/null || return 0
+  (
+    flock -x 9
+    local _tmp
+    _tmp="$(mktemp "${_file}.tmp.XXXXXX")" || return 1
+    if ! awk -F $'\t' -v OFS=$'\t' -v id="${_id}" -v mfr="${_mfr}" '
+        $1 == id {
+          while (NF < 9) { $(NF + 1) = "" }
+          if ($9 == "" || ($9 ~ /^[A-Z]{3}$/)) { $9 = mfr }
+        }
+        { print }
+      ' "${_file}" > "${_tmp}"; then
+      rm -f "${_tmp}"
+      return 1
+    fi
+    if ! mv "${_tmp}" "${_file}"; then
+      rm -f "${_tmp}"
+      return 1
+    fi
+    log_debug "[DIAG] candidate ${_id}: updated manufacturer text from LISTEN block to ${_mfr}"
+  ) 9>"${STATUS_CANDIDATES_FILE}.lock"
+}
 
 # shellcheck disable=SC2034
 status_candidate_seen() {

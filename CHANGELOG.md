@@ -1,4 +1,27 @@
-## 1.5.24
+## 1.5.25
+
+### Fixed
+- Configured-meters-on-air panel showed a bare 3-letter manufacturer code
+  (e.g. `NES`) instead of the compact display name
+  (`NES · NORA ELK MALZ SAN ve TIC`) after upgrading from a pre-1.5.22
+  installation, and the code never healed even after hundreds of telegram
+  receptions. Two causes were addressed in `bridge-lib`:
+  - `candidate_fill_manufacturer_code()` (RAW hex path, `05-raw.sh`) only
+    filled column 9 of `status_candidates.tsv` when it was empty. A legacy
+    bare 3-letter code left by an old installation is non-empty, so the
+    write was skipped on every restart. It now also matches `/^[A-Z]{3}$/`
+    so a legacy code is treated like an empty cell. Full-text names do not
+    match the pattern and are never downgraded.
+  - `_process_listen_text_block()` (parallel LISTEN, `11-listen.sh`) only
+    wrote the manufacturer after an early `[[ -n id && -n driver ]]` guard.
+    `wmbusmeters` omits the `driver:` line for telegrams it cannot decrypt
+    or recognise, so the full manufacturer text captured by the LISTEN text
+    path never reached the TSV. A new `candidate_update_manufacturer_text()`
+    in `06-candidates.sh` now writes the full text form before the driver
+    guard, overwriting only an empty or bare 3-letter column. It never
+    creates rows and never touches reception stats or events.
+
+## 1.5.24-dev
 
 ### Changed
 - Maintenance refactor: split helper functions from the large
