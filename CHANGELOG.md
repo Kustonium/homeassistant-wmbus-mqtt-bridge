@@ -1,4 +1,4 @@
-## 1.5.23
+## 1.5.24
 
 ### Changed
 - Maintenance refactor: split helper functions from the large
@@ -11,10 +11,10 @@
   telegram helpers, candidate lifecycle, meter file generation and value
   selection, Home Assistant Discovery helpers/publishing, SEARCH, Parallel
   LISTEN, MQTT pipeline helpers and ESP subscribers.
-- This release is intended to be behaviour-preserving. WebUI status file
-  formats, MQTT topics, Home Assistant Discovery identifiers, reload markers
-  and generated `wmbusmeters` configuration are not intentionally changed by
-  the modularization.
+- This development cycle is intended to be behaviour-preserving. WebUI status
+  file formats, MQTT topics, Home Assistant Discovery identifiers, reload
+  markers and generated `wmbusmeters` configuration are not intentionally
+  changed by the modularization.
 
 ### Fixed
 - Hardened bridge module loading so `bridge.sh` resolves `bridge-lib` from
@@ -23,7 +23,7 @@
 - Updated the IZAR fixture test lookup so it validates the extracted meter
   helper in `bridge-lib/07-meters.sh` after the refactor.
 
-## 1.5.22
+## 1.5.22-dev
 
 ### Fixed
 - Candidate `manufacturer` (column 9 of `status_candidates.tsv`) no longer
