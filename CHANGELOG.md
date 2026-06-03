@@ -1,4 +1,4 @@
-## Unreleased
+## 1.5.22-dev
 
 ### Fixed
 - Candidate `manufacturer` (column 9 of `status_candidates.tsv`) no longer
