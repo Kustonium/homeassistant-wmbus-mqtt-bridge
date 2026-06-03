@@ -1,4 +1,52 @@
-## Unreleased
+## 1.5.25
+
+### Fixed
+- Configured-meters-on-air panel showed a bare 3-letter manufacturer code
+  (e.g. `NES`) instead of the compact display name
+  (`NES · NORA ELK MALZ SAN ve TIC`) after upgrading from a pre-1.5.22
+  installation, and the code never healed even after hundreds of telegram
+  receptions. Two causes were addressed in `bridge-lib`:
+  - `candidate_fill_manufacturer_code()` (RAW hex path, `05-raw.sh`) only
+    filled column 9 of `status_candidates.tsv` when it was empty. A legacy
+    bare 3-letter code left by an old installation is non-empty, so the
+    write was skipped on every restart. It now also matches `/^[A-Z]{3}$/`
+    so a legacy code is treated like an empty cell. Full-text names do not
+    match the pattern and are never downgraded.
+  - `_process_listen_text_block()` (parallel LISTEN, `11-listen.sh`) only
+    wrote the manufacturer after an early `[[ -n id && -n driver ]]` guard.
+    `wmbusmeters` omits the `driver:` line for telegrams it cannot decrypt
+    or recognise, so the full manufacturer text captured by the LISTEN text
+    path never reached the TSV. A new `candidate_update_manufacturer_text()`
+    in `06-candidates.sh` now writes the full text form before the driver
+    guard, overwriting only an empty or bare 3-letter column. It never
+    creates rows and never touches reception stats or events.
+
+## 1.5.24-dev
+
+### Changed
+- Maintenance refactor: split helper functions from the large
+  `rootfs/usr/bin/bridge.sh` runtime script into sourced modules under
+  `rootfs/usr/bin/bridge-lib/`. The refactor keeps `bridge.sh` as the
+  Home Assistant/Docker entrypoint and leaves startup initialization,
+  wrapper integration and `run_once` orchestration in `bridge.sh`.
+- The extracted modules now group existing bridge logic by responsibility:
+  logging/utilities, options parsing, atomic TSV helpers, status files, raw
+  telegram helpers, candidate lifecycle, meter file generation and value
+  selection, Home Assistant Discovery helpers/publishing, SEARCH, Parallel
+  LISTEN, MQTT pipeline helpers and ESP subscribers.
+- This development cycle is intended to be behaviour-preserving. WebUI status
+  file formats, MQTT topics, Home Assistant Discovery identifiers, reload
+  markers and generated `wmbusmeters` configuration are not intentionally
+  changed by the modularization.
+
+### Fixed
+- Hardened bridge module loading so `bridge.sh` resolves `bridge-lib` from
+  `${BASH_SOURCE[0]}` instead of `$0`, preserving execution through wrappers,
+  direct script calls and PATH-based smoke tests.
+- Updated the IZAR fixture test lookup so it validates the extracted meter
+  helper in `bridge-lib/07-meters.sh` after the refactor.
+
+## 1.5.22-dev
 
 ### Fixed
 - Candidate `manufacturer` (column 9 of `status_candidates.tsv`) no longer
