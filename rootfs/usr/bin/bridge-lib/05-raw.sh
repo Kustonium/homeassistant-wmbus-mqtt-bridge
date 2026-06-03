@@ -97,12 +97,12 @@ mfct_code_from_raw_hex() {
 }
 
 # Fallback fill of the manufacturer column (9) for an EXISTING candidate row
-# whose manufacturer is still empty. Deliberately conservative:
+# whose manufacturer is empty or contains only a bare 3-letter EN 13757 code
+# left by a pre-1.5.22 installation (upgrade path). Deliberately conservative:
 #   - never creates a row (would spawn a phantom candidate for an official meter),
-#   - only writes when column 9 is empty, so the richer full-text name captured
-#     by the LISTEN text path (e.g. "DME ...") is never downgraded to the bare
-#     code, and a later text update still overwrites the code via
-#     _upsert_candidate_row,
+#   - only writes when column 9 is empty or a bare 3-letter code; the richer
+#     full-text name captured by the LISTEN text path (e.g. "(NES) NORA ELK...")
+#     is never downgraded — it does not match /^[A-Z]{3}$/ so is left untouched,
 #   - touches no reception stats and emits no events (no double counting).
 candidate_fill_manufacturer_code() {
   local _id="$1" _code="$2"
@@ -112,7 +112,7 @@ candidate_fill_manufacturer_code() {
   [[ -f "${_file}" ]] || return 0
   # Cheap lock-free pre-check: only take the lock when a fillable row exists.
   awk -F '\t' -v id="${_id}" \
-    '$1 == id && (NF < 9 || $9 == "") { found = 1 } END { exit found ? 0 : 1 }' \
+    '$1 == id && (NF < 9 || $9 == "" || ($9 ~ /^[A-Z]{3}$/)) { found = 1 } END { exit found ? 0 : 1 }' \
     "${_file}" 2>/dev/null || return 0
   (
     flock -x 9
@@ -121,7 +121,7 @@ candidate_fill_manufacturer_code() {
     if ! awk -F $'\t' -v OFS=$'\t' -v id="${_id}" -v code="${_code}" '
         $1 == id {
           while (NF < 9) { $(NF + 1) = "" }
-          if ($9 == "") { $9 = code }
+          if ($9 == "" || ($9 ~ /^[A-Z]{3}$/)) { $9 = code }
         }
         { print }
       ' "${_file}" > "${_tmp}"; then
