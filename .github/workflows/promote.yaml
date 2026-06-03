@@ -58,20 +58,50 @@ jobs:
           set -euo pipefail
           VERSION="${{ steps.version.outputs.VERSION }}"
           EXPECTED_DEV_HEADING="${VERSION}-dev"
+          MARKER="PROMOTE-CHANGELOG-REQUIRED"
 
           if [[ ! -s _dev/CHANGELOG.md ]]; then
             echo "ERROR: _dev/CHANGELOG.md is missing or empty"
             exit 1
           fi
 
-          TOP_HEADING="$(sed -nE 's/^##[[:space:]]+(.+)[[:space:]]*$/\1/p' _dev/CHANGELOG.md | head -n1)"
-          if [[ "${TOP_HEADING}" != "${VERSION}" && "${TOP_HEADING}" != "${EXPECTED_DEV_HEADING}" ]]; then
-            echo "ERROR: _dev/CHANGELOG.md top heading is '${TOP_HEADING}', expected '${EXPECTED_DEV_HEADING}' or '${VERSION}'"
+          awk '
+            /^##[[:space:]]+/ {
+              seen++
+              if (seen > 1) exit
+            }
+            seen >= 1 { print }
+          ' _dev/CHANGELOG.md > /tmp/dev-changelog-section.md
+
+          TOP_HEADING="$(sed -nE 's/^##[[:space:]]+(.+)[[:space:]]*$/\1/p' /tmp/dev-changelog-section.md | head -n1)"
+          if [[ "${TOP_HEADING}" != "${EXPECTED_DEV_HEADING}" ]]; then
+            echo "ERROR: _dev/CHANGELOG.md top heading is '${TOP_HEADING}', expected '${EXPECTED_DEV_HEADING}'"
             exit 1
           fi
 
-          cp _dev/CHANGELOG.md CHANGELOG.md
-          sed -i -E "0,/^##[[:space:]]+.*/s//## ${VERSION}/" CHANGELOG.md
+          if grep -q "${MARKER}" /tmp/dev-changelog-section.md; then
+            echo "ERROR: _dev/CHANGELOG.md still contains ${MARKER}; replace the placeholder with release notes before promoting"
+            exit 1
+          fi
+
+          if ! grep -Eq '^###[[:space:]]+' /tmp/dev-changelog-section.md; then
+            echo "ERROR: _dev/CHANGELOG.md section ${EXPECTED_DEV_HEADING} has no subsection headings"
+            exit 1
+          fi
+
+          sed -i -E "1s/^##[[:space:]]+.*/## ${VERSION}/" /tmp/dev-changelog-section.md
+
+          if grep -q "^## ${VERSION}$" CHANGELOG.md; then
+            echo "ERROR: stable CHANGELOG.md already contains ${VERSION}"
+            exit 1
+          fi
+
+          cp CHANGELOG.md /tmp/stable-changelog-history.md
+          {
+            cat /tmp/dev-changelog-section.md
+            printf '\n'
+            cat /tmp/stable-changelog-history.md
+          } > CHANGELOG.md
 
           echo "--- CHANGELOG.md ---"
           cat CHANGELOG.md
@@ -171,8 +201,18 @@ jobs:
           echo "Bumping dev base: ${CURRENT_BASE} → ${NEXT_BASE}"
           sed -i -E "s/^(version:[[:space:]]*\").*\"/\1${NEXT_BASE}\"/" config.yaml
 
+          if ! grep -q "^## ${NEXT_BASE}$" CHANGELOG.md; then
+            tmp="$(mktemp)"
+            {
+              printf '## %s\n\n' "${NEXT_BASE}"
+              printf '<!-- PROMOTE-CHANGELOG-REQUIRED: replace this placeholder with release notes before promoting. -->\n\n'
+              cat CHANGELOG.md
+            } > "${tmp}"
+            mv "${tmp}" CHANGELOG.md
+          fi
+
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add config.yaml
+          git add config.yaml CHANGELOG.md
           git commit -m "chore: bump dev base to ${NEXT_BASE} after ${VERSION} release [skip ci]"
           git push origin main
