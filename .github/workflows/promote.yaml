@@ -56,13 +56,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          EXPECTED_DEV_HEADING="${VERSION}-dev"
 
           if [[ ! -s _dev/CHANGELOG.md ]]; then
             echo "ERROR: _dev/CHANGELOG.md is missing or empty"
             exit 1
           fi
 
+          TOP_HEADING="$(sed -nE 's/^##[[:space:]]+(.+)[[:space:]]*$/\1/p' _dev/CHANGELOG.md | head -n1)"
+          if [[ "${TOP_HEADING}" != "${VERSION}" && "${TOP_HEADING}" != "${EXPECTED_DEV_HEADING}" ]]; then
+            echo "ERROR: _dev/CHANGELOG.md top heading is '${TOP_HEADING}', expected '${EXPECTED_DEV_HEADING}' or '${VERSION}'"
+            exit 1
+          fi
+
           cp _dev/CHANGELOG.md CHANGELOG.md
+          sed -i -E "0,/^##[[:space:]]+.*/s//## ${VERSION}/" CHANGELOG.md
 
           echo "--- CHANGELOG.md ---"
           cat CHANGELOG.md

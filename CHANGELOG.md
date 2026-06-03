@@ -1,4 +1,29 @@
-## 1.5.22-dev
+## 1.5.23
+
+### Changed
+- Maintenance refactor: split helper functions from the large
+  `rootfs/usr/bin/bridge.sh` runtime script into sourced modules under
+  `rootfs/usr/bin/bridge-lib/`. The refactor keeps `bridge.sh` as the
+  Home Assistant/Docker entrypoint and leaves startup initialization,
+  wrapper integration and `run_once` orchestration in `bridge.sh`.
+- The extracted modules now group existing bridge logic by responsibility:
+  logging/utilities, options parsing, atomic TSV helpers, status files, raw
+  telegram helpers, candidate lifecycle, meter file generation and value
+  selection, Home Assistant Discovery helpers/publishing, SEARCH, Parallel
+  LISTEN, MQTT pipeline helpers and ESP subscribers.
+- This release is intended to be behaviour-preserving. WebUI status file
+  formats, MQTT topics, Home Assistant Discovery identifiers, reload markers
+  and generated `wmbusmeters` configuration are not intentionally changed by
+  the modularization.
+
+### Fixed
+- Hardened bridge module loading so `bridge.sh` resolves `bridge-lib` from
+  `${BASH_SOURCE[0]}` instead of `$0`, preserving execution through wrappers,
+  direct script calls and PATH-based smoke tests.
+- Updated the IZAR fixture test lookup so it validates the extracted meter
+  helper in `bridge-lib/07-meters.sh` after the refactor.
+
+## 1.5.22
 
 ### Fixed
 - Candidate `manufacturer` (column 9 of `status_candidates.tsv`) no longer
