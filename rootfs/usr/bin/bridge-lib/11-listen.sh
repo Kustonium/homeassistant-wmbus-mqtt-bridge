@@ -134,7 +134,13 @@ status_candidate_seen_from_json() {
   fi
   [[ -n "${type_line}" ]] || type_line="decoded"
 
-  status_candidate_seen "${id}" "${driver}" "${type_line}"
+  # reload=false (6th arg): this runs on every decoded preview telegram while
+  # official meters are configured. Letting it trigger a parallel LISTEN reload
+  # (auto -> real driver rewrites the meter-preview file) kills+restarts the
+  # pipeline on every telegram, so previews never stabilise and stay on
+  # "decoding...". Update the driver/stats only; the refreshed driver is picked
+  # up on the next natural restart.
+  status_candidate_seen "${id}" "${driver}" "${type_line}" "true" "" "false"
 }
 
 # Process one completed text-output block from the parallel LISTEN instance.
@@ -154,54 +160,15 @@ _process_listen_text_block() {
   # When there are no official meters, the primary pipeline already runs in
   # LISTEN mode and updates candidate stats. A secondary LISTEN may still be
   # running for preview decoding; do not double-count candidate receptions.
-  if [[ "${OFFICIAL_METERS_COUNT:-0}" -gt 0 ]]; then
+  if [[ "$(official_meters_count_current)" -gt 0 ]]; then
     if [[ "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
       search_cache_candidate "${_id}" "${_drv}" "${_type}"
     else
       emit_snippet_if_new "${_id}" "${_drv}" "${_type}" "${_mfr}"
     fi
   fi
-  # Track text-only telegrams (no JSON) for preview candidates.
-  # When a preview file exists but wmbusmeters never emits JSON (driver not
-  # recognised or unsupported telegram variant), the state stays "pending"
-  # forever. After count >= 3 AND elapsed >= 60 s, set no_decode_result so
-  # the UI shows "brak wyniku dekodowania" instead of "dekoduję..." forever.
-  # JSON arriving later still overrides via _store_candidate_value → decoded_value
-  # or decoded_without_numeric_value (both use _tsv_upsert which replaces the row).
-  if ! candidate_type_requires_aes "${_type}"; then
-    local _pf _cur_state _cnt_file _cnt _start _now _elapsed _cnt_tmp
-    _pf="${LISTEN_METER_DIR}/meter-preview-${_id}"
-    if [[ -f "${_pf}" ]]; then
-      _cur_state="$(awk -F '\t' -v id="${_id}" '$1==id {print $2; exit}' \
-        "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" 2>/dev/null || true)"
-      if [[ "${_cur_state}" == "pending" ]]; then
-        _cnt_file="${BASE}/.preview_attempts/${_id}"
-        _cnt=0
-        _start=0
-        if [[ -f "${_cnt_file}" ]]; then
-          IFS=$'\t' read -r _cnt _start < "${_cnt_file}" 2>/dev/null || true
-          [[ "${_cnt}" =~ ^[0-9]+$ ]] || _cnt=0
-          [[ "${_start}" =~ ^[0-9]+$ ]] || _start=0
-        fi
-        _now="$(date +%s 2>/dev/null || echo 0)"
-        (( _start > 0 )) || _start="${_now}"
-        _cnt=$(( _cnt + 1 ))
-        _elapsed=$(( _now - _start ))
-        _cnt_tmp="$(mktemp "${_cnt_file}.tmp.XXXXXX" 2>/dev/null)" || true
-        if [[ -n "${_cnt_tmp}" ]]; then
-          printf '%d\t%d\n' "${_cnt}" "${_start}" > "${_cnt_tmp}"
-          mv "${_cnt_tmp}" "${_cnt_file}" 2>/dev/null \
-            || { rm -f "${_cnt_tmp}" 2>/dev/null || true; }
-        fi
-        if (( _cnt >= 3 && _elapsed >= 60 )); then
-          log_verbose "[DIAG] LISTEN-parse: no JSON after ${_cnt} text-only telegrams (${_elapsed}s) for ${_id} → no_decode_result"
-          _set_preview_state "${_id}" "no_decode_result"
-        else
-          log_debug "[DIAG] LISTEN-parse: text-only telegram #${_cnt} for preview ${_id} (elapsed=${_elapsed}s, need count>=3 AND elapsed>=60)"
-        fi
-      fi
-    fi
-  fi
+  # Preview decoding is handled from RAW frames by one-shot workers.
+
 }
 
 parse_listen_candidates() {
@@ -211,12 +178,12 @@ parse_listen_candidates() {
 
   local last_id="" last_driver="" last_type="" last_manufacturer=""
   while IFS= read -r line; do
-    # Decoded JSON output — present only when LISTEN has a meter-preview-<id>
-    # config matching this telegram's ID. Capture the primary numeric value
-    # for the WebGUI "Preview value" feature.
+    # Defensive legacy path: pure LISTEN should not emit decoded JSON because its
+    # config directory is empty. Keep handling it safely in case a stale external
+    # file appears; normal preview decoding runs through one-shot RAW workers.
     if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
       log_debug "[DIAG] LISTEN-parse: JSON telegram received: ${line:0:160}"
-      if [[ "${OFFICIAL_METERS_COUNT:-0}" -gt 0 ]]; then
+      if [[ "$(official_meters_count_current)" -gt 0 ]]; then
         status_candidate_seen_from_json "${line}"
       fi
       log_debug "[DIAG] LISTEN-parse: calling _store_candidate_value"
@@ -227,8 +194,13 @@ parse_listen_candidates() {
     # Flush the previous block when a new telegram starts so manufacturer:
     # (which follows driver: in wmbusmeters output) is captured before dispatch.
     if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9A-Fa-f]{8}) ]]; then
+      # Capture the match BEFORE the flush — _process_listen_text_block runs its
+      # own [[ =~ ]] internally (candidate_update_manufacturer_text /
+      # emit_snippet_if_new), which clobbers BASH_REMATCH and would otherwise
+      # trip "BASH_REMATCH[1]: unbound variable" under set -u on the next block.
+      local _new_id="${BASH_REMATCH[1]}"
       _process_listen_text_block "${last_id}" "${last_driver}" "${last_type}" "${last_manufacturer}"
-      last_id="$(normalize_meter_id "${BASH_REMATCH[1]}")"
+      last_id="$(normalize_meter_id "${_new_id}")"
       last_type=""
       last_driver=""
       last_manufacturer=""
@@ -251,31 +223,20 @@ parse_listen_candidates() {
 # ────────────────────────────────────────────────────────────────────────
 LISTEN_PID=""
 
-listen_preview_count() {
-  local count=0 f
-  for f in "${LISTEN_METER_DIR}"/meter-preview-*; do
-    [[ -e "${f}" ]] || continue
-    count=$((count + 1))
-  done
-  echo "${count}"
-}
-
 start_listen_instance() {
   # Already running? Done.
   if [[ -n "${LISTEN_PID}" ]] && kill -0 "${LISTEN_PID}" 2>/dev/null; then
     return 0
   fi
   (
-    # ── LISTEN supervisor loop ──
-    # Runs the listen pipeline (mosquitto_sub | awk | wmbusmeters | parse).
-    # When /data/.reload_listen flag appears (touched by webui.py /api/preview-
-    # candidate or /api/cancel-preview), kills the current pipeline and
-    # restarts it. This lets wmbusmeters pick up newly added meter-preview-<id>
-    # files in /data/listen/etc/wmbusmeters.d/ without touching the DECODE
-    # pipeline. Reload cycle ~2-3 s.
+    # Pure LISTEN supervisor loop. LISTEN_METER_DIR stays empty forever: no
+    # meter-preview files and no reload flag. If the pipeline exits naturally,
+    # restart it after a short pause.
     while true; do
-      _diag_preview_count="$(find "${LISTEN_METER_DIR}" -maxdepth 1 -name 'meter-preview-*' 2>/dev/null | wc -l | tr -d ' ')"
-      log_verbose "[DIAG] LISTEN supervisor: starting pipeline (meter-preview-* count=${_diag_preview_count} in ${LISTEN_METER_DIR})"
+      # Enforce the invariant on every start, including upgrades from versions
+      # that polluted LISTEN_METER_DIR with meter-preview-* files.
+      rm -f "${LISTEN_METER_DIR}/meter-"* 2>/dev/null || true
+      log_verbose "[DIAG] LISTEN supervisor: starting pure-listen pipeline (empty config dir=${LISTEN_METER_DIR})"
       ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
         | awk '
             function ishex(s) { return (s ~ /^[0-9A-Fa-f]+$/) }
@@ -291,27 +252,14 @@ start_listen_instance() {
         | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${LISTEN_BASE}" 2>&1 \
         | parse_listen_candidates &
       pipeline_pid=$!
-      log_debug "[DIAG] LISTEN supervisor: pipeline started (pid=${pipeline_pid})"
-      # Poll for reload flag or natural exit.
-      while kill -0 "${pipeline_pid}" 2>/dev/null; do
-        if [[ -f "${BASE}/.reload_listen" ]]; then
-          log_verbose "[DIAG] LISTEN supervisor: .reload_listen detected, killing pid=${pipeline_pid}"
-          rm -f "${BASE}/.reload_listen" 2>/dev/null || true
-          pkill -TERM -P "${pipeline_pid}" 2>/dev/null || true
-          kill -TERM "${pipeline_pid}" 2>/dev/null || true
-          wait "${pipeline_pid}" 2>/dev/null || true
-          log_verbose "[DIAG] LISTEN supervisor: pipeline stopped, restarting"
-          break
-        fi
-        sleep 2
-      done
+      log_debug "[DIAG] LISTEN supervisor: pure-listen pipeline started (pid=${pipeline_pid})"
       wait "${pipeline_pid}" 2>/dev/null || true
-      # Brief pause before restart to avoid tight-looping on persistent failures.
+      log_verbose "[DIAG] LISTEN supervisor: pure-listen pipeline stopped, restarting"
       sleep 1
     done
   ) &
   LISTEN_PID=$!
-  log "Parallel LISTEN instance started (pid=${LISTEN_PID}) — supervisor loop with .reload_listen support."
+  log "Parallel LISTEN instance started (pid=${LISTEN_PID}) — pure listen mode."
 }
 
 stop_listen_instance() {

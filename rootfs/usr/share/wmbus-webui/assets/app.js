@@ -940,17 +940,26 @@
     // Multi-ESP support: webui.py exposes esp.devices[] with status based on
     // the primary wmbus/+/telegram topic: online <=2 min, warn <=5 min,
     // offline after that. diag/summary is displayed as context only.
-    const espDevicesAll    = asArray((data.esp || {}).devices);
+    const espPayload       = data.esp || {};
+    const espDevicesAll    = asArray(espPayload.devices);
     const espActiveDevices = espDevicesAll.filter(d => d && d.active);
     const espOnlineDevices = espDevicesAll.filter(d => d && d.health === "online");
     const espWarnDevices   = espDevicesAll.filter(d => d && d.health === "warn");
-    const espCount         = Number((data.esp || {}).devices_count || espActiveDevices.length || 0);
+    // Freshest RAW telegram source exposed by webui.py. This is the source of
+    // truth for the main tile; retained or stale diag/summary data must not
+    // make another ESP look like the currently used receiver.
+    const currentRawDevice = String(model.current_raw_esp_device || espPayload.current_raw_device || "").trim();
+    const currentRawTopic  = String(model.current_raw_esp_topic  || espPayload.current_raw_topic  || "").trim();
+    const sourceDeviceObj  = currentRawDevice
+      ? espDevicesAll.find(d => d && d.name === currentRawDevice)
+      : null;
+    const espCount         = Number(espPayload.devices_count || espActiveDevices.length || 0);
     const isMultiEsp       = espCount > 1;
     const espTitle         = isMultiEsp ? `${espCount} × ESP` : "ESP";
     const raw15m           = Number(model.raw_15m || 0);
-    const espOnline        = espOnlineDevices.length > 0;
-    const espWarn          = !espOnline && espWarnDevices.length > 0;
-    const espSeen          = espDevicesAll.length > 0 || (esp && Object.keys(esp).length > 0) || raw15m > 0;
+    const espOnline        = sourceDeviceObj ? sourceDeviceObj.health === "online" : espOnlineDevices.length > 0;
+    const espWarn          = sourceDeviceObj ? sourceDeviceObj.health === "warn" : (!espOnline && espWarnDevices.length > 0);
+    const espSeen          = !!sourceDeviceObj || espDevicesAll.length > 0 || (esp && Object.keys(esp).length > 0) || raw15m > 0;
     const espRssi          = esp.avg_ok_rssi ? `${esp.avg_ok_rssi} dBm` : "—";
 
     // Status text + rate. The rate comes from model.rate_current_min which
@@ -966,30 +975,26 @@
       espStatus = t("offline_label", "offline") + rateSuffix;
     }
 
-    // Source topic — the device segment of the primary (most recent) ESP.
-    // Falls back to esp.diag._topic if events are empty (e.g. fresh start
-    // with only diag/summary received, no other events yet). The bridge.sh
-    // diag/summary subscriber now records the topic as `_topic` in
-    // status_esp_diag.json. Show in compact form (just device name).
-    // Source topic — most-recent ACTIVE device first. If nothing's active
-    // right now fall back to whatever esp.diag._topic remembers from the
-    // last summary (could be stale but still informative). Final fallback
-    // is the all-devices list (a "ghost" name from MQTT retained).
-    const primaryDeviceObj = espActiveDevices[0] || espDevicesAll[0];
-    const primaryTopic = (primaryDeviceObj && primaryDeviceObj.topic)
+    // Source topic — always prefer the backend's freshest RAW telegram source.
+    // Keep the old device-list fallback only for backward compatibility with
+    // older backends that do not expose current_raw_esp_* yet.
+    const primaryDeviceObj = sourceDeviceObj || espActiveDevices[0] || espDevicesAll[0];
+    const primaryTopic = currentRawTopic
+      || (primaryDeviceObj && primaryDeviceObj.topic)
       || (esp && esp._topic)
       || "";
     const topicParts = primaryTopic ? primaryTopic.split("/") : [];
-    const primaryDevice = topicParts.length >= 2 ? topicParts[1] : (primaryTopic || "—");
+    const primaryDevice = currentRawDevice
+      || (topicParts.length >= 2 ? topicParts[1] : (primaryTopic || "—"));
 
     const espVisibleLine = `${candidateCount} ${t("pipeline_visible_count", "widocznych")} · ${escapeHtml(espRssi)}`;
-    // Compact device line. Multi-ESP: ACTIVE devices only, comma-separated
-    // (max 3 visible). Inactive/ghost devices stay hidden here — they're
-    // shown in the ESP workspace drill-down with a different style.
+    // Show what the bridge is actually reading right now. For older backends
+    // without current_raw_esp_device retain the previous multi-ESP fallback.
     const espDeviceSource = espActiveDevices.length > 0 ? espActiveDevices : espDevicesAll.slice(0, 1);
-    const espDeviceLine = isMultiEsp
-      ? espDeviceSource.slice(0, 3).map(d => d.name).join(", ") + (espDeviceSource.length > 3 ? ` +${espDeviceSource.length - 3}` : "")
-      : primaryDevice;
+    const espDeviceLine = currentRawDevice
+      || (isMultiEsp
+        ? espDeviceSource.slice(0, 3).map(d => d.name).join(", ") + (espDeviceSource.length > 3 ? ` +${espDeviceSource.length - 3}` : "")
+        : primaryDevice);
 
     // ─── wmbusmeters node ───
     // "received / decoded" — raw telegram count vs successfully decoded JSON.
