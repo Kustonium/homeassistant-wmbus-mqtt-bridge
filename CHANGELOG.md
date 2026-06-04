@@ -1,3 +1,115 @@
+## 1.5.26
+
+### Fixed
+- Parallel LISTEN restarted roughly once per newly discovered candidate, so
+  discovering many ids made the supervisor kill and respawn the pipeline ~15
+  times in a row (visible as repeated "`.reload_listen` detected, killing
+  pid=…" / "pipeline stopped, restarting") and it rarely stayed up long enough
+  to decode a preview. Cause: `_request_listen_reload`
+  (`bridge-lib/06-candidates.sh`) used a leading-edge cooldown of 10 s, so a new
+  candidate arriving more than 10 s after the previous reload triggered an
+  immediate reload; discovery of ~29 ids spans several replay cycles, so the
+  per-candidate reloads never coalesced. Replaced with a trailing ("settle")
+  debounce with a cap: each call stamps `.reload_listen_req`; a single
+  background worker (guarded by the atomic `mkdir` of `.reload_listen_pending`)
+  fires `.reload_listen` exactly once when either no new request has arrived for
+  `RELOAD_SETTLE_SECONDS` (default 6 s, so a short discovery reloads promptly) or
+  the worker has run for `RELOAD_MAXWAIT_SECONDS` (default 30 s, so a long burst
+  is force-flushed and early candidates still decode). A sustained discovery
+  burst now costs roughly one reload per 30 s plus one final settle reload
+  instead of one reload per candidate. The supervisor restart loads every
+  `meter-preview-<id>` file present on disk, so coalescing drops no candidate;
+  the WebGUI manual preview toggle still touches `.reload_listen` directly
+  (`webui.py`), bypassing this debounce, and stays immediately responsive.
+  `bridge-lib/06-candidates.sh` only.
+- AES-encrypted candidate (e.g. NES electricity `00089907`) wrongly showed
+  "decoding…" forever and "not analysed" encryption instead of "requires AES",
+  after the candidate-discovery fix started registering all manufacturers from
+  the RAW path. Cause: the RAW path labelled the type from the DLL device-type
+  byte (`map_device_type`), which carries no encryption info, so the
+  "encrypted" marker was lost — `candidate_type_requires_aes` stopped matching,
+  a preview file was created for a meter that can never decode without a key,
+  and the encryption analysis went blank. Fixed in `bridge-lib/05-raw.sh`: a new
+  `raw_is_encrypted()` reads the TPL CFG security mode for the common short
+  header (CI=0x7A) and appends `encrypted` to the registered type, and the RAW
+  registration guard now refuses to downgrade an existing `encrypted`
+  classification to the bare device-type label. AES meters again skip preview
+  creation and show "requires AES"; plain meters are unaffected and still
+  decode. `bridge-lib/05-raw.sh` only.
+- Manufacturer column showed only the bare 3-letter FLAG code (e.g. `BMT`)
+  instead of the full vendor name (`BMT · BMETERS`) for a meter/candidate first
+  seen while another meter was already configured. The full text comes only from
+  the LISTEN `manufacturer:` block, which is not emitted once the parallel LISTEN
+  has preview files loaded (it leaves "print all" mode), so such ids only ever
+  had the RAW M-field code. A small confirmed FLAG-code -> vendor lookup
+  (`mfct_name_from_code` in `05-raw.sh`: BMT, NES, SAP, QDS, TCH) now lets the RAW
+  path fill the full `(CODE) Vendor` form, which the WebGUI compactor renders as
+  `CODE · Vendor`. Unknown codes fall back to the bare code (no regression); the
+  existing fill-only-when-empty-or-bare guard upgrades a previously stored bare
+  code and never downgrades a full LISTEN name. `bridge-lib/05-raw.sh` only.
+- New candidates were not discovered while one or more official meters were
+  configured: with no meter the addon listed and decoded the whole replay
+  corpus, but with a meter configured only candidates that already had a
+  `meter-preview-<id>` file or arrived via the Diehl/SAP RAW special case
+  appeared — every other id (e.g. Qundis qwaterv2) was never shown. Root cause:
+  `status_raw_candidate_seen()` (`05-raw.sh`) registered a candidate from the RAW
+  M-field only for Diehl/SAP (`mfct 0x304C`), assuming the LISTEN path supplies
+  the rest. That holds in pure LISTEN mode, but with meters configured the
+  primary pipeline runs in DECODE mode (inline candidate parser gated off) and
+  the parallel LISTEN — loaded with preview files — leaves "print all telegrams"
+  mode, so it never emits the analysis block for unmatched telegrams and new
+  candidates are never seen. The RAW path now also registers non-Diehl
+  manufacturers when `OFFICIAL_METERS_COUNT > 0`, so the candidate list still
+  populates (and previews still decode) with meters configured. Pure LISTEN mode
+  (no meters) is unchanged — non-Diehl ids are still left to the LISTEN parser to
+  avoid the "auto / inne" clobber. The hardcoded `izarv2` fallback for device
+  type `0x07` is now scoped to Diehl/SAP only, so a non-Diehl water meter (also
+  type `0x07`, e.g. QDS/BMETERS) registered via the RAW path is no longer
+  mislabelled as `izarv2`; LISTEN/decoded-JSON supplies its real driver. The
+  existing concrete-driver guard keeps a real classification authoritative and
+  prevents reception double-counting. `bridge-lib/05-raw.sh` only.
+- Parallel LISTEN parser crashed with `BASH_REMATCH[1]: unbound variable` (under
+  `set -u`) from the second telegram block onward, killing and restarting the
+  candidate/preview pipeline. In `parse_listen_candidates()` the captured ID was
+  read as `${BASH_REMATCH[1]}` *after* `_process_listen_text_block()` had already
+  run its own `[[ =~ ]]` internally (via `candidate_update_manufacturer_text` /
+  `emit_snippet_if_new`), which clears `BASH_REMATCH`. The match is now captured
+  into a local immediately, before the flush call. `bridge-lib/11-listen.sh` only.
+- Candidate preview values stayed stuck on "decoding..." while one or more
+  official meters were configured, and recovered only after the meters were
+  removed. Root cause: `status_candidate_seen_from_json()` (parallel LISTEN,
+  added in `db2dfcc`) runs on every decoded preview telegram, but only when
+  `OFFICIAL_METERS_COUNT > 0`. It relabels the candidate driver from the decoded
+  JSON (e.g. `auto` -> `izarv2`), which rewrote the `meter-preview-<id>` file and
+  triggered `_request_listen_reload`, killing and restarting the parallel LISTEN
+  pipeline on every telegram. With a multi-meter replay the pipeline never
+  stabilised, so previews never finished decoding. A user debug log confirmed
+  both the reload churn (`LISTEN supervisor: .reload_listen detected, killing
+  pid=...`) and that previews do decode once the driver settles (`unchanged, no
+  reload triggered`). `status_candidate_seen()` now takes a 6th `reload`
+  argument (default `true`, preserving the text/RAW callers) and the decoded-JSON
+  path passes `reload=false`: the driver is still refreshed in the preview file
+  for the next natural restart, but no immediate LISTEN reload is triggered, so
+  the pipeline is no longer churned. `bridge-lib/06-candidates.sh` and
+  `bridge-lib/11-listen.sh` only; preview values, TSV schema, preview states,
+  text/RAW reload behaviour and `wmbusmeters` are unchanged.
+
+### Reverted
+- Reverted the dedicated zero-meter manufacturer-detection LISTEN instance
+  (`bridge-lib/14-detect.sh`). A user reported that after the change, candidate
+  preview values stopped decoding while an official meter was configured
+  (they reappeared once the meter was removed), a regression that did not exist
+  before. A file-level comparison against the pre-modularization monolithic
+  `bridge.sh` confirmed the preview decode path (`run_once`,
+  `parse_listen_candidates`, `_store_candidate_value`) is byte-identical, so the
+  only behavioural difference was the newly added third concurrent
+  `wmbusmeters` + `mosquitto_sub` instance. Reverting restores the known-good
+  preview behaviour. The bare-vs-full manufacturer healing on the non-concurrent
+  paths (`05-raw.sh`, `06-candidates.sh`, `11-listen.sh`) is retained; a
+  non-interfering approach for the configured-meter manufacturer case will be
+  revisited separately.
+
+
 ## 1.5.25
 
 ### Fixed

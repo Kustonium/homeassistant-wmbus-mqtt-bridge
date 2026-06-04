@@ -80,6 +80,10 @@ STATUS_CANDIDATE_VALUES_FILE="${BASE}/status_candidate_values.tsv"
 # Per-candidate preview lifecycle state: pending | decoded_value | decoded_without_numeric_value
 # Format: id<TAB>state<TAB>iso_timestamp<TAB>note
 STATUS_CANDIDATE_PREVIEW_STATE_FILE="${BASE}/status_candidate_preview_state.tsv"
+# File-backed count of officially configured meters. Several pipelines run in
+# subshells and can outlive a soft reload, so their inherited shell variable may
+# be stale. This file is the shared runtime source of truth.
+STATUS_OFFICIAL_METERS_COUNT_FILE="${BASE}/status_official_meters_count.txt"
 # Per-ESP-device telegram tracking — written by the background MQTT subscriber
 # that listens to the RAW topic itself. The "+" wildcard segment carries the
 # device name (e.g. wmbus/xiaoseed/telegram → "xiaoseed"). Lets the WebGUI
@@ -133,6 +137,7 @@ RAW_RATE_CUR_MIN_COUNT=0
 RAW_RATE_PREV_MIN_COUNT=0
 
 touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}"
+printf '0\n' > "${STATUS_OFFICIAL_METERS_COUNT_FILE}" 2>/dev/null || true
 # Remove any orphaned pending-reload marker left by a hard stop during deferred sleep.
 rm -rf "${BASE}/.reload_listen_pending" 2>/dev/null || true
 # Session-scoped attempt counter dir — counts text-only telegrams per preview candidate
@@ -292,6 +297,31 @@ format=json
 EOFLISTEN
 
 # ------------------------------------------------------------
+# Preview one-shot decoder config
+# ------------------------------------------------------------
+# Preview must NOT contaminate the always-on LISTEN instance. Candidate preview
+# files live in a separate directory and are decoded from individual RAW frames
+# by short-lived one-shot wmbusmeters processes. This preserves exactly two
+# long-running pipelines: PRIMARY DECODE and SECONDARY PURE LISTEN.
+PREVIEW_BASE="${BASE}/preview"
+PREVIEW_ETC="${PREVIEW_BASE}/etc"
+PREVIEW_METER_DIR="${PREVIEW_ETC}/wmbusmeters.d"
+PREVIEW_CONF_FILE="${PREVIEW_ETC}/wmbusmeters.conf"
+mkdir -p "${PREVIEW_METER_DIR}"
+cat > "${PREVIEW_CONF_FILE}" <<EOFPREVIEW
+loglevel=${LOGLEVEL}
+device=stdin:hex
+logfile=/dev/stdout
+format=json
+EOFPREVIEW
+# Defensive cleanup for upgrades from the broken hybrid LISTEN+preview design.
+rm -f "${LISTEN_METER_DIR}/meter-preview-"* 2>/dev/null || true
+rm -f "${BASE}/.reload_listen" "${BASE}/.reload_listen_req" 2>/dev/null || true
+rm -rf "${BASE}/.reload_listen_pending" 2>/dev/null || true
+rm -rf "${BASE}/.preview_decode_locks" "${BASE}/.preview_decode_slots" 2>/dev/null || true
+mkdir -p "${BASE}/.preview_decode_locks" "${BASE}/.preview_decode_last" "${BASE}/.preview_decode_slots" 2>/dev/null || true
+
+# ------------------------------------------------------------
 # Search mode helpers
 # ------------------------------------------------------------
 SEARCH_EXPECTED_VALUE_M3="$(float_or_default "${SEARCH_EXPECTED_VALUE_M3}" "0")"
@@ -301,7 +331,10 @@ SEARCH_MIN_DELTA_M3="$(float_or_default "${SEARCH_MIN_DELTA_M3}" "0.001")"
 # shellcheck disable=SC2034
 SEARCH_CANDIDATES_FILE="${BASE}/search_candidates.tsv"
 SEARCH_USING_TEMP_METERS="false"
+# Used by sourced bridge-lib/07-meters.sh
+# shellcheck disable=SC2034
 OFFICIAL_METERS_COUNT=0
+# Used by sourced bridge-lib/07-meters.sh
 # shellcheck disable=SC2034
 SEARCH_IGNORED_COUNT=0
 # shellcheck disable=SC2034
@@ -458,7 +491,7 @@ run_once() {
 
         echo "${line}"
 
-        if [[ "${OFFICIAL_METERS_COUNT}" -eq 0 && "${SEARCH_USING_TEMP_METERS}" != "true" ]]; then
+        if [[ "$(official_meters_count_current)" -eq 0 && "${SEARCH_USING_TEMP_METERS}" != "true" ]]; then
           if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9A-Fa-f]{8}) ]]; then
             last_id="$(normalize_meter_id "${BASH_REMATCH[1]}")"
             last_type=""
@@ -567,24 +600,17 @@ while true; do
   # is required for new meters to start decoding.
   refresh_meter_files
 
-  # Existing candidates from previous LISTEN ticks should be decodable by the
-  # secondary LISTEN immediately after restart, not only after each one sends
-  # one more telegram to create its meter-preview file.
+  # Existing candidates from previous LISTEN ticks should retain preview
+  # configs after a soft reload. These files live under ${BASE}/preview, never
+  # inside the always-on LISTEN configuration directory.
   sync_candidate_autodecode_files
 
-  # Remove any meter-preview-<id> that sync_candidate_autodecode_files just wrote
-  # for an ID that is already an official configured meter. Keeps the LISTEN
-  # instance free of redundant preview configs for meters the primary pipeline
-  # already decodes.
+  # Remove preview configs for IDs promoted to official meters. PRIMARY DECODE
+  # handles those meters from now on.
   prune_official_meter_previews
 
-  # Parallel LISTEN always starts unconditionally, including pure LISTEN /
-  # Discover mode with no configured meters and no preview files yet.
-  # Without this, no supervisor is alive when the first candidate triggers
-  # ensure_candidate_autodecode() + _request_listen_reload(), so .reload_listen
-  # is never handled and preview decoding never begins.
-  # Double-counting in pure LISTEN mode is prevented inside parse_listen_candidates()
-  # by the OFFICIAL_METERS_COUNT guard — not at the instance-start level.
+  # Parallel LISTEN always starts unconditionally and remains a pure, empty-dir
+  # discovery stream. Preview decoding is one-shot and never reloads LISTEN.
   start_listen_instance
 
   run_once

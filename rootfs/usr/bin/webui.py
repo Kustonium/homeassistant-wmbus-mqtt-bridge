@@ -47,8 +47,8 @@ STATUS_ESP_DIAG_JSON = BASE / "status_esp_diag.json"
 STATUS_ESP_EVENTS_FILE = BASE / "status_esp_events.tsv"
 STATUS_ESP_SUGGESTION_FILE = BASE / "status_esp_suggestion.json"
 STATUS_ESP_BOOT_FILE = BASE / "status_esp_boot.json"
-# Per-candidate preview values written by bridge.sh's parallel LISTEN instance
-# when it has a meter-preview-<id> file in LISTEN_BASE/etc/wmbusmeters.d/.
+# Per-candidate preview values written by short-lived one-shot decoders
+# using PREVIEW_BASE/etc/wmbusmeters.d/.
 STATUS_CANDIDATE_VALUES_FILE = BASE / "status_candidate_values.tsv"
 # Per-candidate preview lifecycle state: pending | decoded_value | decoded_without_numeric_value
 STATUS_CANDIDATE_PREVIEW_STATE_FILE = BASE / "status_candidate_preview_state.tsv"
@@ -58,10 +58,14 @@ STATUS_CANDIDATE_PREVIEW_STATE_FILE = BASE / "status_candidate_preview_state.tsv
 # Format: device<TAB>last_seen_epoch<TAB>last_topic<TAB>telegram_count
 STATUS_ESP_TELEGRAM_DEVICES_FILE = BASE / "status_esp_telegram_devices.tsv"
 # LISTEN-only config dir — separate from /data/etc which holds the user's
-# permanent meters. Preview files go here so they affect only the LISTEN
-# instance (decode pipeline reads /data/etc/wmbusmeters.d/).
+# permanent meters. This directory must stay empty so the secondary wmbusmeters
+# process remains a true always-on discovery listener.
 LISTEN_METER_DIR = BASE / "listen" / "etc" / "wmbusmeters.d"
-RELOAD_LISTEN_FLAG = BASE / ".reload_listen"
+# Preview requests are stored separately and consumed by short-lived one-shot
+# decoders. They must never be written into LISTEN_METER_DIR.
+PREVIEW_BASE = BASE / "preview"
+PREVIEW_METER_DIR = PREVIEW_BASE / "etc" / "wmbusmeters.d"
+RELOAD_LISTEN_FLAG = BASE / ".reload_listen"  # legacy cleanup only
 RELOAD_PIPELINE_FLAG = BASE / ".reload_pipeline"
 STATUS_PIPELINE_RELOAD_FILE = BASE / "status_pipeline_reload.txt"
 ZERO_AES_KEY = "00000000000000000000000000000000"
@@ -278,6 +282,59 @@ def safe_int(value: object) -> int:
         return int(str(value or "0"))
     except Exception:
         return 0
+
+
+def _esp_device_from_topic(topic: object) -> str:
+    """Return the ESP device segment from wmbus/<device>/... topics."""
+    parts = str(topic or "").split("/")
+    if len(parts) < 3 or parts[0] != "wmbus":
+        return ""
+    return parts[1].strip()
+
+
+def _current_raw_esp_source() -> tuple[str, str, bool]:
+    """Return the freshest live RAW ESP source and whether tracker rows exist.
+
+    The RAW telegram tracker is the source of truth for what the bridge is
+    currently reading. Diagnostic summaries may be retained or may come from a
+    different ESP, so they must not drive the dashboard tile when a live RAW
+    source is known.
+    """
+    import time as _time
+
+    rows = read_tsv(
+        STATUS_ESP_TELEGRAM_DEVICES_FILE,
+        ["name", "last_telegram_epoch", "topic", "telegram_count"],
+    )
+    latest: dict = {}
+    for row in rows:
+        ep = safe_int(row.get("last_telegram_epoch"))
+        if ep > safe_int(latest.get("last_telegram_epoch")):
+            latest = row
+
+    if not latest:
+        return "", "", False
+
+    name = str(latest.get("name") or "").strip()
+    topic = str(latest.get("topic") or "").strip()
+    ep = safe_int(latest.get("last_telegram_epoch"))
+    if name and ep > 0 and (_time.time() - ep) <= 5 * 60:
+        return name, topic, True
+    return "", "", True
+
+
+def _diag_matches_current_raw_source(diag: dict, current_raw_device: str, tracker_has_rows: bool) -> bool:
+    """Allow diag data to drive the tile only for the live RAW source.
+
+    Backward compatibility: when per-device RAW tracking is unavailable (for
+    example RAW_TOPIC has no '+' wildcard), keep the previous diag-only fallback.
+    """
+    if not diag:
+        return False
+    diag_device = _esp_device_from_topic(diag.get("_topic"))
+    if current_raw_device:
+        return diag_device == current_raw_device
+    return not tracker_has_rows
 
 
 # ── REMOVED: legacy HTML helpers ────────────────────────────────────────────
@@ -507,10 +564,9 @@ def _cleanup_preview_cache(meter_id: str, remove_preview_file: bool = True) -> N
 
     if remove_preview_file:
         try:
-            preview_file = LISTEN_METER_DIR / f"meter-preview-{meter_id}"
+            preview_file = PREVIEW_METER_DIR / f"meter-preview-{meter_id}"
             if preview_file.exists():
                 preview_file.unlink()
-                RELOAD_LISTEN_FLAG.touch()
         except OSError:
             pass
 
@@ -659,7 +715,7 @@ def state(include_ignored: bool = False) -> dict:
     search_status = read_search_status()
     analysis = read_candidate_analysis()
     ignored = ignored_ids()
-    # Preview values written by bridge.sh's LISTEN instance when a meter-preview
+    # Preview values written by bridge.sh one-shot RAW decoders when a preview
     # config exists. Indexed by id for fast lookup below.
     preview_rows = read_tsv(
         STATUS_CANDIDATE_VALUES_FILE,
@@ -684,12 +740,12 @@ def state(include_ignored: bool = False) -> dict:
     for c in candidates:
         c["ignored"] = "true" if c.get("id") in ignored else "false"
         c["analysis"] = analysis_by_id.get(normalize_meter_id(c.get("id")), {})
-        # preview_active = there's a meter-preview-<id> file in the LISTEN config dir.
-        # Single source of truth = filesystem; the TSV row may linger for a brief
-        # window after cancel until the next .reload_listen cycle clears it.
+        # preview_active = there's a preview config for this candidate.
+        # Single source of truth = filesystem; one-shot RAW decoders consume the
+        # config without touching the always-on LISTEN pipeline.
         cid = normalize_meter_id(c.get("id"))
         if cid:
-            preview_file = LISTEN_METER_DIR / f"meter-preview-{cid}"
+            preview_file = PREVIEW_METER_DIR / f"meter-preview-{cid}"
             c["preview_active"] = "true" if preview_file.exists() else "false"
             pv = preview_by_id.get(cid)
             if pv:
@@ -745,7 +801,7 @@ def state(include_ignored: bool = False) -> dict:
                 "preview_value_key": preview.get("preview_value_key", ""),
                 "preview_state": preview_state.get("state", ""),
                 "preview_ts": preview.get("preview_ts", "") or preview_state.get("ts", ""),
-                "preview_active": "true" if (LISTEN_METER_DIR / f"meter-preview-{mid}").exists() else "false",
+                "preview_active": "true" if (PREVIEW_METER_DIR / f"meter-preview-{mid}").exists() else "false",
                 "encryption": candidate_analysis.get("encryption", ""),
                 "analysis_note": candidate_analysis.get("note", ""),
                 "last_seen": candidate.get("last_seen", ""),
@@ -766,7 +822,7 @@ def state(include_ignored: bool = False) -> dict:
     for m in meters:
         mid = normalize_meter_id(m.get("id") or "")
         if mid:
-            m["preview_active"] = "true" if (LISTEN_METER_DIR / f"meter-preview-{mid}").exists() else "false"
+            m["preview_active"] = "true" if (PREVIEW_METER_DIR / f"meter-preview-{mid}").exists() else "false"
             if not m.get("manufacturer"):
                 m["manufacturer"] = candidate_by_id.get(mid, {}).get("manufacturer", "")
     candidates = sorted(
@@ -887,8 +943,9 @@ def status_model(data: dict) -> dict:
     # Threshold is 150 s (2.5× the typical 60 s publish interval) so a single
     # delayed/missed publish does not immediately fall back to the bridge calc.
     rate_source = "bridge"
+    current_raw_device, current_raw_topic, tracker_has_rows = _current_raw_esp_source()
     esp_diag = read_json(STATUS_ESP_DIAG_JSON)
-    if esp_diag:
+    if _diag_matches_current_raw_source(esp_diag, current_raw_device, tracker_has_rows):
         esp_rx_epoch = safe_int(esp_diag.get("_bridge_rx_epoch", 0))
         if esp_rx_epoch > 0 and (_time.time() - esp_rx_epoch) <= 150:
             esp_total = safe_int(esp_diag.get("total", 0))
@@ -955,6 +1012,8 @@ def status_model(data: dict) -> dict:
         "rate_current_min": rate_current_min,
         "rate_prev_min": rate_prev_min,
         "rate_source": rate_source,
+        "current_raw_esp_device": current_raw_device,
+        "current_raw_esp_topic": current_raw_topic,
         "rate_history_15m": rate_history,
         "pending_restart": pending_restart,
     }
@@ -999,7 +1058,13 @@ def _esp_payload() -> dict:
     """
     import time as _time
 
-    diag       = read_json(STATUS_ESP_DIAG_JSON)
+    diag_latest = read_json(STATUS_ESP_DIAG_JSON)
+    current_raw_device, current_raw_topic, tracker_has_rows = _current_raw_esp_source()
+    diag = (
+        diag_latest
+        if _diag_matches_current_raw_source(diag_latest, current_raw_device, tracker_has_rows)
+        else {}
+    )
     suggestion = read_json(STATUS_ESP_SUGGESTION_FILE)
     boot       = read_json(STATUS_ESP_BOOT_FILE)
     events     = read_tsv(STATUS_ESP_EVENTS_FILE, ["epoch", "evtype", "topic", "payload"], limit=100, reverse=True)
@@ -1015,10 +1080,7 @@ def _esp_payload() -> dict:
     devices: dict[str, dict] = {}
 
     def device_from_topic(topic: str) -> str:
-        parts = topic.split("/")
-        if len(parts) < 3 or parts[0] != "wmbus":
-            return ""
-        return parts[1].strip()
+        return _esp_device_from_topic(topic)
 
     def blank_device(dev: str) -> dict:
         return {
@@ -1061,8 +1123,8 @@ def _esp_payload() -> dict:
 
     # The latest diag summary JSON is written by a separate subscriber. Use it
     # as a direct heartbeat source in addition to the rolling event buffer.
-    diag_topic = (diag.get("_topic") or "").strip()
-    diag_epoch = safe_int(diag.get("_bridge_rx_epoch", 0))
+    diag_topic = (diag_latest.get("_topic") or "").strip()
+    diag_epoch = safe_int(diag_latest.get("_bridge_rx_epoch", 0))
     if diag_topic.endswith(SUMMARY_TOPIC_SUFFIX):
         apply_summary(device_from_topic(diag_topic), diag_topic, diag_epoch)
 
@@ -1143,7 +1205,13 @@ def _esp_payload() -> dict:
     devices_active_count = sum(1 for d in devices_list if d["active"])
 
     return {
+        # diag is filtered for the dashboard tile: never mix metrics from a
+        # stale/other ESP with the currently received RAW telegram source.
         "diag": diag,
+        # Keep the latest summary available for the diagnostics page.
+        "diag_latest": diag_latest,
+        "current_raw_device": current_raw_device,
+        "current_raw_topic": current_raw_topic,
         "suggestion": suggestion,
         "boot": boot,
         "events": events,
@@ -1337,35 +1405,31 @@ class Handler(BaseHTTPRequestHandler):
             # decoding the same telegrams that DECODE now handles.
             if ok and meter_id:
                 meter_id_norm = normalize_meter_id(meter_id)
-                preview_path = LISTEN_METER_DIR / f"meter-preview-{meter_id_norm}"
+                preview_path = PREVIEW_METER_DIR / f"meter-preview-{meter_id_norm}"
                 try:
                     if preview_path.exists():
                         preview_path.unlink()
-                        RELOAD_LISTEN_FLAG.touch()
                 except OSError:
                     pass
             webui_add_event('ok' if ok else 'error', msg)
             self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
             return
         if path.endswith('/api/preview-candidate'):
-            # Drop a temporary meter-preview-<id> file into the LISTEN instance's
-            # config dir. .reload_listen restarts an already-running LISTEN
-            # instance; .reload_pipeline makes bridge.sh start LISTEN when it was
-            # previously stopped because there were no configured meters.
+            # Store a preview request outside the always-on LISTEN config dir.
+            # The next matching RAW telegram is decoded by a short-lived one-shot
+            # worker, so neither LISTEN nor PRIMARY needs to restart.
             cid = normalize_meter_id((params.get('id') or [''])[0])
             drv = (params.get('driver') or ['auto'])[0].strip()
             if not VALID_ID_RE.match(cid):
                 self._send_json(400, {"ok": False, "message": f"Invalid id: {cid}"})
                 return
             try:
-                LISTEN_METER_DIR.mkdir(parents=True, exist_ok=True)
-                pf = LISTEN_METER_DIR / f"meter-preview-{cid}"
+                PREVIEW_METER_DIR.mkdir(parents=True, exist_ok=True)
+                pf = PREVIEW_METER_DIR / f"meter-preview-{cid}"
                 pf.write_text(
                     f"name=preview_{cid}\nid={cid}\n" + (f"driver={drv}\n" if drv and drv != 'auto' else ""),
                     encoding='utf-8'
                 )
-                RELOAD_LISTEN_FLAG.touch()
-                RELOAD_PIPELINE_FLAG.touch()
                 webui_add_event('ok', f'Preview value requested for {cid}.')
                 self._send_json(200, {"ok": True, "message": "Preview requested. Value will appear within ~10 s once a telegram arrives."})
             except Exception as exc:
@@ -1373,15 +1437,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(500, {"ok": False, "message": f"Preview failed: {exc}"})
             return
         if path.endswith('/api/cancel-preview'):
-            # Remove meter-preview-<id> file + its TSV row + reload LISTEN.
+            # Remove preview request and cached TSV rows. No pipeline reload.
             cid = normalize_meter_id((params.get('id') or [''])[0])
             if not VALID_ID_RE.match(cid):
                 self._send_json(400, {"ok": False, "message": f"Invalid id: {cid}"})
                 return
             try:
                 _cleanup_preview_cache(cid)
-                RELOAD_LISTEN_FLAG.touch()
-                RELOAD_PIPELINE_FLAG.touch()
                 webui_add_event('ok', f'Preview canceled for {cid}.')
                 self._send_json(200, {"ok": True, "message": "Preview canceled."})
             except Exception as exc:

@@ -1,3 +1,18 @@
+official_meters_count_current() {
+  local count
+  count="$(cat "${STATUS_OFFICIAL_METERS_COUNT_FILE}" 2>/dev/null || echo "${OFFICIAL_METERS_COUNT:-0}")"
+  [[ "${count}" =~ ^[0-9]+$ ]] || count=0
+  printf '%s\n' "${count}"
+}
+
+_write_official_meters_count() {
+  local count="${OFFICIAL_METERS_COUNT:-0}" tmp
+  [[ "${count}" =~ ^[0-9]+$ ]] || count=0
+  tmp="${STATUS_OFFICIAL_METERS_COUNT_FILE}.tmp"
+  printf '%s\n' "${count}" > "${tmp}" 2>/dev/null \
+    && mv "${tmp}" "${STATUS_OFFICIAL_METERS_COUNT_FILE}" 2>/dev/null || true
+}
+
 _select_primary_meter_value() {
   local json_line="$1"
   jq -r '
@@ -196,4 +211,7 @@ refresh_meter_files() {
       write_search_status "listen" "configured_meters_invalid"
     fi
   fi
+
+  # Persist after every refresh so all long-lived subshells see the current mode.
+  _write_official_meters_count
 }
