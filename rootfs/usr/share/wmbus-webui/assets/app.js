@@ -957,9 +957,16 @@
     const isMultiEsp       = espCount > 1;
     const espTitle         = isMultiEsp ? `${espCount} × ESP` : "ESP";
     const raw15m           = Number(model.raw_15m || 0);
-    const espOnline        = sourceDeviceObj ? sourceDeviceObj.health === "online" : espOnlineDevices.length > 0;
-    const espWarn          = sourceDeviceObj ? sourceDeviceObj.health === "warn" : (!espOnline && espWarnDevices.length > 0);
-    const espSeen          = !!sourceDeviceObj || espDevicesAll.length > 0 || (esp && Object.keys(esp).length > 0) || raw15m > 0;
+    // Telegrams are the primary sign of life. A live telegram rate
+    // (rate_current_min > 0, which webui.py zeroes once it is older than 90 s)
+    // means the ESP feeding them is alive by definition — even if the separate
+    // per-device telegram tracker (status_esp_telegram_devices.tsv, written by a
+    // second mosquitto_sub in 13-esp.sh) has lagged its last_telegram_epoch into
+    // the "offline" window. The per-device health only refines the state when no
+    // live rate is available (brief gap between telegrams, or multiple ESPs).
+    const espOnline        = hasLiveRate || (sourceDeviceObj ? sourceDeviceObj.health === "online" : espOnlineDevices.length > 0);
+    const espWarn          = !espOnline && (sourceDeviceObj ? sourceDeviceObj.health === "warn" : espWarnDevices.length > 0);
+    const espSeen          = hasLiveRate || !!sourceDeviceObj || espDevicesAll.length > 0 || (esp && Object.keys(esp).length > 0) || raw15m > 0;
     const espRssi          = esp.avg_ok_rssi ? `${esp.avg_ok_rssi} dBm` : "—";
 
     // Status text + rate. The rate comes from model.rate_current_min which

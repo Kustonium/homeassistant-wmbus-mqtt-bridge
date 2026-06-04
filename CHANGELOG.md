@@ -1,3 +1,29 @@
+## 1.5.27
+
+### Fixed
+- The dashboard ESP pipeline tile could show a contradictory "Offline · N/min"
+  state — reporting the receiver offline while telegrams were actively flowing
+  through the bridge. The ESP online/silent/offline state was derived solely
+  from `sourceDeviceObj.health`, which `webui.py` computes from
+  `last_telegram_epoch` in `status_esp_telegram_devices.tsv`; that file is
+  written by a separate `mosquitto_sub` in `bridge-lib/13-esp.sh`, so when that
+  secondary subscriber lags or reconnects its epoch ages past the offline
+  threshold even though the primary pipeline keeps receiving telegrams. Fixed in
+  `rootfs/usr/share/wmbus-webui/assets/app.js` (`pipelineHeader`): a live
+  telegram rate (`hasLiveRate`, i.e. `rate_current_min > 0`, which `webui.py`
+  already zeroes once older than 90 s) now takes precedence for `espOnline` and
+  `espSeen`, while the per-device `health` from the tracker TSV only refines the
+  state when no live rate is available. Telegrams are the primary sign of life;
+  the optional `diag/*` topics remain auxiliary. The per-ESP device list in the
+  workspace panel still shows each device's tracker-based health.
+
+### Changed
+- The `media_water` label was simplified from "cold water" to "water" in the
+  Polish, German, Czech and Slovak translations (`rootfs/usr/bin/i18n.py`), so
+  the media name matches meters that report generic water rather than
+  specifically cold water.
+
+
 ## 1.5.26
 
 ### Fixed
