@@ -687,6 +687,11 @@
     const model = data.model || {};
     const title = routeTitle(state.route);
     const updatedAt = model.status?.updated_at || data.status?.updated_at || "";
+    // Bridge liveness: model.bridge_alive is false when bridge.sh stopped stamping
+    // its heartbeat (down, or run.sh still waiting for the broker). The whole
+    // snapshot is then stale — surface it instead of showing the last good state
+    // as live truth (honest witness, never a green lie).
+    const bridgeStale = model.bridge_alive === false;
     const runtime =
       meta.runtime === "home_assistant"
         ? t("webui_runtime_home_assistant", "Home Assistant")
@@ -718,11 +723,14 @@
             </div>
             <div class="top-actions">
               ${languageSelect("top")}
-              <span class="pill ${state.liveConnected ? "ok" : "muted"}"><span class="dot"></span>${state.liveConnected ? "LIVE" : "POLL"}</span>
+              ${bridgeStale
+                ? `<span class="pill bad"><span class="dot"></span>${escapeHtml(t("webui_stale", "STALE"))}</span>`
+                : `<span class="pill ${state.liveConnected ? "ok" : "muted"}"><span class="dot"></span>${state.liveConnected ? "LIVE" : "POLL"}</span>`}
               <button class="btn danger" data-action="restart">${escapeHtml(t("webui_restart", "Restart"))}</button>
             </div>
           </header>
           <div class="content">
+            ${bridgeStale ? `<div style="margin:0 0 12px;padding:10px 14px;border:1px solid #6b4a1e;background:#241a0c;color:#f3c84b;border-radius:6px;font-size:13px;">⚠ ${escapeHtml(t("bridge_stale_banner", "Stale data — the bridge is not updating (waiting for the broker or restarting)."))}</div>` : ""}
             ${state.restarting
               ? `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 20px;gap:16px;">
                    <div style="font-size:36px;">🔄</div>
@@ -924,9 +932,14 @@
     const rateLabel = `${cur}/min`;
 
     const cls = (active) => state.workspace === active ? "pipeline-node active" : "pipeline-node";
+    // When the bridge is not updating (stale), the snapshot is last-known, not
+    // live — grey every pipeline dot so the tiles don't show stale green next to
+    // the "stale data" banner (honest witness, never a green lie).
+    const bridgeStale = model.bridge_alive === false;
     // .dot.ok = green, .dot.warn = yellow, .dot.bad = red (CSS standalone rules)
     // "live" adds a soft glow to signal real-time activity (rate > 0).
     const dot = (ok, warn, live) => {
+      if (bridgeStale) return `<span class="dot"></span>`;
       const cls = ok ? (live ? "ok live" : "ok") : (warn ? "warn" : "bad");
       return `<span class="dot ${cls}"></span>`;
     };
@@ -1003,6 +1016,16 @@
         ? espDeviceSource.slice(0, 3).map(d => d.name).join(", ") + (espDeviceSource.length > 3 ? ` +${espDeviceSource.length - 3}` : "")
         : primaryDevice);
 
+    // ─── MQTT broker identity ($SYS) ───
+    // brand + version read from $SYS, plus native/other (HA's own broker vs an
+    // external one like EMQX). Lets the user see at a glance which broker the
+    // add-on actually talks to — e.g. after repointing it at the wrong broker.
+    const brokerBrand = String(model.broker_brand || "").trim();
+    const brokerVer = String(model.broker_version || "").trim();
+    const brokerLabel = brokerBrand
+      ? `${brokerBrand}${brokerVer ? " " + brokerVer : ""} (${model.broker_native === true ? t("broker_native", "native") : t("broker_other", "other")})`
+      : "";
+
     // ─── wmbusmeters node ───
     // "received / decoded" — raw telegram count vs successfully decoded JSON.
     // The ratio tells the user how much of the air is actually their meters.
@@ -1018,6 +1041,36 @@
           ? t("pipeline_ha_published_at", "published at {time}", {time: haPublishedTime})
           : t("pipeline_ha_published", "published"))
       : t("pipeline_ha_pending", "pending");
+    // MQTT->HA healthcheck (model.ha_link). "ok" = HA confirmed (native broker or
+    // a seen "online" birth) → green. "unknown" = non-native broker with no HA
+    // confirmation → NOT green: publishing Discovery to a broker HA does not
+    // consume is not success, so show neutral grey + "HA unconfirmed" (honest
+    // witness, never a green lie). It stays a soft/neutral signal — not a hard
+    // alarm — so an intentional external broker that HA also uses is not accused.
+    const haLink = String(model.ha_link || "unknown");
+    const haVerification = String(model.ha_verification || "unavailable");
+    let haDot, haText;
+    if (haLink === "ok") {
+      // HA presence confirmed; green regardless of Discovery timing. When the
+      // opt-in verification round-trip succeeded, label it as "verified".
+      haDot = dot(true, false, hasLiveRate);
+      if (haVerification === "verified") {
+        haText = t("pipeline_ha_verified", "HA verified");
+      } else {
+        haText = model.discovery_ok ? haStatus : t("pipeline_ha_detected", "HA detected");
+      }
+    } else if (haLink === "not_created") {
+      // Strongest negative: HA reachable but did NOT create our canary entity.
+      // Definitive "wrong broker / Discovery not consumed" verdict.
+      haDot = dot(false, false, false);
+      haText = t("pipeline_ha_not_created", "HA NOT creating entities");
+    } else if (haLink === "unknown") {
+      haDot = `<span class="dot"></span>`;
+      haText = t("pipeline_ha_unconfirmed", "HA unconfirmed");
+    } else {
+      haDot = `<span class="dot"></span>`;
+      haText = haStatus;
+    }
 
     return `
       <section class="section">
@@ -1035,6 +1088,8 @@
             <div class="pipeline-title">MQTT</div>
             <div class="pipeline-meta">${dot(!!model.mqtt_ok, false, !!model.mqtt_ok && hasLiveRate)} ${escapeHtml(model.mqtt_ok ? t("pipeline_mqtt_online", "online") : t("pipeline_mqtt_offline", "offline"))}</div>
             <div class="pipeline-sub">${escapeHtml((mqtt.host || "—") + (mqtt.port ? ":" + mqtt.port : ""))}</div>
+            ${brokerLabel ? `<div class="pipeline-sub" style="font-size:11px;">${escapeHtml(brokerLabel)}</div>` : ""}
+            ${(model.mqtt_tls_intent === true && !model.mqtt_ok) ? `<div class="pipeline-sub" style="font-size:11px;color:#f3c84b;">⚠ TLS ${escapeHtml(t("tls_not_supported", "not supported"))} (1883)</div>` : ""}
           </button>
           <div class="pipeline-arrow"><span>${escapeHtml(rateLabel)}</span></div>
           <button class="${cls("wmbus")}" data-action="open-workspace" data-ws="wmbus" type="button">
@@ -1047,7 +1102,7 @@
           <button class="${cls("ha")}" data-action="open-workspace" data-ws="ha" type="button">
             <div class="pipeline-icon">🏠</div>
             <div class="pipeline-title">HA</div>
-            <div class="pipeline-meta">${dot(!!model.discovery_ok, meterCount === 0, !!model.discovery_ok)} ${escapeHtml(haStatus)}</div>
+            <div class="pipeline-meta">${haDot} ${escapeHtml(haText)}</div>
             <div class="pipeline-sub">${meterCount} ${escapeHtml(t("pipeline_ha_entities_short", "entit."))}</div>
           </button>
         </div>
@@ -1134,11 +1189,31 @@
     } else if (state.workspace === "mqtt") {
       const mqtt = model.mqtt || {};
       const cfg  = model.cfg  || {};
+      // Auto-detected connection facts ($SYS): broker software, client count,
+      // HA presence on this broker, TLS capability — "what am I connected to".
+      const brokerBrand = String(model.broker_brand || "").trim();
+      const brokerVer   = String(model.broker_version || "").trim();
+      const brokerSw = brokerBrand
+        ? `${brokerBrand}${brokerVer ? " " + brokerVer : ""} (${model.broker_native === true ? t("broker_native", "native") : t("broker_other", "other")})`
+        : "—";
+      const brokerClients = String(model.broker_clients || "").trim();
+      const haLink = String(model.ha_link || "unknown");
+      const haOnBroker = haLink === "ok"
+        ? (String(model.ha_verification || "") === "verified" ? "✓ " + t("ha_verified_short", "verified") : "✓")
+        : (haLink === "not_created" ? "✗ " + t("ha_not_created_short", "not creating entities")
+        : (haLink === "mqtt_down" ? "—" : "?"));
+      const tlsVal = model.mqtt_tls_supported === true
+        ? "✓"
+        : (t("tls_not_supported", "not supported") + (model.mqtt_tls_intent === true ? " (port 8883 → 1883)" : ""));
       body = `
         <h3>📨 MQTT</h3>
         <div class="kv">
           <div>${escapeHtml(t("workspace_mqtt_host", "Broker"))}</div><div>${escapeHtml((mqtt.host || "—") + (mqtt.port ? ":" + mqtt.port : ""))}</div>
+          <div>${escapeHtml(t("workspace_mqtt_software", "Broker software"))}</div><div>${escapeHtml(brokerSw)}</div>
           <div>${escapeHtml(t("workspace_mqtt_state", "Connected"))}</div><div>${model.mqtt_ok ? "✓ yes" : "✗ no"}</div>
+          ${brokerClients ? `<div>${escapeHtml(t("workspace_mqtt_clients", "Clients"))}</div><div>${escapeHtml(brokerClients)}</div>` : ""}
+          <div>${escapeHtml(t("workspace_mqtt_ha", "HA on this broker"))}</div><div>${haOnBroker}</div>
+          <div>TLS</div><div>${escapeHtml(tlsVal)}</div>
           <div>${escapeHtml(t("workspace_mqtt_raw_topic", "RAW topic"))}</div><div class="mono">${escapeHtml(cfg.raw_topic || "—")}</div>
           <div>${escapeHtml(t("workspace_mqtt_state_prefix", "State prefix"))}</div><div class="mono">${escapeHtml(cfg.state_prefix || "—")}</div>
           <div>${escapeHtml(t("workspace_mqtt_discovery_prefix", "Discovery prefix"))}</div><div class="mono">${escapeHtml(cfg.discovery_prefix || "—")}</div>

@@ -80,6 +80,26 @@ STATUS_CANDIDATE_VALUES_FILE="${BASE}/status_candidate_values.tsv"
 # Per-candidate preview lifecycle state: pending | decoded_value | decoded_without_numeric_value
 # Format: id<TAB>state<TAB>iso_timestamp<TAB>note
 STATUS_CANDIDATE_PREVIEW_STATE_FILE="${BASE}/status_candidate_preview_state.tsv"
+# MQTT->HA healthcheck: presence of Home Assistant's MQTT integration on the
+# broker the bridge uses, inferred from HA's retained birth message
+# (<discovery_prefix>/status). Written by the HA-presence subscriber in
+# start_esp_subscribers. Format: state<TAB>epoch  (state = online | offline).
+STATUS_HA_PRESENCE_FILE="${BASE}/status_ha_presence.txt"
+# Liveness heartbeat — stamped every few seconds by the background ticker started
+# after the ESP subscribers, regardless of telegram flow. Lets the WebUI tell
+# "bridge alive but idle" apart from "bridge down / run.sh waiting for broker"
+# (status.json alone goes stale during quiet periods too). Format: epoch.
+STATUS_HEARTBEAT_FILE="${BASE}/status_heartbeat.txt"
+# Broker identity from $SYS, written by the broker-info subscriber: brand+version
+# (Mosquitto via $SYS/broker/version, EMQX via $SYS/brokers/+/sysdescr+version).
+# Lets the WebUI label the MQTT tile "Mosquitto 2.x (native)" / "EMQX 5.x (other)".
+# Format: brand<TAB>version. Session-scoped (the broker can change between runs).
+STATUS_BROKER_INFO_FILE="${BASE}/status_broker_info.txt"
+# HA entity verification (opt-in, see verify_ha_entities option): worker writes
+# one of verified | not_created | unavailable | pending here, after asking the
+# HA Core API whether the canary entity (sensor.wmbus_bridge_health) exists.
+# Format: state<TAB>epoch  (epoch = last check).
+STATUS_HA_VERIFICATION_FILE="${BASE}/status_ha_verification.txt"
 # File-backed count of officially configured meters. Several pipelines run in
 # subshells and can outlive a soft reload, so their inherited shell variable may
 # be stale. This file is the shared runtime source of truth.
@@ -145,6 +165,16 @@ rm -rf "${BASE}/.reload_listen_pending" 2>/dev/null || true
 rm -rf "${BASE}/.preview_attempts" 2>/dev/null || true
 mkdir -p "${BASE}/.preview_attempts" 2>/dev/null || true
 : > "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" 2>/dev/null || true
+# HA presence is session-scoped to the current broker. Clear stale state so a
+# previous run's "online" cannot mask a now-foreign broker until the retained
+# birth message (if any) re-arrives on subscribe.
+: > "${STATUS_HA_PRESENCE_FILE}" 2>/dev/null || true
+# Broker identity is session-scoped — clear so a previous run's broker brand
+# cannot linger after the user repoints the add-on at a different broker.
+: > "${STATUS_BROKER_INFO_FILE}" 2>/dev/null || true
+# HA verification verdict is session-scoped (it depends on the running bridge's
+# Discovery publication and on the HA instance reachable now).
+: > "${STATUS_HA_VERIFICATION_FILE}" 2>/dev/null || true
 # Preview values are session-scoped — clear stale entries from previous runs
 # so the WebGUI doesn't show outdated readings (or the legacy first-numeric-field
 # pick that briefly stored bogus backflow_m3 / fraud counter values) until the
@@ -175,6 +205,12 @@ SEARCH_TOPIC="${SEARCH_TOPIC:-$(json_get '.search_topic' 'wmbus/search/candidate
 IGNORE_RETAINED="${IGNORE_RETAINED:-$(json_get_bool '.ignore_retained' 'true')}"
 REQUIRE_TIMESTAMP="${REQUIRE_TIMESTAMP:-$(json_get_bool '.require_timestamp' 'false')}"
 RESTART_ON_EXIT="${RESTART_ON_EXIT:-$(json_get_bool '.restart_on_exit' 'true')}"
+
+# Opt-in HA entity verification: when true, the bridge publishes a hidden canary
+# entity (sensor.wmbus_bridge_health) and a background worker asks the HA Core
+# API whether that entity exists. Off by default (read-only HA access is opt-in).
+VERIFY_HA_ENTITIES="${VERIFY_HA_ENTITIES:-$(json_get_bool '.verify_ha_entities' 'false')}"
+export VERIFY_HA_ENTITIES
 
 STATE_PREFIX="${STATE_PREFIX:-$(json_get '.state_prefix' 'wmbusmeters')}"
 STATE_RETAIN="${STATE_RETAIN:-$(json_get_bool '.state_retain' 'false')}"
@@ -226,6 +262,7 @@ log "discovery: enabled=${DISCOVERY_ENABLED} prefix=${DISCOVERY_PREFIX} retain=$
 log "wmbusmeters: loglevel=${LOGLEVEL} filter_hex_only=${FILTER_HEX_ONLY} debug_every_n=${DEBUG_EVERY_N}"
 log "search: mode=${SEARCH_MODE} expected_value_m3=${SEARCH_EXPECTED_VALUE_M3} tolerance_m3=${SEARCH_TOLERANCE_M3} delta_mode=${SEARCH_DELTA_MODE} min_delta_m3=${SEARCH_MIN_DELTA_M3} topic=${SEARCH_TOPIC}"
 log "robust: ignore_retained=${IGNORE_RETAINED} require_timestamp=${REQUIRE_TIMESTAMP} restart_on_exit=${RESTART_ON_EXIT}"
+log "verify_ha_entities: ${VERIFY_HA_ENTITIES}"
 status_add_event "ok" "bridge starting"
 write_status_json
 
@@ -257,6 +294,19 @@ if command -v stdbuf >/dev/null 2>&1; then
 fi
 
 start_esp_subscribers
+
+# Liveness heartbeat ticker: stamp the current epoch every few seconds,
+# independent of telegram flow, so the WebUI can distinguish "bridge alive but
+# idle" from "bridge down / run.sh waiting for the broker". Dies with bridge.sh.
+(
+  while true; do
+    printf '%s\n' "$(epoch_now)" > "${STATUS_HEARTBEAT_FILE}.tmp" 2>/dev/null \
+      && mv "${STATUS_HEARTBEAT_FILE}.tmp" "${STATUS_HEARTBEAT_FILE}" 2>/dev/null \
+      || true
+    sleep "${HEARTBEAT_INTERVAL_SECONDS:-10}"
+  done
+) &
+HEARTBEAT_PID=$!
 
 # ------------------------------------------------------------
 # wmbusmeters.conf
@@ -418,8 +468,11 @@ run_once() {
   # the main shell's direct children (mosquitto_sub, awk, tee, wmbusmeters,
   # while-read subshell) to bring down the foreground pipeline. The
   # restart_on_exit loop above refreshes meter files and respawns run_once.
-  # Watcher excludes itself (BASHPID) and LISTEN_PID from the kill list so
-  # the parallel listen instance keeps running across pipeline restarts.
+  # Watcher excludes itself (BASHPID), LISTEN_PID, HEARTBEAT_PID and the ESP
+  # subscriber PIDs (ESP_SUBSCRIBER_PIDS) from the kill list so the parallel
+  # listen instance, the liveness heartbeat and the ESP/diag/HA-presence
+  # subscribers keep running across pipeline restarts (otherwise a soft reload
+  # would silently stop them — e.g. a stale heartbeat falsely flags the dashboard).
   (
     watcher_self="${BASHPID}"
     while sleep 2; do
@@ -429,6 +482,8 @@ run_once() {
         for child in $(pgrep -P "$$" 2>/dev/null); do
           [[ "${child}" == "${watcher_self}" ]] && continue
           [[ -n "${LISTEN_PID}" && "${child}" == "${LISTEN_PID}" ]] && continue
+          [[ -n "${HEARTBEAT_PID:-}" && "${child}" == "${HEARTBEAT_PID}" ]] && continue
+          [[ -n "${ESP_SUBSCRIBER_PIDS:-}" && " ${ESP_SUBSCRIBER_PIDS} " == *" ${child} "* ]] && continue
           kill -TERM "${child}" 2>/dev/null
         done
         exit 0
@@ -612,6 +667,10 @@ while true; do
   # Parallel LISTEN always starts unconditionally and remains a pure, empty-dir
   # discovery stream. Preview decoding is one-shot and never reloads LISTEN.
   start_listen_instance
+
+  # Republish the canary entity used by the opt-in HA verification (no-op when
+  # the option is off). Cheap and idempotent — retained Discovery payload.
+  publish_canary_entity
 
   run_once
   rc=$?

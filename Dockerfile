@@ -32,6 +32,7 @@ RUN apk add --no-cache \
   bash \
   python3 \
   mosquitto-clients jq \
+  curl \
   libstdc++ zlib libxml2 \
   libusb librtlsdr
 
