@@ -1,3 +1,9 @@
+## 1.5.28
+
+### Added
+- detect missing Home Assistant on the MQTT broker (MQTT→HA healthcheck) (eae89c7)
+
+
 ## 1.5.27
 
 ### Fixed

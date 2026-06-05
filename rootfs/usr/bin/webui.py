@@ -57,6 +57,21 @@ STATUS_CANDIDATE_PREVIEW_STATE_FILE = BASE / "status_candidate_preview_state.tsv
 # ESPs were seen in the current bridge session (works without ESP diagnostics).
 # Format: device<TAB>last_seen_epoch<TAB>last_topic<TAB>telegram_count
 STATUS_ESP_TELEGRAM_DEVICES_FILE = BASE / "status_esp_telegram_devices.tsv"
+# MQTT->HA healthcheck: presence of HA's MQTT integration on the broker the
+# bridge uses, from HA's retained birth message. Written by bridge.sh.
+# Format: state<TAB>epoch  (state = online | offline).
+STATUS_HA_PRESENCE_FILE = BASE / "status_ha_presence.txt"
+# Broker identity (brand<TAB>version) from $SYS, written by bridge.sh. Used to
+# label the MQTT tile, e.g. "Mosquitto 2.1.2 (native)" / "EMQX 5.8.8 (other)".
+STATUS_BROKER_INFO_FILE = BASE / "status_broker_info.txt"
+# Opt-in HA entity verification verdict written by bridge-lib/13-esp.sh's
+# worker. One of: verified | not_created | unavailable | pending. Joined with
+# ha_link in status_model — verified > native > birth.
+STATUS_HA_VERIFICATION_FILE = BASE / "status_ha_verification.txt"
+# Liveness heartbeat stamped by bridge.sh every few seconds, independent of
+# telegram flow. A stale heartbeat means the bridge is down or run.sh is still
+# waiting for the broker — the rest of the snapshot is then stale, not live.
+STATUS_HEARTBEAT_FILE = BASE / "status_heartbeat.txt"
 # LISTEN-only config dir — separate from /data/etc which holds the user's
 # permanent meters. This directory must stay empty so the secondary wmbusmeters
 # process remains a true always-on discovery listener.
@@ -895,6 +910,85 @@ def status_model(data: dict) -> dict:
     except Exception:
         pass
 
+    # MQTT->HA healthcheck: is a live HA MQTT integration present on the broker
+    # the bridge uses? Inferred from HA's retained birth message
+    # (homeassistant/status), recorded by bridge.sh. Silence on a non-native
+    # broker likely means the bridge is on a different/foreign broker and HA
+    # entities will never appear. Informational only — never a hard error, so
+    # intentional external/bridged topologies are not falsely alarmed.
+    ha_presence = "unknown"
+    try:
+        _ha_raw = STATUS_HA_PRESENCE_FILE.read_text(encoding="utf-8").strip()
+        if _ha_raw:
+            _ha_state = _ha_raw.split("\t", 1)[0].strip().lower()
+            if _ha_state in ("online", "offline"):
+                ha_presence = _ha_state
+    except OSError:
+        pass
+    ha_present = ha_presence == "online"
+    # A seen "online" birth confirms HA on this broker. Birth ABSENCE is NOT proof
+    # of a foreign broker (HA birth is often not retained, so a subscriber that
+    # starts after HA connected never sees it) — so it never alarms.
+    # The native HA broker is an authoritative positive signal: when the add-on
+    # talks to HA's own Supervisor-provided broker (host "core-mosquitto" or
+    # mqtt_mode "ha"), the HA MQTT integration is present by definition — no
+    # birth/Discovery timing needed.
+    _mqtt_host = str(mqtt.get("host") or "").strip().lower()
+    _mqtt_mode = str((options.get("mqtt_mode") if isinstance(options, dict) else "") or "auto").lower()
+    ha_native_broker = _mqtt_host == "core-mosquitto" or _mqtt_mode == "ha"
+    # HA entity verification (opt-in): the worker round-trips Discovery through
+    # HA Core API and writes the result. "verified" is the strongest possible
+    # signal — it bumps ha_link to "ok" regardless of birth/native priors;
+    # "not_created" is the strongest negative — it overrides native/birth (HA may
+    # be reachable on this broker but still not create entities, e.g. wrong
+    # discovery_prefix or integration disabled). Other states do not change the
+    # existing ha_link decision (it falls back to the inferred path).
+    ha_verification = "unavailable"
+    try:
+        _hv_raw = STATUS_HA_VERIFICATION_FILE.read_text(encoding="utf-8").strip()
+        if _hv_raw:
+            _hv_state = _hv_raw.split("\t", 1)[0].strip().lower()
+            if _hv_state in ("verified", "not_created", "pending", "unavailable"):
+                ha_verification = _hv_state
+    except OSError:
+        pass
+
+    if not mqtt_ok:
+        ha_link = "mqtt_down"
+    elif ha_verification == "verified":
+        ha_link = "ok"
+    elif ha_verification == "not_created":
+        ha_link = "not_created"
+    elif ha_present or ha_native_broker:
+        ha_link = "ok"
+    else:
+        ha_link = "unknown"
+
+    # Broker identity ($SYS), written by bridge.sh as brand<TAB>version.
+    # broker_native reuses the HA-presence prior (the add-on uses HA's own
+    # Supervisor-provided broker), so the MQTT tile can show e.g.
+    # "Mosquitto 2.1.2 (native)" vs "EMQX 5.8.8 (other)".
+    broker_brand = ""
+    broker_version = ""
+    broker_clients = ""
+    try:
+        _bk = STATUS_BROKER_INFO_FILE.read_text(encoding="utf-8").strip()
+        if _bk:
+            _parts = _bk.split("\t")
+            broker_brand = _parts[0].strip()
+            broker_version = _parts[1].strip() if len(_parts) > 1 else ""
+            broker_clients = _parts[2].strip() if len(_parts) > 2 else ""
+    except OSError:
+        pass
+    broker_native = bool(ha_native_broker)
+    # TLS capability: the add-on does not support TLS connections yet. When the
+    # configured port looks like MQTT-over-TLS (8883/8884) the user almost
+    # certainly expects TLS, so the UI says so plainly instead of leaving a
+    # silent connection failure unexplained.
+    mqtt_tls_supported = False
+    _mqtt_port = safe_int(mqtt.get("port"))
+    mqtt_tls_intent = _mqtt_port in (8883, 8884)
+
     # Telegrams-per-minute: sum seen_60m across active sources.
     # Divide by actual elapsed minutes (capped at 60) instead of always 60 —
     # dividing by 60 when the bridge is young (e.g. 4 min uptime) produces an
@@ -989,6 +1083,18 @@ def status_model(data: dict) -> dict:
     except OSError:
         pass
 
+    # Bridge liveness: bridge.sh stamps status_heartbeat.txt every few seconds
+    # regardless of telegram flow. A stale heartbeat (or none) means the bridge is
+    # down or run.sh is still waiting for the broker, so the whole snapshot is
+    # stale and the WebUI must not present it as live truth.
+    bridge_alive = False
+    try:
+        _hb = int(STATUS_HEARTBEAT_FILE.read_text(encoding="utf-8").strip())
+        if _hb > 0 and (_time.time() - _hb) <= 30:
+            bridge_alive = True
+    except Exception:
+        bridge_alive = False
+
     return {
         "status": status,
         "cfg": cfg,
@@ -1007,6 +1113,15 @@ def status_model(data: dict) -> dict:
         "wmbus_ok": wmbus_ok,
         "decoded_ok": decoded_ok,
         "discovery_ok": discovery_ok,
+        "ha_presence": ha_presence,
+        "ha_link": ha_link,
+        "ha_verification": ha_verification,
+        "broker_brand": broker_brand,
+        "broker_version": broker_version,
+        "broker_native": broker_native,
+        "broker_clients": broker_clients,
+        "mqtt_tls_supported": mqtt_tls_supported,
+        "mqtt_tls_intent": mqtt_tls_intent,
         "raw_15m": raw_15m,
         "raw_per_min": raw_per_min,
         "rate_current_min": rate_current_min,
@@ -1016,6 +1131,7 @@ def status_model(data: dict) -> dict:
         "current_raw_esp_topic": current_raw_topic,
         "rate_history_15m": rate_history,
         "pending_restart": pending_restart,
+        "bridge_alive": bridge_alive,
     }
 
 
