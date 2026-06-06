@@ -68,6 +68,9 @@ STATUS_BROKER_INFO_FILE = BASE / "status_broker_info.txt"
 # worker. One of: verified | not_created | unavailable | pending. Joined with
 # ha_link in status_model — verified > native > birth.
 STATUS_HA_VERIFICATION_FILE = BASE / "status_ha_verification.txt"
+# wmbusmeters version triplet written once at bridge start by bridge.sh.
+# Format: runtime_version<TAB>build_version<TAB>build_commit.
+STATUS_WMBUSMETERS_VERSION_FILE = BASE / "status_wmbusmeters_version.txt"
 # Liveness heartbeat stamped by bridge.sh every few seconds, independent of
 # telegram flow. A stale heartbeat means the bridge is down or run.sh is still
 # waiting for the broker — the rest of the snapshot is then stale, not live.
@@ -944,12 +947,16 @@ def status_model(data: dict) -> dict:
     # discovery_prefix or integration disabled). Other states do not change the
     # existing ha_link decision (it falls back to the inferred path).
     ha_verification = "unavailable"
+    ha_verification_reason = ""
     try:
         _hv_raw = STATUS_HA_VERIFICATION_FILE.read_text(encoding="utf-8").strip()
         if _hv_raw:
-            _hv_state = _hv_raw.split("\t", 1)[0].strip().lower()
+            _hv_parts = _hv_raw.split("\t")
+            _hv_state = _hv_parts[0].strip().lower()
             if _hv_state in ("verified", "not_created", "pending", "unavailable"):
                 ha_verification = _hv_state
+            if len(_hv_parts) > 2:
+                ha_verification_reason = _hv_parts[2].strip()
     except OSError:
         pass
 
@@ -1083,6 +1090,21 @@ def status_model(data: dict) -> dict:
     except OSError:
         pass
 
+    # wmbusmeters version triplet (write-once at bridge start). Surface on the
+    # wmbusmeters workspace panel so the user can tell which build is running.
+    wmbusmeters_runtime = ""
+    wmbusmeters_build_version = ""
+    wmbusmeters_build_commit = ""
+    try:
+        _wv_raw = STATUS_WMBUSMETERS_VERSION_FILE.read_text(encoding="utf-8").strip()
+        if _wv_raw:
+            _wv_parts = _wv_raw.split("\t")
+            wmbusmeters_runtime = _wv_parts[0].strip() if len(_wv_parts) > 0 else ""
+            wmbusmeters_build_version = _wv_parts[1].strip() if len(_wv_parts) > 1 else ""
+            wmbusmeters_build_commit = _wv_parts[2].strip() if len(_wv_parts) > 2 else ""
+    except OSError:
+        pass
+
     # Bridge liveness: bridge.sh stamps status_heartbeat.txt every few seconds
     # regardless of telegram flow. A stale heartbeat (or none) means the bridge is
     # down or run.sh is still waiting for the broker, so the whole snapshot is
@@ -1116,6 +1138,7 @@ def status_model(data: dict) -> dict:
         "ha_presence": ha_presence,
         "ha_link": ha_link,
         "ha_verification": ha_verification,
+        "ha_verification_reason": ha_verification_reason,
         "broker_brand": broker_brand,
         "broker_version": broker_version,
         "broker_native": broker_native,
@@ -1132,6 +1155,9 @@ def status_model(data: dict) -> dict:
         "rate_history_15m": rate_history,
         "pending_restart": pending_restart,
         "bridge_alive": bridge_alive,
+        "wmbusmeters_runtime": wmbusmeters_runtime,
+        "wmbusmeters_build_version": wmbusmeters_build_version,
+        "wmbusmeters_build_commit": wmbusmeters_build_commit,
     }
 
 
@@ -1506,8 +1532,11 @@ class Handler(BaseHTTPRequestHandler):
         self._wmbus_lang = lang
         if path.endswith('/api/remove-meter'):
             meter_id = (params.get('meter_id') or [''])[0].strip()
+            # NB: remove_meter_from_options already emits the appropriate
+            # webui_add_event ("ok" on Supervisor-API success, "warn" on file
+            # fallback, "error" on raised exception). Re-logging here would
+            # double-stamp status_events.tsv in the same second.
             ok, msg = remove_meter_from_options(meter_id)
-            webui_add_event('ok' if ok else 'error', msg)
             self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
             return
         if path.endswith('/api/add-meter'):
@@ -1515,6 +1544,10 @@ class Handler(BaseHTTPRequestHandler):
             driver = (params.get('driver') or ['auto'])[0].strip()
             key = (params.get('key') or [''])[0].strip()
             meter_name = (params.get('meter_name') or [''])[0].strip()
+            # NB: add_meter_to_options already emits the appropriate
+            # webui_add_event (ok / warn / error) with the most accurate
+            # context — re-logging here would double-stamp status_events.tsv
+            # in the same second.
             ok, msg = add_meter_to_options(meter_id, driver, key, meter_name=meter_name)
             # When a previewed candidate is added permanently, drop the
             # preview meter file so the LISTEN instance doesn't keep
@@ -1527,7 +1560,6 @@ class Handler(BaseHTTPRequestHandler):
                         preview_path.unlink()
                 except OSError:
                     pass
-            webui_add_event('ok' if ok else 'error', msg)
             self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
             return
         if path.endswith('/api/preview-candidate'):
@@ -1568,11 +1600,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.endswith('/api/search-control'):
             action = (params.get('action') or ['start'])[0]
+            # NB: update_options_for_search already emits the appropriate
+            # webui_add_event. Re-logging here would double-stamp.
             if action == 'stop':
                 ok, msg = update_options_for_search('0', '0.05', enabled=False)
             else:
                 ok, msg = update_options_for_search((params.get('expected') or ['0'])[0], (params.get('tolerance') or ['0.05'])[0], enabled=True)
-            webui_add_event('ok' if ok else 'error', msg)
             restart_ok, restart_msg = restart_addon_via_supervisor()
             if restart_ok:
                 webui_add_event('ok', restart_msg)

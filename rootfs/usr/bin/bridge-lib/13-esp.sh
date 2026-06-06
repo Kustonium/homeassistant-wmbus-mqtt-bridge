@@ -251,24 +251,30 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
   # sensor.wmbus_bridge_wmbus_bridge_health), so a hardcoded entity_id is
   # fragile. mdi:check-network is unique to our canary across HA defaults.
   _hv_payload="$(jq -nc '{template: "{{ states.sensor | selectattr(\"attributes.icon\",\"eq\",\"mdi:check-network\") | list | length }}"}' 2>/dev/null)"
+  # Status file format: state<TAB>epoch<TAB>reason.
+  # state    = verified | not_created | pending | unavailable
+  # reason   = optional, ONLY for unavailable; one of
+  #   disabled | no_token | no_curl | no_payload | auth_error | network_error | api_error
+  # The WebUI uses reason to render a precise, actionable hint ("enable
+  # verify_ha_entities", "Docker standalone", "check homeassistant_api", ...).
   _hv_write() {
-    local _state="$1" _now
+    local _state="$1" _reason="${2:-}" _now
     _now="$(date +%s 2>/dev/null || echo 0)"
-    printf '%s\t%s\n' "${_state}" "${_now}" > "${STATUS_HA_VERIFICATION_FILE}.tmp" 2>/dev/null \
+    printf '%s\t%s\t%s\n' "${_state}" "${_now}" "${_reason}" > "${STATUS_HA_VERIFICATION_FILE}.tmp" 2>/dev/null \
       && mv "${STATUS_HA_VERIFICATION_FILE}.tmp" "${STATUS_HA_VERIFICATION_FILE}" 2>/dev/null \
       || true
   }
   if [[ "${VERIFY_HA_ENTITIES:-false}" != "true" ]]; then
-    _hv_write "unavailable"
+    _hv_write "unavailable" "disabled"
     log "verify_ha_entities: disabled (opt-in)"
   elif [[ -z "${SUPERVISOR_TOKEN:-}" ]]; then
-    _hv_write "unavailable"
+    _hv_write "unavailable" "no_token"
     log "verify_ha_entities: enabled but SUPERVISOR_TOKEN missing — Docker standalone? state: unavailable"
   elif ! command -v curl >/dev/null 2>&1; then
-    _hv_write "unavailable"
+    _hv_write "unavailable" "no_curl"
     log "verify_ha_entities: curl not available — state: unavailable"
   elif [[ -z "${_hv_payload}" ]]; then
-    _hv_write "unavailable"
+    _hv_write "unavailable" "no_payload"
     log "verify_ha_entities: failed to build template payload — state: unavailable"
   else
     log "verify_ha_entities: worker started (grace=${_hv_grace}s interval=${_hv_interval}s, template-API canary by icon)"
@@ -302,15 +308,15 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
           fi
           ;;
         401|403)
-          _hv_write "unavailable"
+          _hv_write "unavailable" "auth_error"
           log "verify_ha_entities: HA Core API returned ${_hv_code} (auth/permission) — check homeassistant_api"
           ;;
         000|"")
           # Network error, timeout, or curl unavailable — soft state.
-          _hv_write "unavailable"
+          _hv_write "unavailable" "network_error"
           ;;
         *)
-          _hv_write "unavailable"
+          _hv_write "unavailable" "api_error"
           ;;
       esac
       sleep "${_hv_interval}"

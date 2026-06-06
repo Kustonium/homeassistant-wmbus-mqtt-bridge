@@ -100,6 +100,9 @@ STATUS_BROKER_INFO_FILE="${BASE}/status_broker_info.txt"
 # HA Core API whether the canary entity (sensor.wmbus_bridge_health) exists.
 # Format: state<TAB>epoch  (epoch = last check).
 STATUS_HA_VERIFICATION_FILE="${BASE}/status_ha_verification.txt"
+# wmbusmeters version triplet — written once at start. webui.py surfaces it on
+# the wmbusmeters workspace panel. Format: runtime<TAB>build_version<TAB>build_commit.
+STATUS_WMBUSMETERS_VERSION_FILE="${BASE}/status_wmbusmeters_version.txt"
 # File-backed count of officially configured meters. Several pipelines run in
 # subshells and can outlive a soft reload, so their inherited shell variable may
 # be stale. This file is the shared runtime source of truth.
@@ -256,6 +259,15 @@ log "wmbusmeters binary: ${WMBUSMETERS_BIN:-unknown}"
 log "wmbusmeters runtime version: ${WMBUSMETERS_RUNTIME_VERSION:-unknown}"
 [[ -n "${WMBUSMETERS_BUILD_VERSION}" ]] && log "wmbusmeters build version: ${WMBUSMETERS_BUILD_VERSION}"
 [[ -n "${WMBUSMETERS_BUILD_COMMIT}" ]] && log "wmbusmeters build commit: ${WMBUSMETERS_BUILD_COMMIT}"
+# Persist the version triplet for the WebUI (write-once, never refreshed —
+# the binary cannot change without a restart). NB: write_atomic via .tmp + mv.
+printf '%s\t%s\t%s\n' \
+  "${WMBUSMETERS_RUNTIME_VERSION:-}" \
+  "${WMBUSMETERS_BUILD_VERSION:-}" \
+  "${WMBUSMETERS_BUILD_COMMIT:-}" \
+  > "${STATUS_WMBUSMETERS_VERSION_FILE}.tmp" 2>/dev/null \
+  && mv "${STATUS_WMBUSMETERS_VERSION_FILE}.tmp" "${STATUS_WMBUSMETERS_VERSION_FILE}" 2>/dev/null \
+  || true
 log "MQTT: ${MQTT_HOST}:${MQTT_PORT} topic=${RAW_TOPIC}"
 log "state: prefix=${STATE_PREFIX} retain=${STATE_RETAIN}"
 log "discovery: enabled=${DISCOVERY_ENABLED} prefix=${DISCOVERY_PREFIX} retain=${DISCOVERY_RETAIN}"
