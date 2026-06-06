@@ -1,3 +1,51 @@
+## 1.5.29
+
+### Added
+- MQTT→HA healthcheck: the add-on now detects when it publishes to a broker
+  that Home Assistant does not consume (a common "my meters never appear in HA"
+  cause). HA presence is reported honestly — confirmed on the native HA broker
+  (`core-mosquitto` / `mqtt_mode=ha`) or via a seen `online` birth message — and
+  the MQTT tile shows broker identity read from `$SYS` (Mosquitto / EMQX, native
+  / external) with a diagnostics panel (software, version, connected clients,
+  HA-on-broker, TLS support).
+- Opt-in HA entity verification (`verify_ha_entities`): the add-on publishes a
+  hidden diagnostic canary entity and asks the HA Core API whether it was
+  actually created, giving a definitive verified / not-created verdict with an
+  actionable reason in the HA panel, instead of inference. Uses `homeassistant_api`
+  only when the option is enabled.
+- Stale-data detection: a liveness heartbeat distinguishes "bridge alive but
+  idle" from "bridge down". When the bridge stops updating, the dashboard shows
+  a STALE badge, a banner, and greys the pipeline tiles rather than displaying a
+  stale green snapshot.
+- The ESP tile lists all active ESP devices, and the wmbusmeters panel shows the
+  running wmbusmeters version.
+- A dedicated zero-meter LISTEN instance keeps candidate manufacturer/identity
+  visible even with meters configured.
+
+### Changed
+- `mqtt_mode=auto` now honours an explicitly configured `external_mqtt_host`
+  over HA's own Mosquitto — if you configured an external broker, it is used.
+- ESP online/offline is driven by live telegram flow as the primary signal;
+  optional `diag/*` topics only refine it.
+
+### Fixed
+- Honest-witness corrections to the healthcheck: birth-message absence no longer
+  raises a false "no HA on broker" alarm; a non-native broker without
+  confirmation shows neutral "HA unconfirmed" instead of a green "published" lie;
+  the canary is queried via the HA Template API (robust against entity_id
+  slugification) rather than a guessed entity_id.
+- The bridge waits for the HA MQTT service to return instead of FATAL-looping on
+  a broker restart; the heartbeat and ESP / `$SYS` subscribers survive soft
+  reloads; pipeline tiles grey out while stale and MQTT-wait log spam is thinned.
+- Candidate/preview pipeline hardening: LISTEN reloads are coalesced with a
+  trailing debounce to stop discovery churn; candidates are registered from the
+  RAW path when meters are configured (closing a discovery dead zone); AES
+  classification is preserved on the RAW path (no bogus preview for encrypted
+  meters); full manufacturer names are filled from the FLAG code; a `BASH_REMATCH`
+  unbound-variable crash and a decoded-JSON reload churn are fixed.
+- The WebGUI no longer double-logs "Meter X saved" / "Search X" events.
+
+
 ## 1.5.28
 
 ### Added
