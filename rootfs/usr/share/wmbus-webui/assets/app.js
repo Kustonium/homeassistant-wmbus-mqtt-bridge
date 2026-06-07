@@ -969,6 +969,14 @@
     const espCount         = Number(espPayload.devices_count || espActiveDevices.length || 0);
     const isMultiEsp       = espCount > 1;
     const espTitle         = isMultiEsp ? `${espCount} × ESP` : "ESP";
+    // Always-on health aggregate (#24): when an ESP that publishes /health stops
+    // pulsing, surface it on the TILE too — not only in the workspace detail —
+    // so a healthy rate from another ESP can't keep the tile fully green while a
+    // receiver is silent. Only triggers for health-reporting ESPs (old firmware
+    // without /health stays "unknown" and never trips this).
+    const espHealthAgg     = espPayload.health_aggregate || {state: "unknown"};
+    const espSomeStale     = espHealthAgg.state === "some_stale";
+    const espStoppedNames  = asArray(espHealthAgg.stopped).join(", ");
     const raw15m           = Number(model.raw_15m || 0);
     // Telegrams are the primary sign of life. A live telegram rate
     // (rate_current_min > 0, which webui.py zeroes once it is older than 90 s)
@@ -1082,9 +1090,10 @@
           <button class="${cls("esp")}" data-action="open-workspace" data-ws="esp" type="button">
             <div class="pipeline-icon">📡</div>
             <div class="pipeline-title">${escapeHtml(espTitle)}</div>
-            <div class="pipeline-meta">${dot(espOnline, espWarn, espOnline && hasLiveRate && espRateFromDiag)} ${escapeHtml(espStatus)}</div>
+            <div class="pipeline-meta">${dot(espOnline && !espSomeStale, (espOnline && espSomeStale) || espWarn, espOnline && hasLiveRate && espRateFromDiag && !espSomeStale)} ${escapeHtml(espStatus)}</div>
             <div class="pipeline-sub">${escapeHtml(espVisibleLine)}</div>
             <div class="pipeline-sub pipeline-device" title="${escapeHtml(primaryTopic || "")}">${escapeHtml(espDeviceLine)}</div>
+            ${(!bridgeStale && espSomeStale) ? `<div class="pipeline-sub" style="font-size:11px;color:#f3c84b;">⚠ ${escapeHtml(t("pipeline_esp_pulse_stopped", "pulse stopped"))}: ${escapeHtml(espStoppedNames)}</div>` : ""}
           </button>
           <div class="pipeline-arrow"><span>${escapeHtml(rateLabel)}</span></div>
           <button class="${cls("mqtt")}" data-action="open-workspace" data-ws="mqtt" type="button">
@@ -1149,6 +1158,7 @@
                 <th>${escapeHtml(t("workspace_esp_device_name", "Device"))}</th>
                 <th>${escapeHtml(t("workspace_esp_device_topic", "Topic"))}</th>
                 <th style="text-align:right;">${escapeHtml(t("workspace_esp_device_telegrams", "Telegrams"))}</th>
+                <th style="text-align:center;">${escapeHtml(t("esp_health_ear", "Reception"))}</th>
                 <th style="text-align:center;">${escapeHtml(t("workspace_esp_device_diag", "Diag"))}</th>
                 <th>${escapeHtml(t("workspace_esp_device_last_event", "Last event"))}</th>
               </tr>
@@ -1171,12 +1181,28 @@
                 const diagCell = d.has_diag
                   ? `<span class="pill ok" style="font-size:10px;">✓</span>`
                   : `<span class="pill muted" style="font-size:10px;">—</span>`;
+                // Per-device radio reception from the always-on health pulse.
+                // NOTE: d.radio_health (the pulse), NOT d.health (which is the
+                // telegram-age status string used by the STATUS column above).
+                const dh = d.radio_health || {state: "unknown"};
+                let rxCell;
+                if (dh.state === "alive") {
+                  const sec = Number(dh.sec_since_last_rx);
+                  const rxDot = dh.hears === true ? "ok live" : "warn";
+                  const rxVal = sec < 0 ? "—" : `${sec}s`;
+                  rxCell = `<span class="dot ${rxDot}" style="margin-right:4px;"></span>${dh.chip ? escapeHtml(String(dh.chip)) + " · " : ""}${escapeHtml(rxVal)}`;
+                } else if (dh.state === "stale") {
+                  rxCell = `<span class="pill muted" style="font-size:10px;">${escapeHtml(t("esp_health_stopped_short", "stopped"))}</span>`;
+                } else {
+                  rxCell = `<span class="pill muted" style="font-size:10px;">—</span>`;
+                }
                 return `
                   <tr style="${rowStyle}">
                     <td style="white-space:nowrap;font-size:11px;">${statusCell}</td>
                     <td><strong>${escapeHtml(d.name || "—")}</strong></td>
                     <td class="mono" style="font-size:11px;color:#9eafba;">${escapeHtml(d.topic || "—")}</td>
                     <td style="text-align:right;font-family:monospace;font-size:12px;">${escapeHtml(tgCell)}</td>
+                    <td style="text-align:center;white-space:nowrap;font-size:11px;">${rxCell}</td>
                     <td style="text-align:center;">${diagCell}</td>
                     <td style="white-space:nowrap;font-size:11px;">${escapeHtml(when)}</td>
                   </tr>`;
@@ -1185,8 +1211,35 @@
           </table>
         </div>
         ${totalDevs > activeDevs.length ? `<p style="font-size:11px;color:#8ea4b1;margin:8px 0 0;">⚠ ${escapeHtml(t("workspace_esp_stale_hint", "Stale entries are from MQTT retained messages or past sessions. They don't count toward the active ESP badge."))}</p>` : ""}` : "";
+      // Always-on radio health AGGREGATE (#24: never hide a dead ESP). Computed
+      // across all ESPs that publish wmbus/<device>/health, independent of the
+      // ESP's diagnostic_mode. Per-device detail (chip + ear) lives in the table
+      // "Reception" column below; this headline is the one-glance verdict.
+      const agg = esp.health_aggregate || {state: "unknown"};
+      let espHealthBlock;
+      if (agg.state === "alive") {
+        const txt = Number(agg.total) > 1
+          ? `${t("esp_health_all_alive", "all ESP alive")} (${agg.total})`
+          : `${t("esp_health_alive", "ESP alive")}${agg.chip ? " · " + agg.chip : ""}`;
+        espHealthBlock = `
+          <div class="kv">
+            <div>${escapeHtml(t("esp_health_label", "Radio (always-on)"))}</div>
+            <div><span class="dot ok live" style="margin-right:5px;"></span>${escapeHtml(txt)}</div>
+          </div>`;
+      } else if (agg.state === "some_stale") {
+        // At least one ESP stopped publishing. Name the stopped ones — firmware
+        // is proven to support /health, so this never suggests a firmware update.
+        const names = asArray(agg.stopped).join(", ");
+        const txt = Number(agg.total) > 1
+          ? `${agg.stale}/${agg.total} ${t("esp_health_some_stopped", "ESP stopped publishing")}: ${names}`
+          : t("esp_health_stale", "Health pulse stopped — the ESP stopped publishing (powered off or lost connection)");
+        espHealthBlock = `<p style="font-size:11px;color:#8ea4b1;margin:8px 0 0;">⚪ ${escapeHtml(txt)}</p>`;
+      } else {
+        espHealthBlock = `<p style="font-size:11px;color:#8ea4b1;margin:8px 0 0;">⚪ ${escapeHtml(t("esp_health_unknown", "No health pulse from ESP — needs ESP firmware with the health pulse (or the ESP hasn't published yet)"))}</p>`;
+      }
       body = `
         <h3>📡 ESP — ${escapeHtml(t("workspace_esp_title", "ESP diagnostics"))}</h3>
+        ${espHealthBlock}
         ${devicesTable}
         ${Object.keys(sug).length ? `<h4 style="margin-top:14px;">💡 ${escapeHtml(t("webui_suggestion", "Suggestion"))}</h4>${objectKv(sug)}` : ""}
       `;
@@ -1264,6 +1317,14 @@
         verifyLine = `<span style="color:#ff646b;">✗ ${escapeHtml(t("ha_verify_not_created", "HA is NOT creating entities"))}</span>`;
       } else if (haV === "pending") {
         verifyLine = `⌛ ${escapeHtml(t("ha_verify_pending", "Verification in progress (~90 s)…"))}`;
+      } else if (haVReason === "disabled" && model.broker_native === true) {
+        // Native HA broker: HA presence is authoritative (entities exist by
+        // definition — see webui.py ha_link), so the panel already shows a green
+        // HA tile. Nagging the user to enable verify_ha_entities to "verify"
+        // what is already known would contradict that tile. Honest-witness: show
+        // a soft positive instead of the actionable hint. Only when the feature
+        // is merely off — real opt-in failures (network/auth/…) still surface.
+        verifyLine = `✓ ${escapeHtml(t("ha_verify_native_implied", "confirmed via HA's native broker"))}`;
       } else {
         // unavailable + a localised reason if known. "disabled" gets the
         // strongest hint because it is the only reason the user can fix from
@@ -1513,9 +1574,12 @@
                 const mfrCell    = mfrCompact
                   ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>`
                   : `<span style="color:#4a6070;">—</span>`;
+                const espBadge = row.esp_flagged === "true"
+                  ? ` <span title="${escapeHtml(t("esp_flagged_meter", "flagged on the ESP"))}" style="display:inline-block;background:#0e4a52;color:#4dd0e1;font-size:10px;font-weight:700;padding:2px 7px;border-radius:9px;white-space:nowrap;vertical-align:middle;cursor:help;">📡 ESP</span>`
+                  : "";
                 return `
                   <tr>
-                    <td><strong>${escapeHtml(id)}</strong></td>
+                    <td><strong>${escapeHtml(id)}</strong>${espBadge}</td>
                     <td><span style="margin-right:5px;font-size:15px;vertical-align:middle;">${mIcon}</span>${escapeHtml(row.name || row.id || "-")}</td>
                     <td>${escapeHtml(row.driver || "-")}</td>
                     <td>${mfrCell}</td>
@@ -1620,9 +1684,12 @@
                 const mfrCell    = mfrCompact
                   ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>`
                   : `<span style="color:#4a6070;">—</span>`;
+                const espBadge = row.esp_flagged === "true"
+                  ? ` <span title="${escapeHtml(t("esp_flagged_meter", "flagged on the ESP"))}" style="display:inline-block;background:#0e4a52;color:#4dd0e1;font-size:10px;font-weight:700;padding:2px 7px;border-radius:9px;white-space:nowrap;vertical-align:middle;cursor:help;">📡 ESP</span>`
+                  : "";
                 return `
                   <tr data-value="${escapeHtml(previewVal)}">
-                    <td><strong>${escapeHtml(id)}</strong></td>
+                    <td><strong>${escapeHtml(id)}</strong>${espBadge}</td>
                     <td>${escapeHtml(driver)}</td>
                     <td style="color:#9eafba;font-size:12px;">${escapeHtml(row.type || "-")}</td>
                     <td>${mediaIconHtml(row.type || "", driver)} ${escapeHtml(mediaLabel)}</td>
@@ -2389,8 +2456,14 @@
       morphdom(app, tmp, {
         // Never replace the app root itself — only its children.
         onBeforeElUpdated(from, to) {
-          // Skip elements the user is actively interacting with.
-          if (from === document.activeElement) return false;
+          // Preserve a field the user is actively editing — but ONLY real form
+          // inputs. The old guard skipped ANY focused element, which froze a
+          // focused <button> (e.g. a pipeline tile clicked to open its workspace)
+          // and all of its subtree: the tile then showed stale data (wrong rate,
+          // a "pulse stopped" warning that never cleared) while the rest of the
+          // page updated. Restrict the skip to editable controls.
+          if (from === document.activeElement &&
+              /^(INPUT|TEXTAREA|SELECT)$/.test(from.tagName)) return false;
           // Skip identical nodes (morphdom checks attrs, this adds textContent check).
           if (from.isEqualNode(to)) return false;
           return true;
