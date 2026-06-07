@@ -43,6 +43,18 @@ STATUS_RATE_HISTORY_FILE = BASE / "status_rate_history.tsv"
 STATUS_BRIDGE_START_FILE = BASE / "status_bridge_start.txt"
 # ESP diagnostic summary written by background subscriber in bridge.sh
 STATUS_ESP_DIAG_JSON = BASE / "status_esp_diag.json"
+# Always-on ESP radio health pulse (wmbus/+/health), written by bridge.sh's
+# background subscriber. Published every 60 s regardless of the ESP's
+# diagnostic_mode, so it works even when diagnostics are off. Carries
+# uptime_s, rx_total, sec_since_last_rx (proof the RX path is alive, not just
+# the loop), chip and listen_mode. _bridge_rx_epoch = freshness stamp.
+STATUS_ESP_HEALTH_JSON = BASE / "status_esp_health.json"
+# Always-on ESP meter flags (wmbus/+/meters), written by bridge.sh's background
+# subscriber as a map keyed by ESP device: {"<device>": {"target","highlight"[],
+# "_bridge_rx_epoch"}}. Union of target + highlight (across fresh entries) is the
+# set of meters the ESP is explicitly configured for; the WebUI badges matching
+# meters/candidates so an ESP-vs-add-on mismatch is visible.
+STATUS_ESP_METERS_JSON = BASE / "status_esp_meters.json"
 # ESP events TSV and per-event detail files (written by bridge.sh event subscriber)
 STATUS_ESP_EVENTS_FILE = BASE / "status_esp_events.tsv"
 STATUS_ESP_SUGGESTION_FILE = BASE / "status_esp_suggestion.json"
@@ -755,9 +767,34 @@ def state(include_ignored: bool = False) -> dict:
         for k, v in analysis.items()
         if normalize_meter_id(v.get("id") or k)
     }
+    # Meters the ESP is explicitly configured for (target + highlight), unioned
+    # across fresh wmbus/<device>/meters entries. Used to badge matching
+    # meters/candidates ("flagged on the ESP"). Stale entries (>150 s, mirrors the
+    # health window) are ignored so a since-removed ESP's flags don't linger.
+    import time as _time_esp
+    esp_flagged_ids: set[str] = set()
+    _esp_meters_raw = read_json(STATUS_ESP_METERS_JSON)
+    if isinstance(_esp_meters_raw, dict):
+        _esp_now = _time_esp.time()
+        for _dev, _m in _esp_meters_raw.items():
+            if not isinstance(_m, dict):
+                continue
+            if (_esp_now - safe_int(_m.get("_bridge_rx_epoch", 0))) > 150:
+                continue
+            _t = normalize_meter_id(_m.get("target"))
+            if _t:
+                esp_flagged_ids.add(_t)
+            _hl = _m.get("highlight")
+            if isinstance(_hl, list):
+                for _h in _hl:
+                    _hn = normalize_meter_id(_h)
+                    if _hn:
+                        esp_flagged_ids.add(_hn)
+
     for c in candidates:
         c["ignored"] = "true" if c.get("id") in ignored else "false"
         c["analysis"] = analysis_by_id.get(normalize_meter_id(c.get("id")), {})
+        c["esp_flagged"] = "true" if normalize_meter_id(c.get("id")) in esp_flagged_ids else "false"
         # preview_active = there's a preview config for this candidate.
         # Single source of truth = filesystem; one-shot RAW decoders consume the
         # config without touching the always-on LISTEN pipeline.
@@ -772,6 +809,11 @@ def state(include_ignored: bool = False) -> dict:
                 c["preview_ts"]        = pv.get("preview_ts", "")
             ps = preview_state_by_id.get(cid)
             c["preview_state"] = ps.get("state", "") if ps else ""
+
+    # Same ESP flag for configured meters: when both sides agree (ESP flags it and
+    # it is in the add-on's meters), the badge confirms alignment.
+    for m in meters:
+        m["esp_flagged"] = "true" if normalize_meter_id(m.get("id") or m.get("meter_id")) in esp_flagged_ids else "false"
 
     # Build normalized options_meter_ids early — used both for TSV filtering and
     # candidate dedup. Do not write back to status_meters.tsv from this read path.
@@ -1294,6 +1336,41 @@ def _esp_payload() -> dict:
                 entry["last_seen_epoch"] = epoch
                 entry["last_evtype"] = evtype
 
+    # ── Always-on radio health pulse, keyed per ESP device ──
+    # status_esp_health.json is a map { "<device>": {uptime_s, rx_total,
+    # sec_since_last_rx, chip, listen_mode, _bridge_rx_epoch} }, written by the
+    # wmbus/+/health subscriber (one entry per ESP, published every 60 s
+    # regardless of diagnostic_mode). It enriches each device row with chip +
+    # reception ("ear alive", from the RX path not the loop) and feeds the
+    # aggregate verdict. Only devices present in the tracker are considered, so a
+    # health entry for an ESP no longer seen does not linger as a forever-stale
+    # ghost. Quality (ok/total, RSSI) is deliberately NOT here — it stays in diag.
+    health_raw = read_json(STATUS_ESP_HEALTH_JSON)
+    health_map: dict[str, dict] = {}
+    if isinstance(health_raw, dict):
+        for _hdev, _h in health_raw.items():
+            if not isinstance(_h, dict):
+                continue
+            _hep = safe_int(_h.get("_bridge_rx_epoch", 0))
+            if _hep <= 0:
+                continue
+            _hfresh = (now_epoch - _hep) <= 150
+            _hsec = safe_int(_h.get("sec_since_last_rx", -1))
+            health_map[_hdev] = {
+                # alive = fresh pulse (ESP alive). stale = had a pulse, now silent
+                # (ESP stopped publishing) — NOT a firmware problem.
+                "state": "alive" if _hfresh else "stale",
+                "chip": str(_h.get("chip", "")).strip(),
+                "listen_mode": str(_h.get("listen_mode", "")).strip(),
+                "uptime_s": safe_int(_h.get("uptime_s", 0)),
+                "rx_total": safe_int(_h.get("rx_total", 0)),
+                "sec_since_last_rx": _hsec,
+                # hears = heard ether traffic recently (~1.5x the 60 s pulse); NOT
+                # a per-meter rhythm verdict (learned cadence is deferred).
+                "hears": _hfresh and 0 <= _hsec <= 90,
+                "last_pulse_epoch": _hep,
+            }
+
     # ── Finalize display + active flag ──
     # ESP receiver status is based on the primary telegram topic only. A fresh
     # wmbus/<device>/telegram means green; after 2 minutes without telegrams it
@@ -1319,6 +1396,12 @@ def _esp_payload() -> dict:
         # (useful for the "diag required" notice — we can soften it when
         # at least one ESP IS publishing diag).
         entry["has_diag"] = last_sum > 0
+        # Per-device radio health PULSE (alive/stale/unknown). DISTINCT key from
+        # entry["health"] above — that one is the telegram-age status string
+        # (online/warn/offline) the STATUS column relies on; clobbering it would
+        # make every row read as Offline. "unknown" when this ESP never published
+        # /health (e.g. older firmware).
+        entry["radio_health"] = health_map.get(entry["name"], {"state": "unknown"})
         entry["topic"] = (
             entry.get("telegram_topic")
             or entry.get("summary_topic")
@@ -1346,6 +1429,32 @@ def _esp_payload() -> dict:
     )
     devices_active_count = sum(1 for d in devices_list if d["active"])
 
+    # Aggregate radio-health verdict (#24: the aggregate must never hide a dead
+    # ESP). Computed only over devices that actually published /health; a stopped
+    # ESP is surfaced by name so a multi-ESP setup cannot show all-green while one
+    # receiver is silent.
+    _h_alive = [d for d in devices_list if d.get("radio_health", {}).get("state") == "alive"]
+    _h_stale = [d for d in devices_list if d.get("radio_health", {}).get("state") == "stale"]
+    _h_known = _h_alive + _h_stale
+    if not _h_known:
+        health_aggregate: dict = {"state": "unknown"}
+    elif not _h_stale:
+        health_aggregate = {
+            "state": "alive",
+            "total": len(_h_known),
+            "alive": len(_h_alive),
+            # N==1: surface the single ESP's chip so the headline can show detail.
+            "chip": _h_alive[0]["radio_health"].get("chip", "") if len(_h_known) == 1 else "",
+        }
+    else:
+        health_aggregate = {
+            "state": "some_stale",
+            "total": len(_h_known),
+            "alive": len(_h_alive),
+            "stale": len(_h_stale),
+            "stopped": [d["name"] for d in _h_stale],
+        }
+
     return {
         # diag is filtered for the dashboard tile: never mix metrics from a
         # stale/other ESP with the currently received RAW telegram source.
@@ -1358,6 +1467,8 @@ def _esp_payload() -> dict:
         "boot": boot,
         "events": events,
         "devices": devices_list,
+        # Aggregate radio-health verdict for the workspace headline (#24).
+        "health_aggregate": health_aggregate,
         # devices_count = ACTIVE only (drives the Pipeline badge "N × ESP").
         # devices_total = all distinct names seen.
         "devices_count": devices_active_count,

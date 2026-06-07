@@ -1,3 +1,39 @@
+## 1.5.30
+
+### Added
+- Always-on ESP radio-path status in the dashboard, independent of the ESP's
+  `diagnostic_mode`. The ESP firmware now publishes, every 60 s, a health pulse
+  (`wmbus/<device>/health`) and the set of meters it is configured for
+  (`wmbus/<device>/meters`). The WebUI turns these into:
+  - a per-ESP "radio alive / receiver hearing" verdict taken from the pulse — so
+    it reflects that the receiver actually hears telegrams, not merely that the
+    firmware's main loop runs — with an aggregate that names a stopped ESP instead
+    of hiding it behind a healthy total, surfaced on both the workspace and the
+    pipeline tile;
+  - a "ESP" badge on meters and candidates the ESP is explicitly flagged for
+    (`target_meter_id` / `highlight_meters`), so an ESP-vs-add-on configuration
+    mismatch is visible at a glance.
+  This works even with ESP diagnostics off, and stays honest-witness throughout:
+  missing or stale data degrades to a neutral state and is never shown as a green
+  "all good".
+
+### Fixed
+- "Pulse stopped" is distinguished from "firmware without the pulse": an ESP that
+  was seen and then goes silent reports that it stopped (powered off / lost
+  connection) instead of a misleading "update the ESP firmware".
+- Severity ordering of the radio verdict is correct: a stopped pulse degrades the
+  pipeline tile green → amber only while the ESP is otherwise online; a fully
+  offline ESP source stays red rather than being softened to amber.
+- The per-ESP radio health no longer overwrites the device STATUS column (which
+  made every row read as "offline" while telegrams were arriving).
+- A focused pipeline tile no longer freezes: the live-update DOM patch now
+  preserves only focused form inputs, not buttons, so a tile keeps refreshing
+  after it is clicked to open its workspace.
+- The ESP health/meters subscribers no longer abort under `set -euo pipefail`
+  when their status file does not exist yet, which previously stopped the file
+  from ever being created on first run (so the meter-flag badge never appeared).
+
+
 ## 1.5.29
 
 ### Added

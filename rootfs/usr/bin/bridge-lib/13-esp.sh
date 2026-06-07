@@ -36,6 +36,85 @@ STATUS_ESP_DIAG_FILE="${BASE}/status_esp_diag.json"
 ) &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 
+# Background subscriber for the always-on ESP radio health pulse
+# (wmbus/+/health). Unlike wmbus/+/diag/summary this is published every 60 s
+# regardless of the ESP's diagnostic_mode (retain=false), so it works for users
+# who never enable diagnostics. Payload:
+#   {"uptime_s":N,"rx_total":N,"sec_since_last_rx":N,"chip":"SX1276","listen_mode":"..."}
+# bridge.sh injects _bridge_rx_epoch (freshness). The file is a MAP keyed by ESP
+# device (the segment between wmbus/ and /health), so multiple ESPs each keep
+# their own entry — the aggregate verdict in webui.py can then surface a single
+# stopped ESP instead of hiding it. Enriches — does NOT replace — the per-device
+# telegram tracker, which stays the source of truth for ESP liveness.
+STATUS_ESP_HEALTH_FILE="${BASE}/status_esp_health.json"
+(
+  while true; do
+    while IFS=$'\t' read -r _health_topic _health_line; do
+          [[ -n "${_health_line}" ]] || continue
+          # Device = topic segment between "wmbus/" and "/health".
+          _health_dev="${_health_topic#wmbus/}"
+          _health_dev="${_health_dev%/health}"
+          [[ -n "${_health_dev}" && "${_health_dev}" != "${_health_topic}" ]] || continue
+          _ts="$(date +%s 2>/dev/null || echo 0)"
+          # Merge this device's pulse into the existing map (read-modify-write;
+          # single subscriber process, so no concurrent writers). Malformed JSON
+          # or a missing/empty file falls back to {} and never wipes the map.
+          # `|| true` is REQUIRED: under `set -euo pipefail`, var="$(cat MISSING)"
+          # exits non-zero and aborts this subshell before the write ever runs —
+          # which is exactly why the file was never created on first run.
+          _health_cur="$(cat "${STATUS_ESP_HEALTH_FILE}" 2>/dev/null || true)"
+          [[ -n "${_health_cur}" ]] || _health_cur="{}"
+          printf '%s' "${_health_cur}" \
+            | jq --argjson t "${_ts}" --arg dev "${_health_dev}" --argjson p "${_health_line}" \
+                '. + {($dev): ($p + {_bridge_rx_epoch: $t})}' 2>/dev/null \
+            > "${STATUS_ESP_HEALTH_FILE}.tmp" \
+            && mv "${STATUS_ESP_HEALTH_FILE}.tmp" "${STATUS_ESP_HEALTH_FILE}" 2>/dev/null \
+            || true
+        done < <(
+          ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/health" -F '%t\t%p' -W 90 2>/dev/null
+        )
+    sleep 5
+  done
+) &
+ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
+
+# Background subscriber for the always-on ESP meter-flags topic (wmbus/+/meters).
+# The ESP publishes every 60 s (retain=false, independent of diagnostic_mode) the
+# meters it is explicitly configured for:
+#   {"target":"03534159","highlight":["12345678", ...]}
+# Stored as a MAP keyed by ESP device. webui.py unions target + highlight across
+# fresh entries and badges matching meters/candidates ("flagged on the ESP"), so
+# the user can spot an ESP-vs-add-on mismatch. Empty target/highlight (the common
+# listen-only case) simply yields no badges.
+STATUS_ESP_METERS_FILE="${BASE}/status_esp_meters.json"
+(
+  while true; do
+    while IFS=$'\t' read -r _meters_topic _meters_line; do
+          [[ -n "${_meters_line}" ]] || continue
+          # Device = topic segment between "wmbus/" and "/meters".
+          _meters_dev="${_meters_topic#wmbus/}"
+          _meters_dev="${_meters_dev%/meters}"
+          [[ -n "${_meters_dev}" && "${_meters_dev}" != "${_meters_topic}" ]] || continue
+          _ts="$(date +%s 2>/dev/null || echo 0)"
+          # `|| true` is REQUIRED: under `set -euo pipefail`, var="$(cat MISSING)"
+          # exits non-zero and aborts this subshell before the write — the root
+          # cause of status_esp_meters.json never being created on first run.
+          _meters_cur="$(cat "${STATUS_ESP_METERS_FILE}" 2>/dev/null || true)"
+          [[ -n "${_meters_cur}" ]] || _meters_cur="{}"
+          printf '%s' "${_meters_cur}" \
+            | jq --argjson t "${_ts}" --arg dev "${_meters_dev}" --argjson p "${_meters_line}" \
+                '. + {($dev): ($p + {_bridge_rx_epoch: $t})}' 2>/dev/null \
+            > "${STATUS_ESP_METERS_FILE}.tmp" \
+            && mv "${STATUS_ESP_METERS_FILE}.tmp" "${STATUS_ESP_METERS_FILE}" 2>/dev/null \
+            || true
+        done < <(
+          ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/meters" -F '%t\t%p' -W 90 2>/dev/null
+        )
+    sleep 5
+  done
+) &
+ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
+
 # Background subscriber for per-ESP-device telegram tracking.
 # Listens to the RAW telegram topic (with wildcard) and records each
 # distinct device name + last-seen epoch + telegram count to a TSV.
