@@ -1,3 +1,11 @@
+## 1.5.32
+
+### Added
+- adaptive per-meter status from its cadence; silence never red (b2477b0)
+
+### Fixed
+- keep reception counts continuous across candidate->meter promotion (2d4d8a8)
+
 ## 1.5.31
 
 ### Added

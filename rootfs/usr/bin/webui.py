@@ -479,6 +479,7 @@ def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str =
     options payload. Supervisor then persists it and writes options.json on next start.
     """
     import urllib.request
+    import urllib.error
 
     meter_id = normalize_meter_id(meter_id)
     if not VALID_ID_RE.match(meter_id):
@@ -524,6 +525,14 @@ def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str =
 
     # Try Supervisor API first — this persists across restarts
     token = os.environ.get("SUPERVISOR_TOKEN", "")
+    # Captured Supervisor rejection reason, surfaced to the user/log. urlopen
+    # raises HTTPError on 4xx, so a schema rejection (e.g. a driver value the
+    # addon's options schema does not accept) never reaches the resp.status
+    # branch below — without reading the error BODY here the real reason was
+    # lost and the meter silently fell back to a file-only write that does not
+    # survive an upgrade/restart. This is the "meter X disappears after upgrade"
+    # report (notably Diehl/Izar). Capturing the body makes the cause visible.
+    sup_detail = ""
     if token:
         try:
             payload = json.dumps({"options": options}, ensure_ascii=False).encode("utf-8")
@@ -547,6 +556,17 @@ def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str =
                     return True, msg
                 body = resp.read().decode("utf-8", errors="replace")
                 return False, f"Supervisor API returned HTTP {resp.status}: {body[:200]}"
+        except urllib.error.HTTPError as http_err:
+            try:
+                sup_detail = http_err.read().decode("utf-8", errors="replace").strip()
+            except Exception:
+                sup_detail = ""
+            webui_add_event(
+                "error",
+                f"Supervisor API REJECTED meter {meter_id} ({driver}) save: "
+                f"HTTP {http_err.code} {sup_detail[:300]} — falling back to a file-only "
+                f"write that will NOT survive an upgrade/restart.",
+            )
         except Exception as exc:
             webui_add_event("error", f"Supervisor API options failed: {exc}, falling back to file write")
 
@@ -557,7 +577,9 @@ def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str =
     write_json_atomic(OPTIONS_JSON, options)
     key_info = f"key={key[:4]}..." if key else "no key"
     if token:
-        msg = f"Meter {meter_id} ({driver}) saved to options.json as a fallback — Supervisor API rejected the change, so it will NOT survive an HA restart. {key_info}. Reloading pipeline to apply."
+        reason = f" Supervisor rejected it: {sup_detail[:200]}" if sup_detail else " Supervisor API rejected the change."
+        msg = (f"Meter {meter_id} ({driver}) saved to options.json as a fallback —{reason} "
+               f"It will NOT survive an HA restart/upgrade. {key_info}. Reloading pipeline to apply.")
     else:
         msg = f"Meter {meter_id} ({driver}) saved to options.json (file only — no SUPERVISOR_TOKEN). {key_info}. Reloading pipeline to apply."
     webui_add_event("warn", msg)

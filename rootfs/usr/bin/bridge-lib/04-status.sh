@@ -29,15 +29,24 @@ status_record_seen() {
 
 status_seen_stats() {
   local id
-  local kind="${2:-meter}"
   local now
+  # $2 (kind) is accepted for call-site compatibility but intentionally unused:
+  # reception is now counted per meter id across ALL kinds (see awk below), so a
+  # meter's stats stay continuous when it is promoted candidate -> meter.
   id="$(normalize_meter_id "$1")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || { printf '0\t0\t0\t0\n'; return 0; }
   now="$(epoch_now)"
 
-  awk -F '\t' -v id="${id}" -v kind="${kind}" -v now="${now}" '
-    $1 == id && $2 == kind && $3 ~ /^[0-9]+$/ {
+  awk -F '\t' -v id="${id}" -v now="${now}" '
+    $1 == id && $3 ~ /^[0-9]+$/ {
       ts = $3 + 0
+      # Count by meter id across BOTH kinds (meter + candidate). The decode and
+      # parallel-listen instances each log the same physical transmission within
+      # ~2 s; collapse those so the count is not doubled and stays continuous
+      # across the candidate->meter promotion (when the kind switches). Rows are
+      # appended in real time so the matched stream is ascending; the ">= 0"
+      # guard tolerates rare cross-process interleave.
+      if (prev > 0 && ts - prev >= 0 && ts - prev < 2) next
       count++
       if (ts >= now - 900) seen15++
       if (ts >= now - 3600) seen60++
