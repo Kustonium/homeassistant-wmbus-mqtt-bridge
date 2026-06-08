@@ -57,7 +57,6 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ steps.version.outputs.VERSION }}"
-          EXPECTED_DEV_HEADING="${VERSION}-dev"
           MARKER="PROMOTE-CHANGELOG-REQUIRED"
 
           if [[ ! -s _dev/CHANGELOG.md ]]; then
@@ -65,31 +64,57 @@ jobs:
             exit 1
           fi
 
-          awk '
-            /^##[[:space:]]+/ {
-              seen++
-              if (seen > 1) exit
+          # Auto-consolidate the whole dev cycle into one "## X.Y.Z" section.
+          # The dev changelog accrues one "## X.Y.Z-dev.NN" section per CI build
+          # (plus a bare "## X.Y.Z-dev" placeholder with the PROMOTE marker), so
+          # the top heading is normally a per-build .NN. Rather than demand a
+          # manual "consolidate to ## X.Y.Z-dev before promoting" step (which used
+          # to hard-fail every run on that .NN heading), gather every section of
+          # the current cycle from the top — stopping at the previous version —
+          # strip the per-build headings and the marker, de-duplicate bullets
+          # (the per-build skeletons repeat entries) while preserving multi-line
+          # bullets, and regroup under Added / Changed / Fixed / Other (review).
+          # A maintainer may still hand-write a single consolidated section in
+          # dev for nicer prose; that one section is consumed as-is.
+          awk -v ver="${VERSION}" -v marker="${MARKER}" '
+            function flush() {
+              if (block != "") {
+                if (!(block in seen)) { seen[block]=1; bucket[cur]=bucket[cur] block }
+                block=""
+              }
             }
-            seen >= 1 { print }
+            BEGIN { started=0; stopped=0; cur="Other (review)"; no=0 }
+            /^##[[:space:]]+/ {
+              flush()
+              h=$0; gsub(/^##[[:space:]]+|[[:space:]]+$/, "", h)
+              if (h ~ ("^" ver "-dev([.][0-9]+)?$")) { started=1 } else { stopped=1 }
+              next
+            }
+            stopped { next }
+            !started { next }
+            index($0, marker) { next }
+            /^###[[:space:]]+/ {
+              flush()
+              s=$0; gsub(/^###[[:space:]]+|[[:space:]]+$/, "", s); cur=s
+              if (!(s in order_seen)) { order_seen[s]=1; order[++no]=s }
+              next
+            }
+            /^-[[:space:]]/ { flush(); block=$0 "\n"; next }
+            /^[[:space:]]+[^[:space:]]/ { if (block != "") block=block $0 "\n"; next }
+            { next }
+            END {
+              flush()
+              printf "## %s\n", ver
+              npref=4; pref[1]="Added"; pref[2]="Changed"; pref[3]="Fixed"; pref[4]="Other (review)"
+              for (i=1;i<=npref;i++) { s=pref[i]; if (s in bucket) printf "\n### %s\n%s", s, bucket[s] }
+              for (i=1;i<=no;i++) { s=order[i]; isp=0; for (j=1;j<=npref;j++) if (pref[j]==s) isp=1; if (!isp && (s in bucket)) printf "\n### %s\n%s", s, bucket[s] }
+            }
           ' _dev/CHANGELOG.md > /tmp/dev-changelog-section.md
 
-          TOP_HEADING="$(sed -nE 's/^##[[:space:]]+(.+)[[:space:]]*$/\1/p' /tmp/dev-changelog-section.md | head -n1)"
-          if [[ "${TOP_HEADING}" != "${EXPECTED_DEV_HEADING}" ]]; then
-            echo "ERROR: _dev/CHANGELOG.md top heading is '${TOP_HEADING}', expected '${EXPECTED_DEV_HEADING}'"
+          if ! grep -Eq '^-[[:space:]]' /tmp/dev-changelog-section.md; then
+            echo "ERROR: no release-note bullets found for cycle ${VERSION}-dev (nothing to promote)"
             exit 1
           fi
-
-          if grep -q "${MARKER}" /tmp/dev-changelog-section.md; then
-            echo "ERROR: _dev/CHANGELOG.md still contains ${MARKER}; replace the placeholder with release notes before promoting"
-            exit 1
-          fi
-
-          if ! grep -Eq '^###[[:space:]]+' /tmp/dev-changelog-section.md; then
-            echo "ERROR: _dev/CHANGELOG.md section ${EXPECTED_DEV_HEADING} has no subsection headings"
-            exit 1
-          fi
-
-          sed -i -E "1s/^##[[:space:]]+.*/## ${VERSION}/" /tmp/dev-changelog-section.md
 
           if grep -q "^## ${VERSION}$" CHANGELOG.md; then
             echo "ERROR: stable CHANGELOG.md already contains ${VERSION}"
