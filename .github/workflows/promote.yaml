@@ -136,18 +136,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Functional/runtime files that must track dev verbatim. NB: docker/
-          # (the standalone-Docker entrypoint) was previously omitted and drifted
-          # the same way config.yaml did. Repo-infra and identity are deliberately
+          # Files that must track dev verbatim — runtime AND documentation, so
+          # stable is "a copy of dev minus the dev identity". docker/ (the
+          # standalone-Docker entrypoint) and docs/README previously drifted the
+          # same way config.yaml did. Repo-infra and identity are deliberately
           # NOT here: .github/ (this very workflow lives there), repository.yaml
           # (name/url), config.yaml identity (handled in the sync step), LICENSE.
-          for item in rootfs Dockerfile docker translations wmbusmeters-mqtt-stdin; do
+          for item in rootfs Dockerfile docker translations wmbusmeters-mqtt-stdin \
+                      README.md THIRD_PARTY_NOTICES.md docs; do
             if [[ -e "_dev/${item}" ]]; then
               rm -rf "${item}"
               cp -r "_dev/${item}" "${item}"
               echo "synced: ${item}"
             fi
           done
+
+          # docs/ tracks dev EXCEPT the dev-internal session handoff (not user docs).
+          rm -f docs/CLAUDE_HANDOFF.md
 
           find rootfs -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
