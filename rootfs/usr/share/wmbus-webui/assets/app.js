@@ -78,6 +78,9 @@
     dashboardView: loadDashboardView(),
     // Drill-down workspace when a pipeline node is clicked. null = no drill-down.
     workspace: null,  // "esp" | "mqtt" | "wmbus" | "ha" | null
+    // IDs ticked for bulk removal in the configured-meters panel. Persisted in
+    // state so the selection survives the polling re-render (morphdom).
+    selectedRemoval: new Set(),
   };
 
   let liveSource = null;
@@ -326,6 +329,77 @@
     if (seen15m > 0) return {label: t("online_label",  "online"),  color: "#2de36f"};
     if (seen60m > 0) return {label: t("silent_label",  "silent"),  color: "#f3c84b"};
     return             {label: t("offline_label", "offline"), color: "#ff646b"};
+  }
+
+  // Short, human ESP device label (strip the common esphome/wmbus prefixes that
+  // every device name shares, so the per-ESP pills stay compact).
+  function shortEsp(name) {
+    const s = String(name || "").trim()
+      .replace(/^esphome[-_]/i, "")
+      .replace(/^wmbus[-_]/i, "")
+      .replace(/^esp[-_]/i, "")
+      .replace(/^tx[-_]/i, "");
+    return s.length > 16 ? s.slice(0, 15) + "…" : (s || "ESP");
+  }
+
+  function rxPctStyle(p) {
+    return p >= 90 ? "background:#0e3a1e;color:#4df08d"
+         : p >= 50 ? "background:#3a330e;color:#f3c84b"
+         :           "background:#3a0e0e;color:#ff646b";
+  }
+
+  // ESP reception block shown on the right, next to the reception column. Two
+  // signals: the always-on "📡 ESP" flag (meter highlighted on a board) and a
+  // per-ESP reception % breakdown from the opt-in diagnostic snapshot — one pill
+  // per board (N receivers, iterative), so the user sees which ESP hears the
+  // meter and how well, instead of a single aggregate "online". When there is no
+  // per-ESP data we fall back to the single best-across-ESP %. Honest-witness:
+  // nothing is rendered when there is neither a flag nor any reception data.
+  function espReceptionBadges(row) {
+    const flagged = row.esp_flagged === "true";
+    const esps    = Array.isArray(row.reception_esps) ? row.reception_esps : [];
+    const bestPct = Number(row.reception_pct);
+    const pill = "display:inline-block;font-size:10px;font-weight:700;padding:2px 6px;border-radius:9px;white-space:nowrap;vertical-align:middle;";
+    const flagBadge = flagged
+      ? `<span title="${escapeHtml(t("esp_flagged_meter", "flagged on the ESP"))}" style="${pill}background:#0e4a52;color:#4dd0e1;cursor:help;">📡 ESP</span>`
+      : "";
+    let rxHtml = "";
+    if (esps.length) {
+      // Collapse entries whose short label collides — e.g. a renamed ESP whose
+      // old and new topic_name both shorten to the same name — keeping the entry
+      // with the most telegrams read.
+      const byLabel = new Map();
+      esps.forEach((e) => {
+        const label = shortEsp(e.esp);
+        const c = Number(e.count) || 0;
+        const cur = byLabel.get(label);
+        if (!cur || c > cur.count) byLabel.set(label, {pct: Number(e.pct), count: c});
+      });
+      const fmtTel = (n) => n >= 1000 ? `${Math.round(n / 100) / 10}k` : String(n);
+      rxHtml = Array.from(byLabel.entries()).map(([label, v]) =>
+        `<span title="${escapeHtml(t("reception_pct_per_esp", "reception % on this ESP"))}: ${escapeHtml(label)}" style="${pill}${rxPctStyle(v.pct)}">📶 ${escapeHtml(label)} ${v.pct}%${v.count > 0 ? ` · ${fmtTel(v.count)}` : ""}</span>`
+      ).join("");
+    } else if (bestPct >= 0) {
+      rxHtml = `<span title="${escapeHtml(t("reception_pct_title", "reception % over the diagnostic window"))}" style="${pill}${rxPctStyle(bestPct)}">📶 ${bestPct}%</span>`;
+    }
+    if (!flagBadge && !rxHtml) return "";
+    return `<div style="margin-top:5px;display:flex;flex-direction:column;align-items:flex-start;gap:4px;">${flagBadge}${rxHtml}</div>`;
+  }
+
+  // Legend for the reception column, attached to the column HEADER as an "ⓘ"
+  // hover tooltip (uniform across every meters table) so the header documents
+  // what MAY appear below — and why a meter with no ESP diag data shows nothing.
+  // Plain text (title=) so it works in one place without per-row clutter.
+  function receptionLegendInfo() {
+    const lines = [
+      `${t("legend_title", "Legend")}:`,
+      `📡 ESP — ${t("esp_flagged_meter", "flagged on the ESP")}`,
+      `📶 esp N% · 1.2k — ${t("legend_reception_pct", "reception % and telegrams read per ESP (diagnostic window)")}`,
+      `▁▃▅▇ — ${t("legend_signal_bars", "telegrams in the last 15 min")}`,
+      t("legend_pct_colors", "% colour: green ≥90 · amber ≥50 · red <50"),
+      t("legend_empty_hint", "Empty here = this meter has no ESP diagnostic data (diagnostic_mode off or not highlighted)."),
+    ];
+    return `<span style="cursor:help;color:#5a7180;font-weight:400;margin-left:4px;" title="${escapeHtml(lines.join("\n"))}">ⓘ</span>`;
   }
 
   // ── #1 Encryption badge (shared by candidateTable + pendingMetersSection) ─
@@ -943,6 +1017,10 @@
       const cls = ok ? (live ? "ok live" : "ok") : (warn ? "warn" : "bad");
       return `<span class="dot ${cls}"></span>`;
     };
+    // Expand affordance: every pipeline tile is a button that opens its workspace
+    // below. Show ▾ (collapsed) / ▲ (this tile's workspace is open) so it reads as
+    // expandable rather than static.
+    const chevron = (ws) => `<div class="pipeline-chevron" aria-hidden="true" style="text-align:center;font-size:15px;letter-spacing:3px;line-height:1;color:#7d97a8;margin-top:6px;">${state.workspace === ws ? "▲▲▲" : "▾▾▾"}</div>`;
 
     const meterCount     = Number(model.meter_count || 0);
     const candidateCount = Number(model.candidate_count || 0);
@@ -1094,6 +1172,7 @@
             <div class="pipeline-sub">${escapeHtml(espVisibleLine)}</div>
             <div class="pipeline-sub pipeline-device" title="${escapeHtml(primaryTopic || "")}">${escapeHtml(espDeviceLine)}</div>
             ${(!bridgeStale && espSomeStale) ? `<div class="pipeline-sub" style="font-size:11px;color:#f3c84b;">⚠ ${escapeHtml(t("pipeline_esp_pulse_stopped", "pulse stopped"))}: ${escapeHtml(espStoppedNames)}</div>` : ""}
+            ${chevron("esp")}
           </button>
           <div class="pipeline-arrow"><span>${escapeHtml(rateLabel)}</span></div>
           <button class="${cls("mqtt")}" data-action="open-workspace" data-ws="mqtt" type="button">
@@ -1103,6 +1182,7 @@
             <div class="pipeline-sub">${escapeHtml((mqtt.host || "—") + (mqtt.port ? ":" + mqtt.port : ""))}</div>
             ${brokerLabel ? `<div class="pipeline-sub" style="font-size:11px;">${escapeHtml(brokerLabel)}</div>` : ""}
             ${(model.mqtt_tls_intent === true && !model.mqtt_ok) ? `<div class="pipeline-sub" style="font-size:11px;color:#f3c84b;">⚠ TLS ${escapeHtml(t("tls_not_supported", "not supported"))} (1883)</div>` : ""}
+            ${chevron("mqtt")}
           </button>
           <div class="pipeline-arrow"><span>${escapeHtml(rateLabel)}</span></div>
           <button class="${cls("wmbus")}" data-action="open-workspace" data-ws="wmbus" type="button">
@@ -1110,6 +1190,7 @@
             <div class="pipeline-title">wmbusmeters</div>
             <div class="pipeline-meta">${dot(wmbusOk, wmbusWarn, wmbusOk && hasLiveRate)} ${escapeHtml(wmbusLabel)}</div>
             <div class="pipeline-sub" title="${escapeHtml(t("pipeline_wmbus_tooltip", "received / decoded"))}">${escapeHtml(wmbusLine)}</div>
+            ${chevron("wmbus")}
           </button>
           <div class="pipeline-arrow"><span>${escapeHtml(rateLabel)}</span></div>
           <button class="${cls("ha")}" data-action="open-workspace" data-ws="ha" type="button">
@@ -1117,6 +1198,7 @@
             <div class="pipeline-title">HA</div>
             <div class="pipeline-meta">${haDot} ${escapeHtml(haText)}</div>
             <div class="pipeline-sub">${meterCount} ${escapeHtml(t("pipeline_ha_entities_short", "entit."))}</div>
+            ${chevron("ha")}
           </button>
         </div>
         ${pipelineWorkspace(model)}
@@ -1190,6 +1272,8 @@
                   const sec = Number(dh.sec_since_last_rx);
                   const rxDot = dh.hears === true ? "ok live" : "warn";
                   const rxVal = sec < 0 ? "—" : `${sec}s`;
+                  // Reception only (chip + seconds since last frame). No RSSI band:
+                  // RSSI proved untrustworthy across boards (see webui.py note).
                   rxCell = `<span class="dot ${rxDot}" style="margin-right:4px;"></span>${dh.chip ? escapeHtml(String(dh.chip)) + " · " : ""}${escapeHtml(rxVal)}`;
                 } else if (dh.state === "stale") {
                   rxCell = `<span class="pill muted" style="font-size:10px;">${escapeHtml(t("esp_health_stopped_short", "stopped"))}</span>`;
@@ -1551,7 +1635,7 @@
               <th>${escapeHtml(t("manufacturer_col", "Manufacturer"))}</th>
               <th>${escapeHtml(t("webui_value", "Value"))}</th>
               <th>${escapeHtml(t("webui_last_seen", "Last seen"))}</th>
-              <th>${escapeHtml(t("reception", "Reception"))}</th>
+              <th>${escapeHtml(t("reception", "Reception"))}${receptionLegendInfo()}</th>
               ${withActions ? "<th></th>" : ""}
             </tr>
           </thead>
@@ -1574,12 +1658,9 @@
                 const mfrCell    = mfrCompact
                   ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>`
                   : `<span style="color:#4a6070;">—</span>`;
-                const espBadge = row.esp_flagged === "true"
-                  ? ` <span title="${escapeHtml(t("esp_flagged_meter", "flagged on the ESP"))}" style="display:inline-block;background:#0e4a52;color:#4dd0e1;font-size:10px;font-weight:700;padding:2px 7px;border-radius:9px;white-space:nowrap;vertical-align:middle;cursor:help;">📡 ESP</span>`
-                  : "";
                 return `
                   <tr>
-                    <td><strong>${escapeHtml(id)}</strong>${espBadge}</td>
+                    <td><strong>${escapeHtml(id)}</strong></td>
                     <td><span style="margin-right:5px;font-size:15px;vertical-align:middle;">${mIcon}</span>${escapeHtml(row.name || row.id || "-")}</td>
                     <td>${escapeHtml(row.driver || "-")}</td>
                     <td>${mfrCell}</td>
@@ -1591,6 +1672,7 @@
                       <span style="color:${statusColor};font-size:11px;font-weight:600;">${escapeHtml(statusLabel)}</span>
                       <span style="margin-left:5px;">${signalBars(seen15m)}</span>
                       <div style="font-size:10px;color:#607a88;">${escapeHtml(fmtInterval(row.avg_interval_s))}</div>
+                      ${espReceptionBadges(row)}
                     </td>
                     ${
                       withActions
@@ -1630,7 +1712,7 @@
               <th>${escapeHtml(t("webui_last_seen", "Last seen"))}</th>
               <th>15m</th>
               <th>60m</th>
-              <th>${escapeHtml(t("reception", "Interval"))}</th>
+              <th>${escapeHtml(t("reception", "Interval"))}${receptionLegendInfo()}</th>
               ${withActions ? "<th></th>" : ""}
             </tr>
           </thead>
@@ -1684,12 +1766,9 @@
                 const mfrCell    = mfrCompact
                   ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>`
                   : `<span style="color:#4a6070;">—</span>`;
-                const espBadge = row.esp_flagged === "true"
-                  ? ` <span title="${escapeHtml(t("esp_flagged_meter", "flagged on the ESP"))}" style="display:inline-block;background:#0e4a52;color:#4dd0e1;font-size:10px;font-weight:700;padding:2px 7px;border-radius:9px;white-space:nowrap;vertical-align:middle;cursor:help;">📡 ESP</span>`
-                  : "";
                 return `
                   <tr data-value="${escapeHtml(previewVal)}">
-                    <td><strong>${escapeHtml(id)}</strong>${espBadge}</td>
+                    <td><strong>${escapeHtml(id)}</strong></td>
                     <td>${escapeHtml(driver)}</td>
                     <td style="color:#9eafba;font-size:12px;">${escapeHtml(row.type || "-")}</td>
                     <td>${mediaIconHtml(row.type || "", driver)} ${escapeHtml(mediaLabel)}</td>
@@ -1699,7 +1778,7 @@
                     <td>${fmtTime(row.last_seen)}</td>
                     <td>${escapeHtml(String(seen15mAdj))}</td>
                     <td>${escapeHtml(String(seen60mAdj))}</td>
-                    <td style="color:#607a88;font-size:12px;">${escapeHtml(fmtInterval(row.avg_interval_s))}</td>
+                    <td style="color:#607a88;font-size:12px;">${escapeHtml(fmtInterval(row.avg_interval_s))}${espReceptionBadges(row)}</td>
                     ${
                       withActions
                         ? `<td><div class="actions">
@@ -1803,17 +1882,26 @@
 
   function discoverConfiguredPanel(rows) {
     if (!rows.length) return "";
+    const rowIds   = rows.map(r => r.id || r.meter_id || "").filter(Boolean);
+    const selCount = rowIds.filter(i => state.selectedRemoval.has(i)).length;
+    const allSel   = rowIds.length > 0 && selCount === rowIds.length;
     return `
       <section class="section">
         <div class="section-head">
           <h2>${escapeHtml(t("configured_meters_panel_title", "Configured meters on air"))}</h2>
           <span id="discover-configured-count" data-default="${rows.length}">${rows.length}</span>
         </div>
-        <p style="font-size:11px;color:#607a88;margin:0 0 10px;">${escapeHtml(t("configured_meters_panel_sub", "These IDs are already in your options.json. The parallel listen instance keeps their reception stats live."))}</p>
+        <p style="font-size:11px;color:#607a88;margin:0 0 10px;">${escapeHtml(t("configured_meters_panel_sub", "These IDs are already in your options.json — the decode instance (primary wmbusmeters) keeps their reception stats. The 15m/60m counters start fresh when a meter is added."))}</p>
+        <div style="display:flex;align-items:center;gap:10px;margin:0 0 10px;flex-wrap:wrap;">
+          <button class="btn danger" type="button" data-action="remove-selected-meters" ${selCount ? "" : "disabled"}
+            style="${selCount ? "" : "opacity:.5;cursor:not-allowed;"}white-space:nowrap;">🗑 ${escapeHtml(t("remove_selected", "Remove selected"))}${selCount ? ` (${selCount})` : ""}</button>
+          <span style="font-size:11px;color:#607a88;">${escapeHtml(t("remove_selected_hint", "Tick the meters you want to remove from the configuration."))}</span>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
+                <th style="width:28px;text-align:center;"><input type="checkbox" data-action="select-all-meters" ${allSel ? "checked" : ""} title="${escapeHtml(t("select_all", "Select all"))}" style="cursor:pointer;"></th>
                 <th>${escapeHtml(t("webui_id", "ID"))}</th>
                 <th>${escapeHtml(t("webui_name", "Name"))}</th>
                 <th>${escapeHtml(t("driver", "Driver"))}</th>
@@ -1823,7 +1911,7 @@
                 <th>${escapeHtml(t("webui_last_seen", "Last seen"))}</th>
                 <th>15m</th>
                 <th>60m</th>
-                <th>${escapeHtml(t("reception", "Interval"))}</th>
+                <th>${escapeHtml(t("reception", "Interval"))}${receptionLegendInfo()}</th>
                 <th></th>
               </tr>
             </thead>
@@ -1851,6 +1939,7 @@
                   : `<span style="color:#4a6070;">—</span>`;
                 return `
                   <tr data-value="${escapeHtml(dataVal)}">
+                    <td style="text-align:center;"><input type="checkbox" data-action="toggle-select-meter" data-id="${escapeHtml(id)}" ${state.selectedRemoval.has(id) ? "checked" : ""} style="cursor:pointer;"></td>
                     <td><strong>${escapeHtml(id)}</strong></td>
                     <td><span style="margin-right:5px;font-size:15px;vertical-align:middle;">${mIcon}</span>${escapeHtml(row.name || id || "-")}</td>
                     <td>${escapeHtml(row.driver || "-")}</td>
@@ -1862,10 +1951,9 @@
                     <td>${fmtTime(row.last_seen)}</td>
                     <td>${escapeHtml(String(seen15mAdj))}</td>
                     <td>${escapeHtml(String(seen60mAdj))}</td>
-                    <td style="color:#607a88;font-size:12px;">${escapeHtml(fmtInterval(row.avg_interval_s))}</td>
+                    <td style="color:#607a88;font-size:12px;">${escapeHtml(fmtInterval(row.avg_interval_s))}${espReceptionBadges(row)}</td>
                     <td><div class="actions">
                       ${row.preview_active === "true" ? `<button class="btn" data-action="cancel-preview" data-id="${escapeHtml(id)}">${escapeHtml(t("cancel_preview", "Cancel preview"))}</button>` : ""}
-                      <button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(id)}">${escapeHtml(t("remove_from_config", "Remove from config"))}</button>
                     </div></td>
                   </tr>`;
               }).join("")}
@@ -2530,6 +2618,43 @@
       if (!id || !window.confirm(t("webui_remove_confirm", "Remove meter {id}?", {id}))) return;
       try {
         await postApi("remove-meter", {meter_id: id});
+        triggerSoftReload(`${t("webui_meter_removed", "Meter removed.")} ${t("reloading_pipeline", "Applying meter changes…")}`);
+      } catch (error) {
+        toast(error.message, true);
+      }
+      return;
+    }
+
+    // Bulk removal in the configured-meters panel: per-row checkboxes feed a
+    // selection Set in state; the toolbar button removes them all at once.
+    if (action === "toggle-select-meter") {
+      const id = target.dataset.id || "";
+      if (!id) return;
+      if (state.selectedRemoval.has(id)) state.selectedRemoval.delete(id);
+      else state.selectedRemoval.add(id);
+      render();
+      return;
+    }
+
+    if (action === "select-all-meters") {
+      const ids = Array.from(
+        document.querySelectorAll('#discover-configured-tbody input[data-action="toggle-select-meter"]')
+      ).map(b => b.dataset.id).filter(Boolean);
+      const allSel = ids.length > 0 && ids.every(i => state.selectedRemoval.has(i));
+      ids.forEach(i => allSel ? state.selectedRemoval.delete(i) : state.selectedRemoval.add(i));
+      render();
+      return;
+    }
+
+    if (action === "remove-selected-meters") {
+      const ids = Array.from(state.selectedRemoval);
+      if (!ids.length) return;
+      if (!window.confirm(t("remove_selected_confirm", "Remove {n} selected meter(s) from the configuration?", {n: ids.length}))) return;
+      try {
+        for (const id of ids) {
+          await postApi("remove-meter", {meter_id: id});
+        }
+        state.selectedRemoval.clear();
         triggerSoftReload(`${t("webui_meter_removed", "Meter removed.")} ${t("reloading_pipeline", "Applying meter changes…")}`);
       } catch (error) {
         toast(error.message, true);
