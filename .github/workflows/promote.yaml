@@ -136,7 +136,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          for item in rootfs Dockerfile translations; do
+          # Functional/runtime files that must track dev verbatim. NB: docker/
+          # (the standalone-Docker entrypoint) was previously omitted and drifted
+          # the same way config.yaml did. Repo-infra and identity are deliberately
+          # NOT here: .github/ (this very workflow lives there), repository.yaml
+          # (name/url), config.yaml identity (handled in the sync step), LICENSE.
+          for item in rootfs Dockerfile docker translations wmbusmeters-mqtt-stdin; do
             if [[ -e "_dev/${item}" ]]; then
               rm -rf "${item}"
               cp -r "_dev/${item}" "${item}"
