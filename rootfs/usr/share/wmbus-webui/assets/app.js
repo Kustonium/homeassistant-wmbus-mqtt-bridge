@@ -325,10 +325,25 @@
     }</span>`;
   }
 
-  function meterStatusLabel(seen15m, seen60m) {
-    if (seen15m > 0) return {label: t("online_label",  "online"),  color: "#2de36f"};
-    if (seen60m > 0) return {label: t("silent_label",  "silent"),  color: "#f3c84b"};
-    return             {label: t("offline_label", "offline"), color: "#ff646b"};
+  // Adaptive per-meter status from its OWN observed cadence (avg_interval_s,
+  // i.e. the real interval between telegrams the bridge actually receives),
+  // falling back to the wM-Bus 300 s standard when the cadence is unknown
+  // (e.g. a just-added meter). Thresholds scale with that interval, so a fast
+  // meter and a slow one are judged fairly:
+  //   <= 3 intervals late  -> online (green)
+  //   <= 12 intervals late -> overdue (amber)
+  //   beyond               -> quiet (neutral grey), NEVER a red alarm.
+  // A meter is passive, so prolonged silence is ambiguous (night/away/battery);
+  // honest-witness reports it neutrally instead of crying wolf — which also
+  // removes the night/weekend false alarm without hardcoding quiet hours.
+  function meterRhythmStatus(ageS, avgIntervalS) {
+    if (!isFinite(ageS)) return {label: t("rhythm_never", "no telegram yet"), color: "#607a88"};
+    let iv = Number(avgIntervalS) > 0 ? Number(avgIntervalS) : 300;
+    if (iv < 8) iv = 8;  // floor: avoid an absurdly tight threshold
+    const ratio = ageS / iv;
+    if (ratio <= 3)  return {label: t("online_label", "online"),   color: "#2de36f"};
+    if (ratio <= 12) return {label: t("rhythm_overdue", "overdue"), color: "#f3c84b"};
+    return {label: t("rhythm_quiet", "quiet"), color: "#7d97a8"};
   }
 
   // Short, human ESP device label (strip the common esphome/wmbus prefixes that
@@ -1650,8 +1665,7 @@
                   ? (Date.now() - lastSeenDate.getTime()) / 1000
                   : Infinity;
                 const seen15m = ageS > 15 * 60 ? 0 : Number(row.seen_15m || 0);
-                const seen60m = ageS > 60 * 60 ? 0 : Number(row.seen_60m || 0);
-                const {label: statusLabel, color: statusColor} = meterStatusLabel(seen15m, seen60m);
+                const {label: statusLabel, color: statusColor} = meterRhythmStatus(ageS, row.avg_interval_s);
                 const {icon: mIcon} = mediaIcon(row.media || "", row.driver || "");
                 const mfrRaw     = String(row.manufacturer || "").trim();
                 const mfrCompact = compactManufacturer(mfrRaw);
