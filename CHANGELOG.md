@@ -1,3 +1,29 @@
+## 1.5.31
+
+### Added
+- Per-ESP reception quality for each configured meter: the dashboard now shows,
+  per receiver, the reception % and the telegram count for a meter, sourced from
+  the ESP's opt-in diagnostics (`meter_snapshot` and the more frequent
+  `meter_window`). It populates within minutes and scales to any number of ESPs.
+- Reception badges (the ESP flag and per-ESP reception %) shown in the reception
+  column across all meter tables, stacked one per line, with a legend on the
+  column header explaining what each marker means.
+- Bulk removal of configured meters via per-row checkboxes and a toolbar action.
+
+### Changed
+- ESP devices silent for over 12 h are dropped from the "Connected ESP" list
+  (e.g. after a topic_name rename), while a recently stopped ESP stays visible
+  and still raises the "pulse stopped" verdict.
+
+### Fixed
+- Removed the RSSI signal-strength band: field testing showed RSSI is not
+  trustworthy across boards, so reception % — not RSSI — is the quality signal.
+- Corrected the "configured meters on air" panel subtitle: the 15m/60m counters
+  come from the decode instance (primary wmbusmeters), not the parallel listen
+  instance.
+- Made the pipeline expand affordance readable (triple chevron).
+
+
 ## 1.5.30
 
 ### Added

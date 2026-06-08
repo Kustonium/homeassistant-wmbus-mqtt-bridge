@@ -55,6 +55,17 @@ STATUS_ESP_HEALTH_JSON = BASE / "status_esp_health.json"
 # set of meters the ESP is explicitly configured for; the WebUI badges matching
 # meters/candidates so an ESP-vs-add-on mismatch is visible.
 STATUS_ESP_METERS_JSON = BASE / "status_esp_meters.json"
+# Opt-in per-meter reception windows: the ESP's diag meter_snapshot (batch of
+# highlight meters, every summary_15min/60min), written per ESP device by the
+# wmbus/+/diag/meter_snapshot subscriber. webui turns count_window / elapsed_s /
+# avg_interval_s into a per-meter reception % (the real quality signal, #15) —
+# best across ESPs. Absent when diagnostics are off / no highlight_meters.
+STATUS_ESP_METER_SNAPSHOT_JSON = BASE / "status_esp_meter_snapshot.json"
+# Per-meter reception window (wmbus/+/diag/meter/<id>/<mode>/window/<trigger>).
+# Same reception fields as the 15-min snapshot but published per meter on the
+# frequent "count" trigger (every N telegrams), so the per-ESP % populates in
+# minutes instead of waiting for the 15-min batch. Map keyed dev -> id -> fields.
+STATUS_ESP_METER_WINDOW_JSON = BASE / "status_esp_meter_window.json"
 # ESP events TSV and per-event detail files (written by bridge.sh event subscriber)
 STATUS_ESP_EVENTS_FILE = BASE / "status_esp_events.tsv"
 STATUS_ESP_SUGGESTION_FILE = BASE / "status_esp_suggestion.json"
@@ -791,10 +802,99 @@ def state(include_ignored: bool = False) -> dict:
                     if _hn:
                         esp_flagged_ids.add(_hn)
 
+    # Per-meter reception % (#15) from the opt-in diag meter_snapshot. For each
+    # fresh per-ESP snapshot, reception% = count_window / (elapsed_s/avg_interval_s),
+    # capped at 100; take the BEST across ESPs (a meter reads well if any receiver
+    # gets it well). -1 (absent) when there is no usable data — diagnostics off, no
+    # highlight_meters, stale, or the window is shorter than one interval.
+    reception_by_id: dict[str, int] = {}
+    # Per-ESP breakdown: mid -> {esp_device: {"pct": int, "count": int}}. Lets the
+    # UI show how each board behaves for the same meter (architectural differences
+    # and how many telegrams each receiver actually read), not just the best
+    # aggregate. Scales to N receivers.
+    reception_by_esp: dict[str, dict[str, dict]] = {}
+    _snap_raw = read_json(STATUS_ESP_METER_SNAPSHOT_JSON)
+    if isinstance(_snap_raw, dict):
+        _rx_now = _time_esp.time()
+        for _sdev, _snap in _snap_raw.items():
+            if not isinstance(_snap, dict):
+                continue
+            # ~20 min freshness (snapshot fires every 15 min).
+            if (_rx_now - safe_int(_snap.get("_bridge_rx_epoch", 0))) > 1200:
+                continue
+            _elapsed = safe_int(_snap.get("elapsed_s", 0))
+            _mlist = _snap.get("meters")
+            if _elapsed <= 0 or not isinstance(_mlist, list):
+                continue
+            for _mw in _mlist:
+                if not isinstance(_mw, dict):
+                    continue
+                _mid = normalize_meter_id(_mw.get("id"))
+                _ai = safe_int(_mw.get("avg_interval_s", 0))
+                if not _mid or _ai <= 0:
+                    continue
+                _expected = _elapsed / _ai
+                if _expected < 1:   # window shorter than one interval → unreliable
+                    continue
+                _pct = int(round(min(100.0, (safe_int(_mw.get("count_window", 0)) / _expected) * 100.0)))
+                _ct = safe_int(_mw.get("count_total", _mw.get("count_window", 0)))
+                if _pct > reception_by_id.get(_mid, -1):
+                    reception_by_id[_mid] = _pct
+                _per = reception_by_esp.setdefault(_mid, {})
+                _cur = _per.get(_sdev)
+                if _cur is None or _ct >= _cur["count"]:
+                    _per[_sdev] = {"pct": _pct, "count": _ct}
+
+    # Per-meter reception windows (count-triggered, frequent). Same formula and
+    # the same reception maps as the 15-min snapshot, merged with max() — this
+    # makes the per-ESP % appear within minutes and for every ESP, instead of
+    # only after a board's first 15-min summary. Map: dev -> {id -> fields}.
+    _win_raw = read_json(STATUS_ESP_METER_WINDOW_JSON)
+    if isinstance(_win_raw, dict):
+        _rx_now_w = _time_esp.time()
+        for _wdev, _wmeters in _win_raw.items():
+            if not isinstance(_wmeters, dict):
+                continue
+            for _wmid_raw, _wrow in _wmeters.items():
+                if not isinstance(_wrow, dict):
+                    continue
+                # ~30 min freshness: the count trigger cadence is 10*interval, so
+                # a slow meter legitimately updates less often than the snapshot.
+                if (_rx_now_w - safe_int(_wrow.get("_bridge_rx_epoch", 0))) > 1800:
+                    continue
+                _wmid = normalize_meter_id(_wrow.get("id") or _wmid_raw)
+                _wai = safe_int(_wrow.get("avg_interval_s", 0))
+                _welapsed = safe_int(_wrow.get("elapsed_s", 0))
+                if not _wmid or _wai <= 0 or _welapsed <= 0:
+                    continue
+                _wexpected = _welapsed / _wai
+                if _wexpected < 1:
+                    continue
+                _wpct = int(round(min(100.0, (safe_int(_wrow.get("count_window", 0)) / _wexpected) * 100.0)))
+                _wct = safe_int(_wrow.get("count_total", _wrow.get("count_window", 0)))
+                if _wpct > reception_by_id.get(_wmid, -1):
+                    reception_by_id[_wmid] = _wpct
+                _wper = reception_by_esp.setdefault(_wmid, {})
+                _wcur = _wper.get(_wdev)
+                if _wcur is None or _wct >= _wcur["count"]:
+                    _wper[_wdev] = {"pct": _wpct, "count": _wct}
+
+    def _rx_esps(mid: str) -> list:
+        _per = reception_by_esp.get(mid)
+        if not _per:
+            return []
+        # Sort most-reading first: by telegram count, then %, then name.
+        return [{"esp": k, "pct": v["pct"], "count": v["count"]}
+                for k, v in sorted(_per.items(),
+                                   key=lambda kv: (-kv[1]["count"], -kv[1]["pct"], kv[0]))]
+
     for c in candidates:
         c["ignored"] = "true" if c.get("id") in ignored else "false"
         c["analysis"] = analysis_by_id.get(normalize_meter_id(c.get("id")), {})
         c["esp_flagged"] = "true" if normalize_meter_id(c.get("id")) in esp_flagged_ids else "false"
+        # Per-meter reception % (#15); -1 = no data (diag off / not highlighted / stale).
+        c["reception_pct"] = reception_by_id.get(normalize_meter_id(c.get("id")), -1)
+        c["reception_esps"] = _rx_esps(normalize_meter_id(c.get("id")))
         # preview_active = there's a preview config for this candidate.
         # Single source of truth = filesystem; one-shot RAW decoders consume the
         # config without touching the always-on LISTEN pipeline.
@@ -814,6 +914,8 @@ def state(include_ignored: bool = False) -> dict:
     # it is in the add-on's meters), the badge confirms alignment.
     for m in meters:
         m["esp_flagged"] = "true" if normalize_meter_id(m.get("id") or m.get("meter_id")) in esp_flagged_ids else "false"
+        m["reception_pct"] = reception_by_id.get(normalize_meter_id(m.get("id") or m.get("meter_id")), -1)
+        m["reception_esps"] = _rx_esps(normalize_meter_id(m.get("id") or m.get("meter_id")))
 
     # Build normalized options_meter_ids early — used both for TSV filtering and
     # candidate dedup. Do not write back to status_meters.tsv from this read path.
@@ -1345,6 +1447,13 @@ def _esp_payload() -> dict:
     # aggregate verdict. Only devices present in the tracker are considered, so a
     # health entry for an ESP no longer seen does not linger as a forever-stale
     # ghost. Quality (ok/total, RSSI) is deliberately NOT here — it stays in diag.
+    # NOTE: a signal-strength band from the pulse RSSI was intentionally removed.
+    # Field testing showed RSSI is not trustworthy across boards (same SX1276 read
+    # -53 dBm on one board and a pinned -119 on another; an SX1262 + FEM board
+    # reported a flat -83 for every meter) — it is hardware/front-end dependent and
+    # often stuck, while reception itself is perfect. Reception (telegrams decoding)
+    # is the honest signal; real per-meter quality is reception % from the opt-in
+    # diag meter_window (planned), not RSSI.
     health_raw = read_json(STATUS_ESP_HEALTH_JSON)
     health_map: dict[str, dict] = {}
     if isinstance(health_raw, dict):
@@ -1421,10 +1530,17 @@ def _esp_payload() -> dict:
             ("summary" if last_sum > 0 else "event")
         )
 
+    # Drop devices not seen for over 12 h: long-dead ghosts (e.g. an ESP whose
+    # topic_name was renamed) fall off the list entirely. The window is long on
+    # purpose — a genuinely stopped ESP stays visible (and keeps raising the
+    # "pulse stopped" verdict) well within it, so this never hides a recently
+    # silenced receiver (honest-witness).
+    HIDE_AFTER_S = 12 * 60 * 60
     # Sort: active first (by recency), then inactive. Stale ghost entries
     # from MQTT retained messages drift to the bottom.
     devices_list = sorted(
-        devices.values(),
+        (d for d in devices.values()
+         if d["last_seen_epoch"] > 0 and (now_epoch - d["last_seen_epoch"]) <= HIDE_AFTER_S),
         key=lambda d: (not d["active"], -d["last_seen_epoch"]),
     )
     devices_active_count = sum(1 for d in devices_list if d["active"])
