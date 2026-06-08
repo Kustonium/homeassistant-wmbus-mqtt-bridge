@@ -153,13 +153,38 @@ jobs:
             fi
           done
 
-      - name: Set stable version in config.yaml
+      - name: Sync config.yaml from dev (schema/options/permissions) + set stable version
         shell: bash
         run: |
           set -euo pipefail
           VERSION="${{ steps.version.outputs.VERSION }}"
+
+          # Adopt dev's config.yaml wholesale so schema/options/permission fixes
+          # reach stable (promote previously copied only rootfs, so config.yaml
+          # drifted — e.g. meters[].type stayed a stale driver enum and izarv2
+          # meters were rejected, and verify_ha_entities / homeassistant_api were
+          # missing). Then restore the stable add-on IDENTITY captured from the
+          # stable config.yaml. Everything non-identity (schema, options,
+          # homeassistant_api, etc.) now tracks dev automatically.
+          S_NAME="$(sed -nE 's/^name:[[:space:]]*(.*)$/\1/p' config.yaml | head -n1)"
+          S_DESC="$(sed -nE 's/^description:[[:space:]]*(.*)$/\1/p' config.yaml | head -n1)"
+          S_SLUG="$(sed -nE 's/^slug:[[:space:]]*(.*)$/\1/p' config.yaml | head -n1)"
+          S_IMAGE="$(sed -nE 's/^image:[[:space:]]*(.*)$/\1/p' config.yaml | head -n1)"
+          S_PANEL="$(sed -nE 's/^panel_title:[[:space:]]*(.*)$/\1/p' config.yaml | head -n1)"
+
+          cp _dev/config.yaml config.yaml
+
+          if [ -n "${S_NAME}" ];  then sed -i -E "s|^name:.*|name: ${S_NAME}|"  config.yaml; fi
+          if [ -n "${S_DESC}" ];  then sed -i -E "s|^description:.*|description: ${S_DESC}|" config.yaml; fi
+          if [ -n "${S_SLUG}" ];  then sed -i -E "s|^slug:.*|slug: ${S_SLUG}|"  config.yaml; fi
+          if [ -n "${S_IMAGE}" ]; then sed -i -E "s|^image:.*|image: ${S_IMAGE}|" config.yaml; fi
+          if [ -n "${S_PANEL}" ]; then sed -i -E "s|^panel_title:.*|panel_title: ${S_PANEL}|" config.yaml; fi
+
+          # Stable release version (X.Y.Z), overriding dev's X.Y.Z-dev.
           sed -i -E "s/^(version:[[:space:]]*\").*\"/\1${VERSION}\"/" config.yaml
-          grep '^version:' config.yaml
+
+          echo "--- stable config.yaml identity + version ---"
+          grep -E '^(name|slug|image|version|panel_title):' config.yaml
 
       - name: Commit, create PR, and auto-merge
         shell: bash
