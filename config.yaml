@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
 description: "MQTT RAW HEX -> wmbusmeters (stdin:hex) -> MQTT + Home Assistant Discovery"
-version: "1.5.32"
+version: "1.5.33"
 slug: "wmbus_mqtt_bridge"
 stage: experimental
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
@@ -13,6 +13,11 @@ init: false
 ingress: true
 ingress_port: 8099
 hassio_api: true
+# Read-only access to the HA Core API, used ONLY by the opt-in entity
+# verification (verify_ha_entities). When that option is false (default), the
+# add-on does not call the Core API. See _bmad-output/planning-artifacts/prds/
+# prd-ha-entity-verification-2026-06-05/prd.md.
+homeassistant_api: true
 panel_icon: mdi:gauge
 panel_title: "wMBus Bridge"
 services:
@@ -44,6 +49,12 @@ options:
   external_mqtt_username: ""
   external_mqtt_password: ""
 
+  # Opt-in: ask the HA Core API whether HA actually creates the add-on's
+  # Discovery entities (via a hidden "canary" sensor wmbus_bridge_health).
+  # Off by default — turning it on grants the add-on read-only access to HA
+  # states. Only meaningful in HA add-on mode (needs SUPERVISOR_TOKEN).
+  verify_ha_entities: false
+
   meters: []
 
 schema:
@@ -67,15 +78,14 @@ schema:
   external_mqtt_port: int
   external_mqtt_username: str?
   external_mqtt_password: str?
+  verify_ha_entities: bool
   meters:
     - id: str
       meter_id: str
       # Free string: wmbusmeters validates the driver at decode time and its
       # driver set changes between versions. A fixed enum here goes stale (e.g.
       # 'izarv2' was missing), and Supervisor then rejects valid meters with
-      # HTTP 400 on save — the meter then only lands in a file-only fallback and
-      # disappears on the next restart/upgrade. 'auto' and 'other' (+ type_other)
-      # still work. Kept in sync with the dev repo's schema.
+      # HTTP 400 on save. 'auto' and 'other' (+ type_other) still work.
       type: str
       type_other: str?
       key: str?

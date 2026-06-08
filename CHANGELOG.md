@@ -1,3 +1,19 @@
+## 1.5.33
+
+### Fixed
+- Meters whose wmbusmeters driver was added after the add-on's options schema
+  was frozen (notably Diehl/Izar `izarv2`) were rejected when saved (Supervisor
+  HTTP 400 "value must be one of …"), so they fell back to a file-only write and
+  silently disappeared on the next restart/upgrade. The `meters[].type` field is
+  now a free string, so any current wmbusmeters driver is accepted.
+
+### Added
+- Opt-in Home Assistant entity verification (`verify_ha_entities`, off by
+  default): the add-on can ask the HA Core API whether its discovery entities
+  were actually created. Enabling it grants read-only HA Core API access
+  (`homeassistant_api`). This brings the stable schema/permissions in line with
+  the development build (promote now syncs config.yaml, so they no longer drift).
+
 ## 1.5.32
 
 ### Added
