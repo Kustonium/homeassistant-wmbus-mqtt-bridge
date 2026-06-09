@@ -80,6 +80,13 @@ STATUS_CANDIDATE_VALUES_FILE="${BASE}/status_candidate_values.tsv"
 # Per-candidate preview lifecycle state: pending | decoded_value | decoded_without_numeric_value
 # Format: id<TAB>state<TAB>iso_timestamp<TAB>note
 STATUS_CANDIDATE_PREVIEW_STATE_FILE="${BASE}/status_candidate_preview_state.tsv"
+# Preview one-shot decoder paths. Defined here (derived purely from BASE) so the
+# liveness/maintenance ticker forked below can reference PREVIEW_METER_DIR; the
+# directory mkdir and conf-file creation still happen later in startup.
+PREVIEW_BASE="${BASE}/preview"
+PREVIEW_ETC="${PREVIEW_BASE}/etc"
+PREVIEW_METER_DIR="${PREVIEW_ETC}/wmbusmeters.d"
+PREVIEW_CONF_FILE="${PREVIEW_ETC}/wmbusmeters.conf"
 # MQTT->HA healthcheck: presence of Home Assistant's MQTT integration on the
 # broker the bridge uses, inferred from HA's retained birth message
 # (<discovery_prefix>/status). Written by the HA-presence subscriber in
@@ -311,10 +318,21 @@ start_esp_subscribers
 # independent of telegram flow, so the WebUI can distinguish "bridge alive but
 # idle" from "bridge down / run.sh waiting for the broker". Dies with bridge.sh.
 (
+  _last_candidate_prune=0
   while true; do
     printf '%s\n' "$(epoch_now)" > "${STATUS_HEARTBEAT_FILE}.tmp" 2>/dev/null \
       && mv "${STATUS_HEARTBEAT_FILE}.tmp" "${STATUS_HEARTBEAT_FILE}" 2>/dev/null \
       || true
+    # Throttled bridge-side cleanup of long-silent candidates. The pipeline
+    # restart loop only prunes on reload; a stable long-running pipeline never
+    # reloads, so this ticker (already excluded from soft-reload kills) drives
+    # the time-based self-deletion. Heartbeat is stamped first every tick, so a
+    # prune run can never delay liveness past the 30 s WebUI threshold.
+    _hb_now="$(epoch_now)"
+    if (( _hb_now - _last_candidate_prune >= ${CANDIDATE_PRUNE_INTERVAL_SECONDS:-600} )); then
+      prune_stale_candidates || true
+      _last_candidate_prune="${_hb_now}"
+    fi
     sleep "${HEARTBEAT_INTERVAL_SECONDS:-10}"
   done
 ) &
@@ -365,10 +383,8 @@ EOFLISTEN
 # files live in a separate directory and are decoded from individual RAW frames
 # by short-lived one-shot wmbusmeters processes. This preserves exactly two
 # long-running pipelines: PRIMARY DECODE and SECONDARY PURE LISTEN.
-PREVIEW_BASE="${BASE}/preview"
-PREVIEW_ETC="${PREVIEW_BASE}/etc"
-PREVIEW_METER_DIR="${PREVIEW_ETC}/wmbusmeters.d"
-PREVIEW_CONF_FILE="${PREVIEW_ETC}/wmbusmeters.conf"
+# PREVIEW_BASE/ETC/METER_DIR/CONF_FILE are defined earlier (near the STATUS_*
+# paths) so the maintenance ticker can see PREVIEW_METER_DIR; create them now.
 mkdir -p "${PREVIEW_METER_DIR}"
 cat > "${PREVIEW_CONF_FILE}" <<EOFPREVIEW
 loglevel=${LOGLEVEL}

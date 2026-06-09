@@ -1,3 +1,13 @@
+## 1.5.34
+
+### Added
+- prune long-silent candidates from status_candidates.tsv (24h) (c8dc73c)
+- sink no-reception candidates to the bottom + media-group dividers (909ea78)
+- stable candidate sort — group by media, then telegram count, then id (71640fc)
+
+### Fixed
+- align candidate silent-detection with the age-adjusted UI counters (2ba28b0)
+
 ## 1.5.33
 
 ### Fixed

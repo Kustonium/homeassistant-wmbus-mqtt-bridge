@@ -15,6 +15,21 @@ _tsv_upsert() {
   ) 9>"${file}.lock"
 }
 
+# Atomic, serialized removal of a single keyed row from a TSV file.
+# Mirrors _tsv_upsert's locking model (exclusive flock + mktemp + atomic mv).
+# No-op when the file is absent. Comparison is on the literal first column.
+_tsv_remove_id() {
+  local file="$1" id="$2"
+  [[ -f "${file}" ]] || return 0
+  (
+    flock -x 9
+    local _tmp
+    _tmp="$(mktemp "${file}.tmp.XXXXXX")" || return 1
+    awk -F '\t' -v id="${id}" '$1 != id {print}' "${file}" 2>/dev/null > "${_tmp}" || true
+    mv "${_tmp}" "${file}" 2>/dev/null || { rm -f "${_tmp}"; true; }
+  ) 9>"${file}.lock"
+}
+
 _upsert_candidate_row() {
   local _id="$1" _driver="$2" _type="$3" _last_seen="$4" _seen_count="$5"
   local _avg_interval_s="$6" _seen_15m="$7" _seen_60m="$8" _manufacturer="${9:-}"
