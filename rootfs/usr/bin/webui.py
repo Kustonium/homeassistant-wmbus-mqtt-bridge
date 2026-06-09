@@ -1002,6 +1002,24 @@ def state(include_ignored: bool = False) -> dict:
 
     if not include_ignored:
         candidates = [c for c in candidates if c.get("ignored") != "true"]
+
+    # Drop STALE candidates from the active list: a meter last heard long ago is
+    # not "being heard" now, so listing it (and counting it) as a current
+    # candidate is misleading — it was heard, in the past. Keep discovery to what
+    # is actually arriving (honest-witness). Only hide when last_seen is
+    # confidently older than the window; a missing/unparseable timestamp is kept.
+    # status_candidates.tsv is NOT modified — this is a display freshness filter.
+    CANDIDATE_STALE_AFTER_S = 24 * 60 * 60
+    _now_utc = datetime.now(timezone.utc)
+    def _candidate_fresh(c: dict) -> bool:
+        dt = parse_iso_time(str(c.get("last_seen") or ""))
+        if dt is None:
+            return True
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (_now_utc - dt).total_seconds() <= CANDIDATE_STALE_AFTER_S
+    candidates = [c for c in candidates if _candidate_fresh(c)]
+
     meters = sorted(meters, key=lambda m: (m.get("last_seen") or ""), reverse=True)
     for m in meters:
         mid = normalize_meter_id(m.get("id") or "")
@@ -1009,15 +1027,58 @@ def state(include_ignored: bool = False) -> dict:
             m["preview_active"] = "true" if (PREVIEW_METER_DIR / f"meter-preview-{mid}").exists() else "false"
             if not m.get("manufacturer"):
                 m["manufacturer"] = candidate_by_id.get(mid, {}).get("manufacturer", "")
+    # Candidate order: STABLE, grouped by media, then "biggest chatterbox" first.
+    # Primary = media group (water / warm water / heat / electricity / other) —
+    # a meter's media never changes, so rows don't reshuffle. Secondary = total
+    # telegrams (seen_count) descending — the chattiest candidate sits at the top
+    # of its group; seen_count grows slowly so it does not reorder on every
+    # refresh (no "elevator" effect, unlike last_seen/seen_15m). Tertiary = id,
+    # a fully stable tie-break. NB ascending sort: group asc, -count for desc.
+    def _media_group(c: dict) -> int:
+        t = (str(c.get("type") or "") + " " + str(c.get("driver") or "")).lower()
+        if "warm water" in t or "0x06" in t or "0x62" in t or "0x72" in t:
+            return 1  # warm water
+        if "heat" in t or "0xc3" in t:
+            return 2  # heat
+        if "electric" in t or "0x02" in t:
+            return 3  # electricity
+        if "water" in t or "0x07" in t or "0x16" in t:
+            return 0  # (cold) water
+        return 4      # other
+    # "Silent" = no telegram in the last hour (seen_15m == seen_60m == 0). These
+    # candidates (still inside the 24h freshness window, but currently quiet /
+    # "decoding…") sink BELOW the actively-heard ones as their own block — they
+    # are not part of the live "known" listing. Flag exposed so the table can draw
+    # a divider before the block.
+    #
+    # IMPORTANT: age-adjust the stored counters exactly like app.js does before
+    # display (seen15mAdj/seen60mAdj). status_candidates.tsv keeps the LAST known
+    # positive seen_15m/seen_60m even after the meter goes quiet; without this the
+    # backend sort would treat a long-silent candidate (UI shows 0/0) as active
+    # and float it to the TOP of its group, contradicting the displayed 0/0.
+    def _seen_age_s(c: dict):
+        dt = parse_iso_time(str(c.get("last_seen") or ""))
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (_now_utc - dt).total_seconds()
+
+    def _silent(c: dict) -> int:
+        age_s = _seen_age_s(c)
+        seen_15m = safe_int(c.get("seen_15m")) if (age_s is None or age_s <= 15 * 60) else 0
+        seen_60m = safe_int(c.get("seen_60m")) if (age_s is None or age_s <= 60 * 60) else 0
+        return 0 if (seen_15m > 0 or seen_60m > 0) else 1
+    for c in candidates:
+        c["recent_silent"] = "true" if _silent(c) else "false"
     candidates = sorted(
         candidates,
         key=lambda c: (
-            safe_int(c.get("seen_15m")),
-            safe_int(c.get("seen_60m")),
-            safe_int(c.get("seen_count")),
-            c.get("last_seen") or "",
+            _silent(c),
+            _media_group(c),
+            -safe_int(c.get("seen_count")),
+            normalize_meter_id(c.get("id")) or str(c.get("id") or ""),
         ),
-        reverse=True,
     )
     return {"status": status, "options": options, "meters": meters, "pending_meters": pending_meters, "candidates": candidates, "events": events, "ignored": sorted(ignored), "search_candidates": search_candidates, "search_matches": search_matches, "search_status": search_status, "analysis": analysis}
 

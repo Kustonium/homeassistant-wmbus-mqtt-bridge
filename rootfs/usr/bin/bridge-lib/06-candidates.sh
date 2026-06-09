@@ -240,6 +240,83 @@ prune_official_meter_previews() {
   : "${_pruned}"  # preview files are one-shot inputs; LISTEN never reloads
 }
 
+# Physically remove candidate rows whose last telegram (column 4, ISO last_seen)
+# is older than CANDIDATE_PRUNE_AFTER_SECONDS (default 24h). This is the bridge-side
+# counterpart to the WebUI's 24h display freshness filter: until now the row only
+# got HIDDEN, so it lingered in status_candidates.tsv and reappeared on every
+# refresh. A long-silent candidate ("hanging", 0/0 reception) now self-deletes.
+#
+# A new telegram from the same ID later simply re-creates the candidate via
+# status_candidate_seen() — pruning a quiet meter does not blacklist it.
+#
+# last_seen is ISO-8601 (date -Iseconds, e.g. 2026-06-09T11:35:00+02:00). busybox
+# date cannot reliably parse that back to epoch, so python3 (already a runtime
+# dependency) does the age comparison and rewrites the file under the same flock.
+# Per-ID side state (preview value/state, attempt counter, preview config) is then
+# cleaned to match the WebUI's _cleanup_preview_cache, so no orphan rows remain.
+prune_stale_candidates() {
+  local file="${STATUS_CANDIDATES_FILE}"
+  local max_age="${CANDIDATE_PRUNE_AFTER_SECONDS:-86400}"
+  [[ -f "${file}" ]] || return 0
+  [[ "${max_age}" =~ ^[0-9]+$ ]] || max_age=86400
+  command -v python3 >/dev/null 2>&1 || return 0
+
+  local _dropped
+  _dropped="$( (
+    flock -x 9
+    _tmp="$(mktemp "${file}.tmp.XXXXXX")" || exit 1
+    if ! python3 - "${file}" "${_tmp}" "${max_age}" <<'PYEOF'
+import sys, datetime
+src, dst, max_age = sys.argv[1], sys.argv[2], int(sys.argv[3])
+now = datetime.datetime.now(datetime.timezone.utc)
+
+def parse(ts):
+    ts = ts.strip()
+    if not ts:
+        return None
+    try:
+        d = datetime.datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=datetime.timezone.utc)
+    return d
+
+dropped = []
+with open(src, "r", encoding="utf-8", errors="replace") as f, \
+     open(dst, "w", encoding="utf-8") as out:
+    for line in f:
+        row = line.rstrip("\n")
+        if not row:
+            continue
+        cols = row.split("\t")
+        d = parse(cols[3]) if len(cols) >= 4 else None
+        if d is not None and (now - d).total_seconds() > max_age:
+            dropped.append(cols[0])
+        else:
+            out.write(row + "\n")
+sys.stdout.write("\n".join(dropped))
+PYEOF
+    then
+      rm -f "${_tmp}"
+      exit 1
+    fi
+    mv "${_tmp}" "${file}" 2>/dev/null || { rm -f "${_tmp}"; exit 1; }
+  ) 9>"${file}.lock" )" || return 0
+
+  [[ -n "${_dropped}" ]] || return 0
+  local _id
+  while IFS= read -r _id; do
+    _id="$(normalize_meter_id "${_id}")"
+    [[ "${_id}" =~ ^[0-9A-Fa-f]{8}$ ]] || continue
+    _tsv_remove_id "${STATUS_CANDIDATE_VALUES_FILE}" "${_id}"
+    _tsv_remove_id "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" "${_id}"
+    rm -f "${BASE}/.preview_attempts/${_id}" 2>/dev/null || true
+    rm -f "${PREVIEW_METER_DIR}/meter-preview-${_id}" 2>/dev/null || true
+    log "pruned stale candidate ${_id} (no telegram for >$((max_age / 3600))h)"
+  done <<< "${_dropped}"
+}
+
 status_record_candidate_raw() {
   local id
   local raw="$2"

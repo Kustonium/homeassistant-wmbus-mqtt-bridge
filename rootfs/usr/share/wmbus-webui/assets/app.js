@@ -410,6 +410,7 @@
       `${t("legend_title", "Legend")}:`,
       `📡 ESP — ${t("esp_flagged_meter", "flagged on the ESP")}`,
       `📶 esp N% · 1.2k — ${t("legend_reception_pct", "reception % and telegrams read per ESP (diagnostic window)")}`,
+      t("legend_per_esp_note", "Per-ESP counts overlap (each ESP hears the same telegrams) and use the diagnostic window — they do not sum to 15m/60m."),
       `▁▃▅▇ — ${t("legend_signal_bars", "telegrams in the last 15 min")}`,
       t("legend_pct_colors", "% colour: green ≥90 · amber ≥50 · red <50"),
       t("legend_empty_hint", "Empty here = this meter has no ESP diagnostic data (diagnostic_mode off or not highlighted)."),
@@ -1711,6 +1712,25 @@
     // bridge.sh now runs a secondary wmbusmeters that always feeds candidate
     // TSV updates regardless of how many meters the user has configured.
     // No more "stale" warning needed.
+    // Group separators: the backend sorts candidates by media group, with the
+    // "no reception" (recent_silent) ones pushed to the very bottom as their own
+    // block. Draw a thicker bar whenever the media group changes, and one bar
+    // before the silent block. Rows are pre-sorted, so this is purely visual.
+    const colspan = withActions ? 12 : 11;
+    const _mc = (r) => mediaIcon(r.type || "", r.driver || "auto").mc;
+    const _silent = (r) => r.recent_silent === "true";
+    const groupDivider = (prev, cur) => {
+      if (_silent(cur)) {
+        if (!prev || !_silent(prev)) {
+          return `<tr><td colspan="${colspan}" style="background:#14110c;border-top:3px solid #3a3320;color:#8a8166;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:7px 12px;font-style:italic;">${escapeHtml(t("candidates_silent_group", "No reception — heard earlier"))}</td></tr>`;
+        }
+        return "";
+      }
+      if (!prev || _mc(prev) !== _mc(cur)) {
+        return `<tr><td colspan="${colspan}" style="background:#0e1a23;border-top:3px solid #2a4555;color:#9eafba;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:7px 12px;">${mediaIconHtml(cur.type || "", cur.driver || "auto")} ${escapeHtml(t(`media_${_mc(cur)}`, _mc(cur)))}</td></tr>`;
+      }
+      return "";
+    };
     return `
       <div class="table-wrap">
         <table>
@@ -1732,7 +1752,7 @@
           </thead>
           <tbody id="discover-candidates-tbody">
             ${rows
-              .map((row) => {
+              .map((row, _i, _arr) => {
                 const id     = row.id || "";
                 const driver = row.driver || "auto";
                 const {mc}   = mediaIcon(row.type || "", driver);
@@ -1780,7 +1800,7 @@
                 const mfrCell    = mfrCompact
                   ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>`
                   : `<span style="color:#4a6070;">—</span>`;
-                return `
+                return groupDivider(_arr[_i - 1], row) + `
                   <tr data-value="${escapeHtml(previewVal)}">
                     <td><strong>${escapeHtml(id)}</strong></td>
                     <td>${escapeHtml(driver)}</td>
