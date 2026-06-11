@@ -1,3 +1,19 @@
+## 1.5.35
+
+### Added
+- decrypt issue-report analysis with the configured AES key (1a37d14)
+- published-fields expander on the meters view (ecbded7)
+- issue-report export, driver picker and post-add driver change (2d22724)
+- per-field availability template in MQTT Discovery configs (afb096d)
+
+### Fixed
+- hold live table re-render while the pointer is over a table (9205126)
+- pass prune python program via -c (stdin heredoc broke in production) (6adb814)
+- add change-driver action to the configured-on-air table (264bca5)
+- browsable driver select, input validation and modal click-close bug (1e206cf)
+- lowercase meter id in izar fixture test (id match is case-sensitive) (9a5c3b5)
+- pin wmbusmeters build to last known-good commit 8c35c4a1 (171e0d1)
+
 ## 1.5.34
 
 ### Added

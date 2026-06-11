@@ -104,6 +104,12 @@ emit_discovery_from_json() {
           unique_id: $uniq,
           state_topic: $st,
           value_template: "{{ value_json.get('\''\($key)'\'') | default(none) }}",
+          availability: [
+            {
+              topic: $st,
+              value_template: "{{ '\''online'\'' if value_json.get('\''\($key)'\'') is not none else '\''offline'\'' }}"
+            }
+          ],
           json_attributes_topic: $st,
           expire_after: $expire,
           device: {
