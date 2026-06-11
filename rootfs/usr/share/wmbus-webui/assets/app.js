@@ -71,6 +71,13 @@
     loading: true,
     error: "",
     modal: null,
+    // Candidate "export for issue report" modal: {id, loading, report, error}.
+    reportModal: null,
+    // Driver catalog (assets/drivers.json, baked at image build time from the
+    // pinned wmbusmeters sources). null = not fetched yet; [] = fetch failed.
+    drivers: null,
+    // "Change driver" modal for an already-configured meter: {id, driver}.
+    editModal: null,
     toast: null,
     liveConnected: false,
     mediaFilter: "all",
@@ -81,21 +88,45 @@
     // IDs ticked for bulk removal in the configured-meters panel. Persisted in
     // state so the selection survives the polling re-render (morphdom).
     selectedRemoval: new Set(),
+    // Meter ids with the "published fields" row expanded on the meters view.
+    expandedMeterFields: new Set(),
   };
 
   let liveSource = null;
   let liveLang = "";
   let liveRenderTimer = null;
+  let liveRenderDeferred = false;
 
   // Debounced render for SSE live updates — coalesces rapid events into one
   // DOM patch. 150ms is enough to batch bursts without feeling sluggish.
+  //
+  // Hover guard: live updates re-sort table rows, so a row could move under
+  // the user's cursor between aiming and clicking — confirmed in the wild as
+  // 'Preview canceled' events fired by clicks aimed at the report button.
+  // While the pointer is over a table (and no modal is open), the live
+  // re-render is held; it fires when the pointer leaves the table (the
+  // mouseover listener below) or on the next live tick after that. Renders
+  // triggered directly by user actions (render() calls) are not gated.
   function scheduleRender() {
     if (liveRenderTimer) return;
     liveRenderTimer = window.setTimeout(() => {
       liveRenderTimer = null;
+      if (document.querySelector(".table-wrap:hover")
+          && !state.modal && !state.reportModal && !state.editModal) {
+        liveRenderDeferred = true;
+        return;
+      }
+      liveRenderDeferred = false;
       render();
     }, 150);
   }
+
+  document.addEventListener("mouseover", () => {
+    if (liveRenderDeferred && !document.querySelector(".table-wrap:hover")) {
+      liveRenderDeferred = false;
+      scheduleRender();
+    }
+  });
 
   function currentRoute() {
     const hash = window.location.hash.replace(/^#\/?/, "");
@@ -536,6 +567,7 @@
         </td>
         <td><div class="actions">
           ${row.preview_active === "true" ? `<button class="btn" data-action="cancel-preview" data-id="${escapeHtml(mid)}">${escapeHtml(t("cancel_preview", "Cancel preview"))}</button>` : ""}
+          <button class="btn" data-action="open-edit-driver" data-id="${escapeHtml(mid)}" data-driver="${escapeHtml(driver)}">${escapeHtml(t("change_driver_btn", "Driver…"))}</button>
           <button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(mid)}">${escapeHtml(t("webui_remove", "Remove"))}</button>
         </div></td>
       </tr>
@@ -832,6 +864,8 @@
         </main>
       </div>
       ${state.modal ? renderModal() : ""}
+      ${state.reportModal ? renderReportModal() : ""}
+      ${state.editModal ? renderEditDriverModal() : ""}
       ${state.softReloading ? `
         <div style="position:fixed;right:18px;bottom:18px;background:#1d2a18;color:#a3d870;border:1px solid #4a7332;padding:10px 16px;border-radius:8px;z-index:35;display:flex;align-items:center;gap:10px;font-size:13px;">
           <span style="font-size:18px;">⏳</span>
@@ -1638,6 +1672,40 @@
     `;
   }
 
+  function meterFieldsRow(row, colspan) {
+    let fields = null;
+    try { fields = JSON.parse(row.last_json || ""); } catch (e) { fields = null; }
+    let inner;
+    if (!fields || typeof fields !== "object") {
+      inner = `<span style="color:#607a88;">${escapeHtml(t("published_fields_none", "No decoded telegram this session yet."))}</span>`;
+    } else {
+      const entries = Object.entries(fields)
+        .filter(([k]) => k !== "_")
+        .sort(([a], [b]) => a.localeCompare(b));
+      inner = `
+        <table style="width:auto;min-width:50%;">
+          <thead><tr>
+            <th>${escapeHtml(t("published_fields_field", "Field"))}</th>
+            <th>${escapeHtml(t("webui_value", "Value"))}</th>
+          </tr></thead>
+          <tbody>
+            ${entries.map(([k, v]) => {
+              const unit = typeof v === "number" ? unitFromKey(k) : "";
+              return `<tr>
+                <td class="mono" style="font-size:11px;">${escapeHtml(k)}</td>
+                <td class="mono" style="font-size:11px;">${escapeHtml(String(v))}${unit ? ` <span style="color:#607a88;">${escapeHtml(unit)}</span>` : ""}</td>
+              </tr>`;
+            }).join("")}
+          </tbody>
+        </table>`;
+    }
+    return `
+      <tr><td colspan="${colspan}" style="background:#0b141b;border-top:1px solid #1d2f3c;padding:10px 14px;">
+        <div style="font-size:11px;color:#9eafba;margin-bottom:6px;">${escapeHtml(t("published_fields_title", "Published fields (last telegram)"))}${row.last_json_ts ? ` · ${fmtTime(row.last_json_ts)}` : ""}</div>
+        ${inner}
+      </td></tr>`;
+  }
+
   function meterTable(rows, withActions = true) {
     if (!rows.length) return `<div class="empty">${escapeHtml(t("webui_no_meters", "No meters yet."))}</div>`;
     return `
@@ -1691,11 +1759,11 @@
                     </td>
                     ${
                       withActions
-                        ? `<td><div class="actions"><button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(id)}">${escapeHtml(t("webui_remove", "Remove"))}</button></div></td>`
+                        ? `<td><div class="actions"><button class="btn" data-action="toggle-meter-fields" data-id="${escapeHtml(id)}">${escapeHtml(t("published_fields_btn", "Fields"))} ${state.expandedMeterFields.has(id) ? "▴" : "▾"}</button><button class="btn" data-action="open-edit-driver" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(row.driver || "auto")}">${escapeHtml(t("change_driver_btn", "Driver…"))}</button><button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(id)}">${escapeHtml(t("webui_remove", "Remove"))}</button></div></td>`
                         : ""
                     }
                   </tr>
-                `;
+                ${state.expandedMeterFields.has(id) ? meterFieldsRow(row, withActions ? 8 : 7) : ""}`;
               })
               .join("")}
           </tbody>
@@ -1818,6 +1886,7 @@
                         ? `<td><div class="actions">
                             <button class="btn primary" data-action="open-add" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(driver)}">${escapeHtml(t("webui_add", "Add"))}</button>
                             <button class="btn" data-action="ignore" data-id="${escapeHtml(id)}">${escapeHtml(t("ignore", "Ignore"))}</button>
+                            <button class="btn" data-action="export-report" data-id="${escapeHtml(id)}" title="${escapeHtml(t("export_report_title", "wmbusmeters issue report"))}">${escapeHtml(t("export_report_btn", "Report…"))}</button>
                             ${row.preview_active === "true" ? `<button class="btn" data-action="cancel-preview" data-id="${escapeHtml(id)}">${escapeHtml(t("cancel_preview", "Cancel preview"))}</button>` : ""}
                           </div></td>`
                         : ""
@@ -1988,6 +2057,7 @@
                     <td style="color:#607a88;font-size:12px;">${escapeHtml(fmtInterval(row.avg_interval_s))}${espReceptionBadges(row)}</td>
                     <td><div class="actions">
                       ${row.preview_active === "true" ? `<button class="btn" data-action="cancel-preview" data-id="${escapeHtml(id)}">${escapeHtml(t("cancel_preview", "Cancel preview"))}</button>` : ""}
+                      <button class="btn" data-action="open-edit-driver" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(row.driver || "auto")}">${escapeHtml(t("change_driver_btn", "Driver…"))}</button>
                     </div></td>
                   </tr>`;
               }).join("")}
@@ -2465,6 +2535,124 @@
     `;
   }
 
+  // Driver picker shared by the add-meter and change-driver modals.
+  // A real <select> (mouse-browsable, grouped by meter type, built from
+  // assets/drivers.json = the wmbusmeters copy shipped in THIS image) plus a
+  // "custom" option revealing a text input restricted to [A-Za-z0-9_]. The
+  // final value always lands in a hidden input (name/id = hiddenId) so form
+  // submission and save handlers read one place. A prefill of "unknown"
+  // maps to "auto" — an undetected candidate must not block manual choice.
+  //
+  // Every change is ALSO written into state (state.modal.driver /
+  // state.editModal.driver) via window.__driverPickerSet: live SSE renders
+  // rebuild the modal and morphdom preserves only the FOCUSED form control,
+  // so an unfocused select/hidden input silently reset to the prefill and
+  // the save then persisted "auto" instead of the user's pick (confirmed in
+  // the wild: options.json kept type=auto after choosing istawater). With
+  // the choice in state, every rebuild renders the user's current pick.
+  function driverPickerHtml(prefill, hiddenId, hiddenName) {
+    const drivers = state.drivers || [];
+    const known = new Set(drivers.map(d => d.driver));
+    // prefill === "" means "custom mode, empty text" (mid-typing across a
+    // re-render); other empty-ish/unknown prefills fall back to "auto".
+    const customEmpty = prefill === "";
+    let pre = String(prefill || "auto").trim();
+    if (pre === "unknown") pre = "auto";
+    const isCustom = customEmpty || (pre !== "auto" && !known.has(pre));
+    const customVal = customEmpty ? "" : (isCustom ? pre : "");
+    const hiddenVal = isCustom ? customVal : pre;
+    const groups = {};
+    drivers.forEach(d => {
+      const n = d.driver || "";
+      if (!n || n === "auto" || n === "unknown") return;
+      const g = d.type || "Other";
+      (groups[g] = groups[g] || []).push(n);
+    });
+    const optgroups = Object.keys(groups).sort().map(g =>
+      `<optgroup label="${escapeHtml(g)}">${groups[g].sort().map(n =>
+        `<option value="${escapeHtml(n)}"${(!isCustom && n === pre) ? " selected" : ""}>${escapeHtml(n)}</option>`).join("")}</optgroup>`).join("");
+    const selId = `${hiddenId}-select`;
+    const customId = `${hiddenId}-custom`;
+    const wrapId = `${hiddenId}-custom-wrap`;
+    const selectJs = `(function(s){var w=document.getElementById('${wrapId}');var c=document.getElementById('${customId}');if(s.value==='__custom__'){w.style.display='';window.__driverPickerSet('${hiddenId}',((c&&c.value)||'').trim());if(c)c.focus();}else{w.style.display='none';window.__driverPickerSet('${hiddenId}',s.value);}})(this)`;
+    const customJs = `(function(i){var v=i.value.replace(/[^A-Za-z0-9_]/g,'');i.value=v;window.__driverPickerSet('${hiddenId}',v);})(this)`;
+    return `
+      <select id="${selId}" onchange="${selectJs}">
+        <option value="auto"${(!isCustom && pre === "auto") ? " selected" : ""}>auto</option>
+        ${optgroups}
+        <option value="__custom__"${isCustom ? " selected" : ""}>${escapeHtml(t("driver_custom_option", "Other (type manually)…"))}</option>
+      </select>
+      <div id="${wrapId}" style="${isCustom ? "" : "display:none;"}margin-top:6px;">
+        <input id="${customId}" value="${escapeHtml(customVal)}" oninput="${customJs}" placeholder="${escapeHtml(t("driver_custom_placeholder", "driver name (letters, digits, _)"))}">
+      </div>
+      <input type="hidden" id="${hiddenId}"${hiddenName ? ` name="${hiddenName}"` : ""} value="${escapeHtml(hiddenVal)}">
+      ${state.drivers === null ? `<div style="font-size:10px;color:#607a88;margin-top:4px;">${escapeHtml(t("webui_loading", "Loading…"))}</div>` : ""}`;
+  }
+
+  // State-side sink for driverPickerHtml (see comment there) and the
+  // change-driver modal's key field. Updates state WITHOUT re-rendering, so
+  // typing keeps focus; the next live render rebuilds from the stored value.
+  window.__driverPickerSet = function (hiddenId, value) {
+    const v = String(value == null ? "" : value);
+    if (hiddenId === "meter-driver" && state.modal) state.modal.driver = v;
+    if (hiddenId === "edit-meter-driver" && state.editModal) state.editModal.driver = v;
+    const h = document.getElementById(hiddenId);
+    if (h) h.value = v;
+  };
+  window.__editModalKeySet = function (value) {
+    if (state.editModal) state.editModal.key = String(value == null ? "" : value);
+  };
+
+  function renderEditDriverModal() {
+    const em = state.editModal || {};
+    return `
+      <div class="modal-backdrop">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="edit-driver-title">
+          <div class="modal-head">
+            <h2 id="edit-driver-title">${escapeHtml(t("change_driver_title", "Change driver"))} — ${escapeHtml(em.id || "")}</h2>
+          </div>
+          <div class="modal-body">
+            <label for="edit-meter-driver-select">${escapeHtml(t("driver", "Driver"))}</label>
+            ${driverPickerHtml(em.driver, "edit-meter-driver", "")}
+            <label for="edit-meter-key" style="margin-top:8px;">${escapeHtml(t("aes_key_label", "AES key"))}</label>
+            <input id="edit-meter-key" value="${escapeHtml(em.key || "")}" oninput="window.__editModalKeySet(this.value)" placeholder="${escapeHtml(t("change_driver_keep_key", "Leave empty to keep the current key."))}">
+          </div>
+          <div class="modal-actions">
+            <button class="btn" type="button" data-action="close-edit-modal">${escapeHtml(t("webui_cancel", "Cancel"))}</button>
+            <button class="btn primary" type="button" data-action="save-edit-driver" data-id="${escapeHtml(em.id || "")}">${escapeHtml(t("save_btn", "Save"))}</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function renderReportModal() {
+    const rm = state.reportModal || {};
+    const body = rm.loading
+      ? `<p style="color:#9eafba;">${escapeHtml(t("export_report_loading", "Analyzing telegram…"))}</p>`
+      : rm.error
+        ? `<p style="color:#f3c84b;">${escapeHtml(rm.error)}</p>`
+        : `<pre class="mono" style="max-height:50vh;overflow:auto;white-space:pre-wrap;word-break:break-all;background:#0b141b;border:1px solid #1d2f3c;border-radius:6px;padding:10px;font-size:11px;">${escapeHtml(rm.report || "")}</pre>`;
+    return `
+      <div class="modal-backdrop">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="export-report-title">
+          <div class="modal-head">
+            <h2 id="export-report-title">${escapeHtml(t("export_report_title", "wmbusmeters issue report"))} — ${escapeHtml(rm.id || "")}</h2>
+          </div>
+          <div class="modal-body">
+            <p style="font-size:11px;color:#f3c84b;margin:0 0 8px;">⚠️ ${escapeHtml(t("export_report_privacy", "The telegram contains your meter's serial number. The AES key is never included."))}</p>
+            ${rm.keyUsed ? `<p style="font-size:11px;color:#f3c84b;margin:0 0 8px;">🔓 ${escapeHtml(t("export_report_key_used", "The analysis was decrypted with your configured AES key — the report reveals meter readings, but never the key itself."))}</p>` : ""}
+            ${body}
+          </div>
+          <div class="modal-actions">
+            <button class="btn" type="button" data-action="close-report-modal">${escapeHtml(t("webui_cancel", "Cancel"))}</button>
+            ${rm.report ? `
+              <a class="btn" href="https://github.com/wmbusmeters/wmbusmeters/issues/new" target="_blank" rel="noopener noreferrer">${escapeHtml(t("export_report_open_issue", "Open a new wmbusmeters issue"))}</a>
+              <button class="btn primary" type="button" data-action="copy-report">${escapeHtml(t("copy", "Copy"))}</button>` : ""}
+          </div>
+        </div>
+      </div>`;
+  }
+
   function renderModal() {
     const modal = state.modal || {};
     // Inline AES key validation script — runs in the same window context.
@@ -2509,8 +2697,8 @@
                   <input id="meter-name" name="meter_name" value="${escapeHtml(modal.name || "")}">
                 </div>
                 <div class="field">
-                  <label for="meter-driver">${escapeHtml(t("driver", "Driver"))}</label>
-                  <input id="meter-driver" name="driver" value="${escapeHtml(modal.driver || "auto")}">
+                  <label for="meter-driver-select">${escapeHtml(t("driver", "Driver"))}</label>
+                  ${driverPickerHtml(modal.driver, "meter-driver", "driver")}
                 </div>
                 <div class="field">
                   <label for="meter-key">
@@ -2635,6 +2823,17 @@
         heat:        `Heat_${last4}`,
       }[mc] || (driver && driver !== "auto" ? `${driver}_${last4}` : `meter_${id}`);
       state.modal = {id, driver, name: suggestedName};
+      // Lazy-load the driver catalog the first time the modal opens; the
+      // <datalist> re-renders once the list arrives. Free text stays valid.
+      if (state.drivers === null) {
+        fetch("assets/drivers.json", {cache: "no-store"})
+          .then(r => (r.ok ? r.json() : []))
+          .then(list => {
+            state.drivers = Array.isArray(list) ? list : [];
+            if (state.modal) render();
+          })
+          .catch(() => { state.drivers = []; });
+      }
       render();
       return;
     }
@@ -2643,6 +2842,110 @@
       if (event.target.classList.contains("modal-backdrop") || target.dataset.action === "close-modal") {
         state.modal = null;
         render();
+      }
+      return;
+    }
+
+    if (action === "toggle-meter-fields") {
+      const id = target.dataset.id || "";
+      if (!id) return;
+      if (state.expandedMeterFields.has(id)) state.expandedMeterFields.delete(id);
+      else state.expandedMeterFields.add(id);
+      render();
+      return;
+    }
+
+    if (action === "open-edit-driver") {
+      const id = target.dataset.id || "";
+      if (!id) return;
+      state.editModal = {id, driver: target.dataset.driver || "auto"};
+      if (state.drivers === null) {
+        fetch("assets/drivers.json", {cache: "no-store"})
+          .then(r => (r.ok ? r.json() : []))
+          .then(list => {
+            state.drivers = Array.isArray(list) ? list : [];
+            if (state.editModal) render();
+          })
+          .catch(() => { state.drivers = []; });
+      }
+      render();
+      return;
+    }
+
+    if (action === "close-edit-modal") {
+      state.editModal = null;
+      render();
+      return;
+    }
+
+    if (action === "save-edit-driver") {
+      const id = target.dataset.id || "";
+      // State is the source of truth — the DOM inputs get rebuilt (and would
+      // reset) on every live render while the modal is open.
+      const em = state.editModal || {};
+      const driver = String(em.driver || "").trim();
+      const key = String(em.key || "").trim();
+      if (!id || !driver) return;
+      try {
+        await postApi("update-meter", key ? {meter_id: id, driver, key} : {meter_id: id, driver});
+        state.editModal = null;
+        triggerSoftReload(`${t("driver_changed_msg", "Driver changed.")} ${t("reloading_pipeline", "Applying meter changes…")}`);
+      } catch (error) {
+        toast(error.message, true);
+      }
+      return;
+    }
+
+    if (action === "export-report") {
+      const id = target.dataset.id || "";
+      if (!id) return;
+      state.reportModal = {id, loading: true};
+      render();
+      try {
+        const resp = await fetch(`api/candidate-report?meter_id=${encodeURIComponent(id)}`, {cache: "no-store"});
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.ok) {
+          state.reportModal = {id, report: data.report || "", keyUsed: !!data.key_used};
+        } else {
+          const msg = data.error === "no_raw_telegram"
+            ? t("export_report_no_raw", "No raw telegram stored for this candidate yet.")
+            : (data.error || `HTTP ${resp.status}`);
+          state.reportModal = {id, error: msg};
+        }
+      } catch (error) {
+        state.reportModal = {id, error: error.message};
+      }
+      render();
+      return;
+    }
+
+    if (action === "close-report-modal") {
+      state.reportModal = null;
+      render();
+      return;
+    }
+
+    if (action === "copy-report") {
+      const text = (state.reportModal || {}).report || "";
+      if (!text) return;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          // Clipboard API needs a secure context — HA ingress over plain HTTP
+          // falls back to the legacy textarea + execCommand path.
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          ta.remove();
+        }
+        toast(t("export_report_copied", "Copied to clipboard."));
+      } catch (error) {
+        toast(error.message, true);
       }
       return;
     }

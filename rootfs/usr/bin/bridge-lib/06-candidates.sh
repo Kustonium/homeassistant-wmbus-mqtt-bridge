@@ -261,11 +261,14 @@ prune_stale_candidates() {
   [[ "${max_age}" =~ ^[0-9]+$ ]] || max_age=86400
   command -v python3 >/dev/null 2>&1 || return 0
 
-  local _dropped
-  _dropped="$( (
-    flock -x 9
-    _tmp="$(mktemp "${file}.tmp.XXXXXX")" || exit 1
-    if ! python3 - "${file}" "${_tmp}" "${max_age}" <<'PYEOF'
+  # NB: the python program is passed via -c, NOT via a stdin heredoc. The
+  # heredoc variant broke in the production container: python received the
+  # shell text following the PYEOF terminator on stdin and died with
+  # "IndentationError: unexpected indent" on every prune tick, so stale
+  # candidates were never pruned (confirmed in the addon log). -c does not
+  # involve stdin at all, so it is immune to whatever mangles stdin in this
+  # nested command-substitution + flock-subshell + background-ticker context.
+  local _py='
 import sys, datetime
 src, dst, max_age = sys.argv[1], sys.argv[2], int(sys.argv[3])
 now = datetime.datetime.now(datetime.timezone.utc)
@@ -296,8 +299,13 @@ with open(src, "r", encoding="utf-8", errors="replace") as f, \
         else:
             out.write(row + "\n")
 sys.stdout.write("\n".join(dropped))
-PYEOF
-    then
+'
+
+  local _dropped
+  _dropped="$( (
+    flock -x 9
+    _tmp="$(mktemp "${file}.tmp.XXXXXX")" || exit 1
+    if ! python3 -c "${_py}" "${file}" "${_tmp}" "${max_age}"; then
       rm -f "${_tmp}"
       exit 1
     fi

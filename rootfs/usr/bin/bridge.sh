@@ -73,6 +73,10 @@ STATUS_LAST_RAW_FILE="${BASE}/status_last_raw_seen.txt"
 STATUS_RECENT_RAW_FILE="${BASE}/status_recent_raw.tsv"
 STATUS_CANDIDATE_ANALYSIS_FILE="${BASE}/status_candidate_analysis.tsv"
 STATUS_CANDIDATE_RAW_FILE="${BASE}/status_candidate_raw.tsv"
+# Last full decoded JSON per configured meter — written by status_meter_seen,
+# read by webui.py to show the "published fields" expander on the meters view.
+# Format: id<TAB>iso_timestamp<TAB>json_line
+STATUS_METER_LAST_JSON_FILE="${BASE}/status_meter_last_json.tsv"
 # Per-candidate decoded value preview — written by parse_listen_candidates when
 # the parallel LISTEN instance has a meter-preview-<id> file in its config dir.
 # Format: id<TAB>value<TAB>value_key<TAB>iso_timestamp
@@ -166,7 +170,7 @@ RAW_RATE_CUR_MIN_COUNT=0
 # shellcheck disable=SC2034
 RAW_RATE_PREV_MIN_COUNT=0
 
-touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}"
+touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}"
 printf '0\n' > "${STATUS_OFFICIAL_METERS_COUNT_FILE}" 2>/dev/null || true
 # Remove any orphaned pending-reload marker left by a hard stop during deferred sleep.
 rm -rf "${BASE}/.reload_listen_pending" 2>/dev/null || true

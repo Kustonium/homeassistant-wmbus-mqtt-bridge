@@ -119,6 +119,11 @@ status_meter_seen() {
   IFS=$'\t' read -r seen_count avg_interval_s seen_15m seen_60m < <(status_seen_stats "${id}" "meter")
   _tsv_upsert "${STATUS_METERS_FILE}" "${id}" \
     "$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "${id}" "${name}" "${meter}" "${media}" "${value_key}" "${value}" "${last_seen}" "published" "${seen_count}" "${avg_interval_s}" "${seen_15m}" "${seen_60m}" "${value_parts}")"
+  # Keep the last full decoded JSON for the WebUI "published fields"
+  # expander. jq -c output is a single line without raw tab characters,
+  # so it is TSV-safe as the final column.
+  _tsv_upsert "${STATUS_METER_LAST_JSON_FILE}" "${id}" \
+    "$(printf '%s\t%s\t%s' "${id}" "${last_seen}" "${json_line}")"
 }
 
 # shellcheck disable=SC2034

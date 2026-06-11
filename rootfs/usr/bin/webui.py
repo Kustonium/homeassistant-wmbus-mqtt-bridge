@@ -16,6 +16,7 @@ import json
 import mimetypes
 import os
 import re
+import subprocess
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +35,13 @@ SEARCH_CANDIDATES_TSV = BASE / "search_candidates.tsv"
 SEARCH_MATCHES_TSV = BASE / "search_matches.tsv"
 SEARCH_STATUS_JSON = BASE / "search_status.json"
 CANDIDATE_ANALYSIS_TSV = BASE / "status_candidate_analysis.tsv"
+# Last raw telegram per candidate, written by status_record_candidate_raw
+# (bridge-lib/06-candidates.sh). Feeds the "export for issue report" action.
+CANDIDATE_RAW_TSV = BASE / "status_candidate_raw.tsv"
+# Last full decoded JSON per configured meter (status_meter_seen in
+# bridge-lib/07-meters.sh). Feeds the "published fields" expander.
+METER_LAST_JSON_TSV = BASE / "status_meter_last_json.tsv"
+WMBUSMETERS_BIN = "/usr/bin/wmbusmeters"
 OPTIONS_JSON = BASE / "options.json"
 # Per-minute rate dashboard files written by bridge.sh
 STATUS_RATE_1M_JSON = BASE / "status_rate_1m.json"
@@ -268,6 +276,87 @@ def read_candidate_analysis() -> dict[str, dict]:
     return result
 
 
+def candidate_issue_report(meter_id: str) -> tuple[bool, dict]:
+    """Build a ready-to-paste upstream issue block for an undecoded candidate.
+
+    Uses the candidate's last raw telegram (status_candidate_raw.tsv, written
+    by status_record_candidate_raw in bridge-lib/06-candidates.sh) and an
+    on-demand `wmbusmeters --analyze` run. The AES key is NEVER included:
+    the report must stay safe to paste into a public wmbusmeters issue.
+    """
+    mid = normalize_meter_id(meter_id)
+    if not mid or not VALID_ID_RE.match(mid):
+        return False, {"ok": False, "error": "invalid_meter_id"}
+
+    raw_rows = read_tsv(CANDIDATE_RAW_TSV, ["id", "ts", "raw_len", "raw"])
+    raw_row = next((r for r in raw_rows if normalize_meter_id(r.get("id")) == mid), None)
+    raw = str((raw_row or {}).get("raw") or "").strip()
+    if not raw:
+        return False, {"ok": False, "error": "no_raw_telegram"}
+
+    candidates = read_tsv(
+        CANDIDATES_TSV,
+        ["id", "driver", "type", "last_seen", "seen_count", "avg_interval_s", "seen_15m", "seen_60m", "manufacturer"],
+    )
+    cand = next((c for c in candidates if normalize_meter_id(c.get("id")) == mid), {})
+    driver = str(cand.get("driver") or "").strip() or "unknown"
+    mtype = str(cand.get("type") or "").strip() or "unknown"
+    manufacturer = str(cand.get("manufacturer") or "").strip() or "unknown"
+
+    # When a 32-hex AES key is configured for this id in options.json, run
+    # the analysis decrypted (--analyze=<key>). The analyze output then shows
+    # the decoded DV entries — far more useful for an upstream driver author —
+    # while the key itself is never part of the output or the report. The
+    # report does reveal meter readings in that case (flagged to the UI).
+    key = ""
+    options = read_json(OPTIONS_JSON)
+    if isinstance(options, dict):
+        for m in options.get("meters", []) or []:
+            if isinstance(m, dict) and normalize_meter_id(m.get("meter_id")) == mid:
+                cand_key = str(m.get("key") or "").strip()
+                if re.match(r"^[0-9A-Fa-f]{32}$", cand_key):
+                    key = cand_key
+                break
+
+    analyze_arg = f"--analyze={key}" if key else "--analyze"
+    analyze_output = ""
+    try:
+        proc = subprocess.run(
+            [WMBUSMETERS_BIN, analyze_arg, raw],
+            capture_output=True, text=True, timeout=20,
+        )
+        analyze_output = (proc.stdout or "") + (proc.stderr or "")
+    except FileNotFoundError:
+        analyze_output = "(wmbusmeters binary not available)"
+    except subprocess.TimeoutExpired:
+        analyze_output = "(wmbusmeters --analyze timed out)"
+    analyze_output = analyze_output.strip()
+
+    analyze_note = (
+        "--- wmbusmeters --analyze output (decrypted with the configured AES key; key not included) ---"
+        if key
+        else "--- wmbusmeters --analyze output ---"
+    )
+    report = "\n".join([
+        f"telegram=|{raw}|",
+        f"manufacturer: {manufacturer}",
+        f"type/medium: {mtype}",
+        f"suggested driver: {driver}",
+        "",
+        analyze_note,
+        "```",
+        analyze_output or "(no output)",
+        "```",
+    ])
+    return True, {
+        "ok": True,
+        "meter_id": mid,
+        "report": report,
+        "raw_ts": str((raw_row or {}).get("ts") or ""),
+        "key_used": bool(key),
+    }
+
+
 def read_tsv(path: Path, fields: list[str], limit: int | None = None, reverse: bool = False) -> list[dict]:
     rows: list[dict] = []
     try:
@@ -489,6 +578,10 @@ def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str =
     if key and not re.match(r"^[0-9A-Fa-f]{32}$", key):
         return False, f"Invalid AES key — must be exactly 32 HEX chars, got {len(key)}."
 
+    driver = (driver or "").strip()
+    if driver and not re.match(r"^[A-Za-z0-9_]+$", driver):
+        return False, f"Invalid driver: {driver}"
+
     # Read current state from options.json (Supervisor-written, most recent values)
     options = read_json(OPTIONS_JSON)
     if not isinstance(options, dict):
@@ -697,6 +790,83 @@ def remove_meter_from_options(meter_id: str) -> tuple[bool, str]:
     return True, msg
 
 
+def update_meter_in_options(meter_id: str, driver: str, key: str | None = None) -> tuple[bool, str]:
+    """Change the driver (and optionally the AES key) of an existing meter.
+
+    Same Supervisor-first persistence as add/remove_meter_from_options. The
+    driver is a free string — wmbusmeters validates it at decode time — so a
+    wrong first guess (e.g. istawater vs evo868) can be corrected without
+    removing and re-adding the meter.
+    """
+    import urllib.request
+
+    meter_id = normalize_meter_id(meter_id)
+    if not VALID_ID_RE.match(meter_id):
+        return False, f"Invalid meter_id: {meter_id}"
+
+    driver = (driver or "").strip()
+    if not driver:
+        return False, "Driver must not be empty."
+    if not re.match(r"^[A-Za-z0-9_]+$", driver):
+        return False, f"Invalid driver: {driver}"
+
+    if key:
+        key = key.strip()
+        if key and not re.match(r"^[0-9A-Fa-f]{32}$", key):
+            return False, f"Invalid AES key — must be exactly 32 HEX chars, got {len(key)}."
+
+    options = read_json(OPTIONS_JSON)
+    if not isinstance(options, dict):
+        return False, "Cannot read options.json."
+    meters = options.get("meters", [])
+    if not isinstance(meters, list):
+        return False, "No meters list in options."
+
+    entry = next(
+        (m for m in meters if isinstance(m, dict) and normalize_meter_id(m.get("meter_id")) == meter_id),
+        None,
+    )
+    if entry is None:
+        return False, f"Meter {meter_id} not found in options."
+
+    entry["type"] = driver
+    entry["type_other"] = ""
+    if key:
+        entry["key"] = key
+    options["meters"] = meters
+
+    token = os.environ.get("SUPERVISOR_TOKEN", "")
+    if token:
+        try:
+            payload = json.dumps({"options": options}, ensure_ascii=False).encode("utf-8")
+            req = urllib.request.Request(
+                "http://supervisor/addons/self/options",
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status in (200, 201):
+                    write_json_atomic(OPTIONS_JSON, options)
+                    msg = f"Meter {meter_id} driver changed to {driver}. Reloading pipeline to apply."
+                    webui_add_event("ok", msg)
+                    return True, msg
+                body = resp.read().decode("utf-8", errors="replace")
+                return False, f"Supervisor API HTTP {resp.status}: {body[:200]}"
+        except Exception as exc:
+            webui_add_event("error", f"Supervisor API update failed: {exc}")
+            return False, f"Supervisor API failed: {exc}"
+
+    # Fallback: file-only write (plain Docker / no SUPERVISOR_TOKEN).
+    write_json_atomic(OPTIONS_JSON, options)
+    msg = f"Meter {meter_id} driver changed to {driver} (file only — no SUPERVISOR_TOKEN). Reloading pipeline to apply."
+    webui_add_event("warn", msg)
+    return True, msg
+
+
 def restart_addon_via_supervisor() -> tuple[bool, str]:
     """Restart the whole addon via HA Supervisor API.
 
@@ -768,6 +938,19 @@ def state(include_ignored: bool = False) -> dict:
         METERS_TSV,
         ["id", "name", "driver", "media", "value_key", "value", "last_seen", "discovery", "seen_count", "avg_interval_s", "seen_15m", "seen_60m", "value_parts"],
     )
+    # Attach the last full decoded JSON (string, parsed client-side) so the
+    # meters view can expand a row into the list of published fields.
+    last_json_rows = read_tsv(METER_LAST_JSON_TSV, ["id", "ts", "json"])
+    last_json_by_id = {
+        normalize_meter_id(r.get("id")): r
+        for r in last_json_rows
+        if normalize_meter_id(r.get("id"))
+    }
+    for m in meters:
+        lj = last_json_by_id.get(normalize_meter_id(m.get("id")))
+        if lj:
+            m["last_json"] = lj.get("json", "")
+            m["last_json_ts"] = lj.get("ts", "")
     candidates = read_tsv(
         CANDIDATES_TSV,
         ["id", "driver", "type", "last_seen", "seen_count", "avg_interval_s", "seen_15m", "seen_60m", "manufacturer"],
@@ -1849,6 +2032,14 @@ class Handler(BaseHTTPRequestHandler):
             ok, msg = remove_meter_from_options(meter_id)
             self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
             return
+        if path.endswith('/api/update-meter'):
+            meter_id = (params.get('meter_id') or [''])[0].strip()
+            driver = (params.get('driver') or [''])[0].strip()
+            # Empty/absent key keeps the currently configured key.
+            key = (params.get('key') or [''])[0].strip()
+            ok, msg = update_meter_in_options(meter_id, driver, key or None)
+            self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
+            return
         if path.endswith('/api/add-meter'):
             meter_id = (params.get('meter_id') or [''])[0].strip()
             driver = (params.get('driver') or ['auto'])[0].strip()
@@ -1979,6 +2170,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.endswith('/api/status'):
             self._send(200, json.dumps(state(), ensure_ascii=False, indent=2).encode('utf-8'), 'application/json; charset=utf-8')
+            return
+        if path.endswith('/api/candidate-report'):
+            meter_id = (params.get('meter_id') or [''])[0].strip()
+            ok, payload = candidate_issue_report(meter_id)
+            self._send_json(200 if ok else 404, payload)
             return
         if path.endswith('/healthz'):
             self._send(200, b'ok\n', 'text/plain; charset=utf-8')
