@@ -261,4 +261,64 @@ publish_canary_entity() {
 }
 
 # ------------------------------------------------------------
+# Discovery Doctor — on-demand broker probe behind the WebUI checklist.
+# webui.py touches DISCOVERY_DOCTOR_REQUEST_FILE; the heartbeat ticker in
+# bridge.sh calls discovery_doctor_probe, which subscribes (with the same
+# credentials the bridge publishes with) to:
+#   - <DISCOVERY_PREFIX>/status            — HA's retained birth message; a
+#     retained "online" here proves the HA MQTT integration listens on THIS
+#     prefix on THIS broker,
+#   - <DISCOVERY_PREFIX>/sensor/wmbus_<id>/+/config per configured meter —
+#     retained config messages are delivered immediately on subscribe, so a
+#     short bounded wait (-W) is enough to count them and capture one sample
+#     payload for the WebUI preview.
+# Results land atomically in STATUS_DISCOVERY_DOCTOR_FILE (JSON).
+discovery_doctor_probe() {
+  local out="${STATUS_DISCOVERY_DOCTOR_FILE}"
+  local tmp id line count payload ha_status meters_json ids
+  tmp="$(mktemp "${out}.tmp.XXXXXX")" || return 0
+
+  ha_status="$(timeout 5 /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -C 1 -W 3 \
+      -t "${DISCOVERY_PREFIX}/status" 2>/dev/null | head -n 1 || true)"
+
+  meters_json="[]"
+  ids="$(jq -r '.meters[]?.meter_id // empty' "${OPTIONS_JSON}" 2>/dev/null | head -n 50 || true)"
+  while IFS= read -r id; do
+    [[ -n "${id}" ]] || continue
+    id="$(normalize_meter_id "${id}")"
+    [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || continue
+    count=0
+    payload=""
+    while IFS= read -r line; do
+      [[ -n "${line}" ]] || continue
+      count=$((count + 1))
+      [[ -n "${payload}" ]] || payload="${line}"
+    done < <(timeout 5 /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -W 2 -v \
+        -t "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/+/config" 2>/dev/null || true)
+    meters_json="$(jq -c \
+      --arg id "${id}" \
+      --argjson n "${count}" \
+      --arg sample "${payload:0:2000}" \
+      '. + [{id: $id, retained_configs: $n, sample: $sample}]' \
+      <<<"${meters_json}" 2>/dev/null || printf '%s' "${meters_json}")"
+  done <<< "${ids}"
+
+  if jq -n -c \
+      --arg ts "$(iso_now)" \
+      --arg prefix "${DISCOVERY_PREFIX}" \
+      --arg ha_status "${ha_status}" \
+      --arg enabled "${DISCOVERY_ENABLED}" \
+      --arg retain "${DISCOVERY_RETAIN}" \
+      --argjson meters "${meters_json}" \
+      '{ts: $ts, discovery_prefix: $prefix, ha_status_topic: $ha_status,
+        discovery_enabled: ($enabled == "true"),
+        discovery_retain: ($retain == "true"), meters: $meters}' \
+      > "${tmp}" 2>/dev/null; then
+    mv "${tmp}" "${out}" 2>/dev/null || rm -f "${tmp}"
+  else
+    rm -f "${tmp}"
+  fi
+}
+
+# ------------------------------------------------------------
 
