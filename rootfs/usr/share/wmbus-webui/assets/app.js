@@ -78,6 +78,8 @@
     drivers: null,
     // "Change driver" modal for an already-configured meter: {id, driver}.
     editModal: null,
+    // Discovery Doctor modal: {loading} | {error} | {data}.
+    doctorModal: null,
     toast: null,
     liveConnected: false,
     mediaFilter: "all",
@@ -333,6 +335,31 @@
     `;
   }
 
+  // Small AES lock badge under the meter id: green = key configured and no
+  // detected problem (decryption works), red = key configured but the bridge
+  // detected a key problem. No badge for unencrypted meters (no key).
+  function aesLockBadge(row) {
+    const hasKey = row.has_key === true || String(row.has_key || "") === "true";
+    if (!hasKey) return "";
+    const bad = !!String(row.key_problem || "");
+    const color = bad ? "#e0596a" : "#4df08d";
+    const title = bad
+      ? t("key_problem_hint", "Fix the AES key via the Driver… button; the pipeline reloads and decoding resumes with the next telegram.")
+      : t("aes_lock_ok", "Encrypted meter — AES key configured and working.");
+    return `<div style="margin-top:2px;"><span style="font-size:10px;font-weight:700;color:${color};" title="${escapeHtml(title)}">🔒 AES</span></div>`;
+  }
+
+  // Red key-problem pill — wmbusmeters detected a wrong/missing AES key and
+  // permanently ignores the meter until the next pipeline reload; without
+  // this the user only sees a silent "no data" (upstream pattern #1859).
+  function keyProblemPill(kp) {
+    if (!kp) return "";
+    const label = kp === "key_missing"
+      ? t("key_problem_missing", "encrypted — AES key missing")
+      : t("key_problem_invalid", "AES key invalid");
+    return `<div style="margin-top:2px;"><span class="pill bad" title="${escapeHtml(t("key_problem_hint", "Fix the AES key via the Driver… button; the pipeline reloads and decoding resumes with the next telegram."))}">🔑 ${escapeHtml(label)}</span></div>`;
+  }
+
   function meterValueCell(row) {
     const unit = unitFromKey(row.value_key || "");
     const hasValue = !!(row.value && row.value !== "-");
@@ -342,6 +369,7 @@
       <span style="font-weight:700;color:${valueColor};">${escapeHtml(valueStr)}</span>${unit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(unit)}</span>` : ""}
       ${tariffFlowHtml(row)}
       ${row.value_key ? `<div class="mono" style="font-size:10px;color:#4a6070;">${escapeHtml(row.value_key)}</div>` : ""}
+      ${keyProblemPill(String(row.key_problem || ""))}
     `;
   }
 
@@ -462,7 +490,10 @@
                   : unknown ? t("enc_unknown", "Not yet analyzed")
                   :            t("enc_no_aes", "no AES");
     const cls     = bad ? "bad" : unknown ? "muted" : "ok";
-    const title = note ? ` title="${escapeHtml(note)}"` : "";
+    // Encrypted candidates default to an educational tooltip: without the
+    // AES key decoding is impossible (not a bug) and where to obtain it.
+    const effNote = note || (bad ? t("enc_where_key", "This meter encrypts its telegrams — without the 32-hex AES key it cannot be decoded (this is not a bug). Ask your building manager, the utility company or the meter installer for the key.") : "");
+    const title = effNote ? ` title="${escapeHtml(effNote)}"` : "";
     return `<span class="pill ${cls}"${title}>${escapeHtml(label)}</span>`;
   }
 
@@ -564,6 +595,7 @@
         <td>${hasKey
           ? `<span class="pill ok">${escapeHtml(t("aes_key_set", "AES key set"))}</span>`
           : `<span class="pill muted">${escapeHtml(t("no_key", "No key"))}</span>`}
+          ${keyProblemPill(String(row.key_problem || ""))}
         </td>
         <td><div class="actions">
           ${row.preview_active === "true" ? `<button class="btn" data-action="cancel-preview" data-id="${escapeHtml(mid)}">${escapeHtml(t("cancel_preview", "Cancel preview"))}</button>` : ""}
@@ -866,6 +898,7 @@
       ${state.modal ? renderModal() : ""}
       ${state.reportModal ? renderReportModal() : ""}
       ${state.editModal ? renderEditDriverModal() : ""}
+      ${state.doctorModal ? renderDoctorModal() : ""}
       ${state.softReloading ? `
         <div style="position:fixed;right:18px;bottom:18px;background:#1d2a18;color:#a3d870;border:1px solid #4a7332;padding:10px 16px;border-radius:8px;z-index:35;display:flex;align-items:center;gap:10px;font-size:13px;">
           <span style="font-size:18px;">⏳</span>
@@ -1743,7 +1776,7 @@
                   : `<span style="color:#4a6070;">—</span>`;
                 return `
                   <tr>
-                    <td><strong>${escapeHtml(id)}</strong></td>
+                    <td><strong>${escapeHtml(id)}</strong>${aesLockBadge(row)}</td>
                     <td><span style="margin-right:5px;font-size:15px;vertical-align:middle;">${mIcon}</span>${escapeHtml(row.name || row.id || "-")}</td>
                     <td>${escapeHtml(row.driver || "-")}</td>
                     <td>${mfrCell}</td>
@@ -1884,7 +1917,7 @@
                     ${
                       withActions
                         ? `<td><div class="actions">
-                            <button class="btn primary" data-action="open-add" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(driver)}">${escapeHtml(t("webui_add", "Add"))}</button>
+                            <button class="btn primary" data-action="open-add" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(driver)}" data-enc="${escapeHtml(effectiveEnc)}">${escapeHtml(t("webui_add", "Add"))}</button>
                             <button class="btn" data-action="ignore" data-id="${escapeHtml(id)}">${escapeHtml(t("ignore", "Ignore"))}</button>
                             <button class="btn" data-action="export-report" data-id="${escapeHtml(id)}" title="${escapeHtml(t("export_report_title", "wmbusmeters issue report"))}">${escapeHtml(t("export_report_btn", "Report…"))}</button>
                             ${row.preview_active === "true" ? `<button class="btn" data-action="cancel-preview" data-id="${escapeHtml(id)}">${escapeHtml(t("cancel_preview", "Cancel preview"))}</button>` : ""}
@@ -2043,7 +2076,7 @@
                 return `
                   <tr data-value="${escapeHtml(dataVal)}">
                     <td style="text-align:center;"><input type="checkbox" data-action="toggle-select-meter" data-id="${escapeHtml(id)}" ${state.selectedRemoval.has(id) ? "checked" : ""} style="cursor:pointer;"></td>
-                    <td><strong>${escapeHtml(id)}</strong></td>
+                    <td><strong>${escapeHtml(id)}</strong>${aesLockBadge(row)}</td>
                     <td><span style="margin-right:5px;font-size:15px;vertical-align:middle;">${mIcon}</span>${escapeHtml(row.name || id || "-")}</td>
                     <td>${escapeHtml(row.driver || "-")}</td>
                     <td>${mfrCell}</td>
@@ -2502,10 +2535,94 @@
         </div>
       </section>
       <section class="section">
+        <div class="section-head"><h2>🩺 ${escapeHtml(t("doctor_title", "Discovery Doctor"))}</h2></div>
+        <p style="font-size:12px;color:#9eafba;margin:0 0 10px;">${escapeHtml(t("doctor_intro", "Telegrams reach the broker but entities do not appear in Home Assistant? Run the checklist — it verifies the broker connection, the discovery prefix, and whether retained discovery configs actually exist on the broker."))}</p>
+        <button class="btn primary" data-action="run-discovery-doctor">${escapeHtml(t("doctor_run_btn", "Run checks"))}</button>
+      </section>
+      <section class="section">
         <div class="section-head"><h2>${escapeHtml(t("webui_options_snapshot", "Options snapshot"))}</h2></div>
         <div class="code">${escapeHtml(JSON.stringify(data.options || {}, null, 2))}</div>
       </section>
     `;
+  }
+
+  // Discovery Doctor modal — renders the checklist from state.doctorModal:
+  // {loading} | {error} | {data: <api response>}. Read-only (no inputs), so
+  // live re-renders cannot lose anything.
+  function renderDoctorModal() {
+    const dm = state.doctorModal || {};
+    const d = dm.data || {};
+    const probe = d.probe || null;
+    const row = (ok, label, hint, warn = false) => `
+      <div style="display:flex;gap:10px;align-items:flex-start;padding:7px 0;border-bottom:1px solid #15222c;">
+        <span style="font-size:15px;line-height:1;">${ok ? "✅" : (warn ? "⚠️" : "❌")}</span>
+        <div>
+          <div style="font-size:13px;">${escapeHtml(label)}</div>
+          ${!ok && hint ? `<div style="font-size:11px;color:#9eafba;margin-top:2px;">${escapeHtml(hint)}</div>` : ""}
+        </div>
+      </div>`;
+    let body;
+    if (dm.loading) {
+      body = `<p style="color:#9eafba;">${escapeHtml(t("doctor_running", "Probing the broker… (up to ~25 s — the bridge subscribes to the discovery topics)"))}</p>`;
+    } else if (dm.error) {
+      body = `<p style="color:#f3c84b;">${escapeHtml(dm.error)}</p>`;
+    } else {
+      const haBirth = String((probe || {}).ha_status_topic || "");
+      const meters = (probe || {}).meters || [];
+      const checks = [
+        row(!!d.mqtt_connected,
+          `${t("doctor_check_mqtt", "MQTT broker connection")} (${d.mqtt_host || "?"})`,
+          t("doctor_hint_mqtt", "The bridge is not connected — check the broker address and credentials in the add-on configuration.")),
+        row(!!d.discovery_enabled,
+          t("doctor_check_enabled", "MQTT Discovery enabled"),
+          t("doctor_hint_enabled", "discovery_enabled is off — Home Assistant will not create any entities.")),
+        row(!!d.discovery_retain,
+          t("doctor_check_retain", "Discovery configs published as retained"),
+          t("doctor_hint_retain", "Without discovery_retain Home Assistant loses the entities after every restart."),
+          true),
+        probe
+          // Three independent signals, strongest first: the opt-in canary
+          // verification ("verified" = HA Core API confirmed the entity
+          // exists), a retained birth captured by the probe, or a live birth
+          // seen by the bridge's continuous healthcheck subscriber. HA's
+          // birth is often NOT retained and is published only when the HA
+          // MQTT integration (re)starts — on a healthy system where the
+          // add-on restarted last, all MQTT-side signals can legitimately be
+          // absent, hence the actionable ⚠ wording instead of a false ❌.
+          ? row(d.ha_verification === "verified" || haBirth === "online" || d.ha_presence === "online",
+              `${t("doctor_check_prefix", "HA listens on this discovery prefix")} (${d.discovery_prefix})`,
+              (haBirth === "offline" || d.ha_presence === "offline" || d.ha_verification === "not_created")
+                ? t("doctor_hint_prefix_offline", "A retained HA birth message exists on this prefix, but reports offline — Home Assistant may be down or disconnected from this broker.")
+                : t("doctor_hint_prefix", "Cannot confirm from MQTT alone: HA's birth message is often not retained and is sent only when the HA MQTT integration starts. If your entities appear in HA, everything works. To get a definitive ✓: reload the MQTT integration in HA (publishes a fresh birth) and re-run, or enable verify_ha_entities."),
+              haBirth === "" && d.ha_presence !== "offline" && d.ha_verification !== "not_created")
+          : row(false,
+              t("doctor_check_probe", "Live broker probe"),
+              t("doctor_hint_probe", "The bridge did not answer in time — is the pipeline running?")),
+        ...(probe ? meters.map(m => row(Number(m.retained_configs) > 0,
+          `${t("doctor_check_meter", "Retained discovery configs for")} ${m.id} (${m.retained_configs})`,
+          t("doctor_hint_meter", "No retained config on the broker for this meter — it publishes after the first decoded telegram; use the re-discovery button below after checking the meter decodes."))) : []),
+      ].join("");
+      const samples = probe ? meters.filter(m => m.sample).map(m => `
+        <details style="margin-top:6px;">
+          <summary style="cursor:pointer;font-size:11px;color:#9eafba;">${escapeHtml(t("doctor_sample", "Discovery payload sample"))} — ${escapeHtml(m.id)}</summary>
+          <pre class="mono" style="max-height:30vh;overflow:auto;white-space:pre-wrap;word-break:break-all;background:#0b141b;border:1px solid #1d2f3c;border-radius:6px;padding:8px;font-size:10px;">${escapeHtml(m.sample)}</pre>
+        </details>`).join("") : "";
+      body = `${checks}${samples}
+        <p style="font-size:11px;color:#607a88;margin:10px 0 0;">${escapeHtml(t("doctor_rediscover_hint", "Force re-discovery clears the discovery cache (pipeline soft reload); configs republish as each meter's next telegram arrives."))}</p>`;
+    }
+    return `
+      <div class="modal-backdrop">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="doctor-title">
+          <div class="modal-head">
+            <h2 id="doctor-title">🩺 ${escapeHtml(t("doctor_title", "Discovery Doctor"))}</h2>
+          </div>
+          <div class="modal-body">${body}</div>
+          <div class="modal-actions">
+            <button class="btn" type="button" data-action="close-doctor-modal">${escapeHtml(t("webui_cancel", "Cancel"))}</button>
+            ${(!dm.loading && !dm.error) ? `<button class="btn primary" type="button" data-action="doctor-force-discovery">${escapeHtml(t("doctor_force_btn", "Force re-discovery"))}</button>` : ""}
+          </div>
+        </div>
+      </div>`;
   }
 
   function aboutPage() {
@@ -2615,11 +2732,30 @@
             <label for="edit-meter-driver-select">${escapeHtml(t("driver", "Driver"))}</label>
             ${driverPickerHtml(em.driver, "edit-meter-driver", "")}
             <label for="edit-meter-key" style="margin-top:8px;">${escapeHtml(t("aes_key_label", "AES key"))}</label>
-            <input id="edit-meter-key" value="${escapeHtml(em.key || "")}" oninput="window.__editModalKeySet(this.value)" placeholder="${escapeHtml(t("change_driver_keep_key", "Leave empty to keep the current key."))}">
+            ${(() => {
+              // Same key UX as the add-meter modal: live hex-strip, 32-char
+              // counter, border colour, Save disabled at 1–31 chars. The
+              // visual state is ALSO derived from state (em.key) at render
+              // time so live SSE rebuilds repaint it correctly mid-typing.
+              const k = String(em.key || "");
+              const partial = k.length > 0 && k.length !== 32;
+              const border = k.length === 32 ? "#1e6b3a" : (partial ? "#6b4a1e" : "");
+              const cnt = k.length === 32 ? "✓ 32" : (k.length > 0 ? `${k.length}/32` : "");
+              const cntColor = k.length === 32 ? "#4df08d" : "#f3c84b";
+              const keyJs = `(function(inp){var v=inp.value.replace(/[^0-9A-Fa-f]/g,'').slice(0,32);inp.value=v;window.__editModalKeySet(v);var cnt=document.getElementById('edit-aes-key-count');var btn=document.getElementById('edit-driver-save');if(v.length===0){inp.style.borderColor='';if(cnt)cnt.textContent='';if(btn)btn.disabled=false;}else if(v.length===32){inp.style.borderColor='#1e6b3a';if(cnt){cnt.textContent='✓ 32';cnt.style.color='#4df08d';}if(btn)btn.disabled=false;}else{inp.style.borderColor='#6b4a1e';if(cnt){cnt.textContent=v.length+'/32';cnt.style.color='#f3c84b';}if(btn)btn.disabled=true;}})(this)`;
+              return `
+            <div style="display:flex;gap:8px;align-items:center;">
+              <input id="edit-meter-key" autocomplete="off" maxlength="32" value="${escapeHtml(k)}"
+                style="font-family:monospace;flex:1;${border ? `border-color:${border};` : ""}"
+                placeholder="${escapeHtml(t("change_driver_keep_key", "Leave empty to keep the current key."))}"
+                oninput="${escapeHtml(keyJs)}">
+              <span id="edit-aes-key-count" style="font-size:11px;font-weight:700;min-width:40px;text-align:right;color:${cntColor};">${escapeHtml(cnt)}</span>
+            </div>`;
+            })()}
           </div>
           <div class="modal-actions">
             <button class="btn" type="button" data-action="close-edit-modal">${escapeHtml(t("webui_cancel", "Cancel"))}</button>
-            <button class="btn primary" type="button" data-action="save-edit-driver" data-id="${escapeHtml(em.id || "")}">${escapeHtml(t("save_btn", "Save"))}</button>
+            <button id="edit-driver-save" class="btn primary" type="button" data-action="save-edit-driver" data-id="${escapeHtml(em.id || "")}"${(String(em.key || "").length > 0 && String(em.key || "").length !== 32) ? " disabled" : ""}>${escapeHtml(t("save_btn", "Save"))}</button>
           </div>
         </div>
       </div>`;
@@ -2713,6 +2849,7 @@
                     <span id="aes-key-count" style="font-size:11px;font-weight:700;min-width:40px;text-align:right;"></span>
                   </div>
                   <div style="font-size:10px;color:#4a6070;margin-top:3px;">${escapeHtml(t("no_aes_key_note", 'key: "" = no key'))} · zero-key: <span class="mono">0000…0000</span></div>
+                  ${modal.aesRequired ? `<div style="font-size:11px;color:#f3c84b;margin-top:6px;">🔐 ${escapeHtml(t("add_aes_warning", "This candidate is encrypted — without the 32-hex AES key it will NOT decode (this is not a bug). You can add it now and enter the key later via the Driver… button. Ask your building manager, the utility company or the meter installer for the key."))}</div>` : ""}
                 </div>
               </div>
             </div>
@@ -2822,7 +2959,11 @@
         electricity: `Electricity_${last4}`,
         heat:        `Heat_${last4}`,
       }[mc] || (driver && driver !== "auto" ? `${driver}_${last4}` : `meter_${id}`);
-      state.modal = {id, driver, name: suggestedName};
+      const enc = (target.dataset.enc || "").toLowerCase();
+      state.modal = {
+        id, driver, name: suggestedName,
+        aesRequired: ["encrypted", "aes_required", "aes"].includes(enc),
+      };
       // Lazy-load the driver catalog the first time the modal opens; the
       // <datalist> re-renders once the list arrives. Free text stays valid.
       if (state.drivers === null) {
@@ -2852,6 +2993,31 @@
       if (state.expandedMeterFields.has(id)) state.expandedMeterFields.delete(id);
       else state.expandedMeterFields.add(id);
       render();
+      return;
+    }
+
+    if (action === "run-discovery-doctor") {
+      state.doctorModal = {loading: true};
+      render();
+      try {
+        const data = await postApi("discovery-doctor", {});
+        state.doctorModal = {data};
+      } catch (error) {
+        state.doctorModal = {error: error.message};
+      }
+      render();
+      return;
+    }
+
+    if (action === "close-doctor-modal") {
+      state.doctorModal = null;
+      render();
+      return;
+    }
+
+    if (action === "doctor-force-discovery") {
+      state.doctorModal = null;
+      triggerSoftReload(t("doctor_rediscover_started", "Re-discovery started — configs republish with the next telegrams."));
       return;
     }
 
@@ -2886,6 +3052,9 @@
       const driver = String(em.driver || "").trim();
       const key = String(em.key || "").trim();
       if (!id || !driver) return;
+      // Safety net behind the disabled Save button: a partial key never
+      // leaves the modal (the backend would reject it anyway).
+      if (key && key.length !== 32) return;
       try {
         await postApi("update-meter", key ? {meter_id: id, driver, key} : {meter_id: id, driver});
         state.editModal = null;

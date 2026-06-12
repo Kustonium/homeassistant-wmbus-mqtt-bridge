@@ -1,3 +1,15 @@
+## 1.5.36
+
+### Added
+- AES lock badge under meter id; validated key field in change-driver modal (9d09334)
+- surface AES key problems for encrypted meters (roadmap task 4) (7c91d32)
+
+### Fixed
+- doctor checklist hides the hint on passing checks (f01ddaa)
+- gate diffs the whole push range, not only the last commit (3258561)
+- Discovery Doctor prefix check uses canary verification and honest unknown state (f448e7b)
+- prefix check in Discovery Doctor also accepts the live HA birth signal (3ab1b78)
+
 ## 1.5.35
 
 ### Added

@@ -77,6 +77,16 @@ STATUS_CANDIDATE_RAW_FILE="${BASE}/status_candidate_raw.tsv"
 # read by webui.py to show the "published fields" expander on the meters view.
 # Format: id<TAB>iso_timestamp<TAB>json_line
 STATUS_METER_LAST_JSON_FILE="${BASE}/status_meter_last_json.tsv"
+# Discovery Doctor: webui.py touches the request flag; the heartbeat ticker
+# runs discovery_doctor_probe (09-discovery.sh) and writes the JSON result.
+DISCOVERY_DOCTOR_REQUEST_FILE="${BASE}/.discovery_doctor_request"
+# shellcheck disable=SC2034  # consumed by discovery_doctor_probe (sourced lib)
+STATUS_DISCOVERY_DOCTOR_FILE="${BASE}/status_discovery_doctor.json"
+# Per-meter AES key problem (key_missing | key_invalid) detected from
+# wmbusmeters warnings by status_detect_key_problem; cleared by the next
+# successfully decoded JSON (status_meter_seen). Read by webui.py.
+# Format: id<TAB>reason<TAB>iso_timestamp
+STATUS_METER_KEY_PROBLEM_FILE="${BASE}/status_meter_key_problem.tsv"
 # Per-candidate decoded value preview — written by parse_listen_candidates when
 # the parallel LISTEN instance has a meter-preview-<id> file in its config dir.
 # Format: id<TAB>value<TAB>value_key<TAB>iso_timestamp
@@ -170,7 +180,7 @@ RAW_RATE_CUR_MIN_COUNT=0
 # shellcheck disable=SC2034
 RAW_RATE_PREV_MIN_COUNT=0
 
-touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}"
+touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_METER_KEY_PROBLEM_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}"
 printf '0\n' > "${STATUS_OFFICIAL_METERS_COUNT_FILE}" 2>/dev/null || true
 # Remove any orphaned pending-reload marker left by a hard stop during deferred sleep.
 rm -rf "${BASE}/.reload_listen_pending" 2>/dev/null || true
@@ -336,6 +346,12 @@ start_esp_subscribers
     if (( _hb_now - _last_candidate_prune >= ${CANDIDATE_PRUNE_INTERVAL_SECONDS:-600} )); then
       prune_stale_candidates || true
       _last_candidate_prune="${_hb_now}"
+    fi
+    # Discovery Doctor: WebUI requested a broker probe. Consume the flag
+    # first so a slow probe cannot be re-triggered by the same request.
+    if [[ -f "${DISCOVERY_DOCTOR_REQUEST_FILE}" ]]; then
+      rm -f "${DISCOVERY_DOCTOR_REQUEST_FILE}" 2>/dev/null || true
+      discovery_doctor_probe || true
     fi
     sleep "${HEARTBEAT_INTERVAL_SECONDS:-10}"
   done
@@ -577,6 +593,7 @@ run_once() {
         fi
 
         echo "${line}"
+        status_detect_key_problem "${line}" || true
 
         if [[ "$(official_meters_count_current)" -eq 0 && "${SEARCH_USING_TEMP_METERS}" != "true" ]]; then
           if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9A-Fa-f]{8}) ]]; then
@@ -642,6 +659,7 @@ else
           fi
         else
           echo "${line}"
+          status_detect_key_problem "${line}" || true
         fi
 done
 fi

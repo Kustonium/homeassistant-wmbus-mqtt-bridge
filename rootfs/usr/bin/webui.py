@@ -41,6 +41,15 @@ CANDIDATE_RAW_TSV = BASE / "status_candidate_raw.tsv"
 # Last full decoded JSON per configured meter (status_meter_seen in
 # bridge-lib/07-meters.sh). Feeds the "published fields" expander.
 METER_LAST_JSON_TSV = BASE / "status_meter_last_json.tsv"
+# Per-meter AES key problem (key_missing | key_invalid) detected by
+# status_detect_key_problem in bridge-lib/07-meters.sh from wmbusmeters
+# warnings; cleared by the next successfully decoded JSON.
+METER_KEY_PROBLEM_TSV = BASE / "status_meter_key_problem.tsv"
+# Discovery Doctor: the WebUI touches the request flag; bridge.sh's heartbeat
+# ticker runs the broker probe (discovery_doctor_probe, 09-discovery.sh) and
+# writes the JSON result.
+DISCOVERY_DOCTOR_REQUEST = BASE / ".discovery_doctor_request"
+STATUS_DISCOVERY_DOCTOR_JSON = BASE / "status_discovery_doctor.json"
 WMBUSMETERS_BIN = "/usr/bin/wmbusmeters"
 OPTIONS_JSON = BASE / "options.json"
 # Per-minute rate dashboard files written by bridge.sh
@@ -946,11 +955,35 @@ def state(include_ignored: bool = False) -> dict:
         for r in last_json_rows
         if normalize_meter_id(r.get("id"))
     }
+    # AES key problems detected from wmbusmeters warnings — a wrong/missing
+    # key makes wmbusmeters permanently ignore the meter until the next
+    # pipeline reload, so without this the user only sees a silent "no data".
+    key_problem_rows = read_tsv(METER_KEY_PROBLEM_TSV, ["id", "reason", "ts"])
+    key_problem_by_id = {
+        normalize_meter_id(r.get("id")): str(r.get("reason") or "")
+        for r in key_problem_rows
+        if normalize_meter_id(r.get("id"))
+    }
+    # Whether a meter has an AES key configured in options.json — feeds the
+    # green/red lock badge under the meter id in the meters tables.
+    _opts_for_keys = read_options()
+    has_key_by_id = {}
+    if isinstance(_opts_for_keys, dict):
+        for _om in _opts_for_keys.get("meters") or []:
+            if isinstance(_om, dict):
+                _omid = normalize_meter_id(_om.get("meter_id"))
+                if _omid:
+                    has_key_by_id[_omid] = bool(str(_om.get("key") or "").strip())
     for m in meters:
-        lj = last_json_by_id.get(normalize_meter_id(m.get("id")))
+        mid_norm = normalize_meter_id(m.get("id"))
+        lj = last_json_by_id.get(mid_norm)
         if lj:
             m["last_json"] = lj.get("json", "")
             m["last_json_ts"] = lj.get("ts", "")
+        if mid_norm in key_problem_by_id:
+            m["key_problem"] = key_problem_by_id[mid_norm]
+        if has_key_by_id.get(mid_norm):
+            m["has_key"] = True
     candidates = read_tsv(
         CANDIDATES_TSV,
         ["id", "driver", "type", "last_seen", "seen_count", "avg_interval_s", "seen_15m", "seen_60m", "manufacturer"],
@@ -1163,6 +1196,7 @@ def state(include_ignored: bool = False) -> dict:
                 "type_other": opt_type_other,
                 "driver": driver,
                 "has_key": bool(str(opt.get("key") or "").strip()),
+                "key_problem": key_problem_by_id.get(mid, ""),
                 "manufacturer": candidate.get("manufacturer", ""),
                 "preview_value": preview.get("preview_value", ""),
                 "preview_value_key": preview.get("preview_value_key", ""),
@@ -2039,6 +2073,69 @@ class Handler(BaseHTTPRequestHandler):
             key = (params.get('key') or [''])[0].strip()
             ok, msg = update_meter_in_options(meter_id, driver, key or None)
             self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
+            return
+        if path.endswith('/api/discovery-doctor'):
+            # Ask the bridge for a live broker probe and wait for the result.
+            # The heartbeat ticker polls the request flag every ~10 s and the
+            # probe itself takes a few bounded mosquitto_sub waits, so 25 s
+            # covers the worst case; the UI shows a spinner meanwhile.
+            import time as _time
+            started = _time.time()
+            try:
+                DISCOVERY_DOCTOR_REQUEST.touch()
+            except OSError as exc:
+                self._send_json(500, {"ok": False, "message": f"cannot request probe: {exc}"})
+                return
+            probe = None
+            while _time.time() - started < 25:
+                try:
+                    if STATUS_DISCOVERY_DOCTOR_JSON.stat().st_mtime >= started:
+                        probe = read_json(STATUS_DISCOVERY_DOCTOR_JSON)
+                        break
+                except OSError:
+                    pass
+                _time.sleep(0.5)
+            status = read_json(STATUS_JSON)
+            status = status if isinstance(status, dict) else {}
+            mqtt = status.get("mqtt", {}) if isinstance(status.get("mqtt"), dict) else {}
+            pipeline = status.get("pipeline", {}) if isinstance(status.get("pipeline"), dict) else {}
+            ha_presence = "unknown"
+            try:
+                _ha_raw = STATUS_HA_PRESENCE_FILE.read_text(encoding="utf-8").strip()
+                _ha_state = _ha_raw.split("\t")[0]
+                if _ha_state in ("online", "offline"):
+                    ha_presence = _ha_state
+            except OSError:
+                pass
+            # Third, strongest signal for the prefix check: the opt-in
+            # verify_ha_entities canary — "verified" means the HA Core API
+            # confirmed the canary entity exists, i.e. HA consumes Discovery
+            # from this broker on this prefix.
+            ha_verification = "unavailable"
+            try:
+                _hv_raw = STATUS_HA_VERIFICATION_FILE.read_text(encoding="utf-8").strip()
+                _hv_state = _hv_raw.split("\t")[0].strip().lower()
+                if _hv_state in ("verified", "not_created", "pending", "unavailable"):
+                    ha_verification = _hv_state
+            except OSError:
+                pass
+            options = read_options()
+            options = options if isinstance(options, dict) else {}
+            self._send_json(200, {
+                "ok": True,
+                # probe is None when the bridge did not answer in time
+                # (e.g. pipeline down) — the UI renders that as its own ✗.
+                "probe": probe,
+                "mqtt_connected": bool(mqtt.get("connected")),
+                "mqtt_host": str(mqtt.get("host") or ""),
+                "discovery_published": bool(pipeline.get("discovery_published")),
+                "ha_presence": ha_presence,
+                "ha_verification": ha_verification,
+                "discovery_enabled": bool(options.get("discovery_enabled", True)),
+                "discovery_prefix": str(options.get("discovery_prefix") or "homeassistant"),
+                "discovery_retain": bool(options.get("discovery_retain", True)),
+                "meters_configured": len(options.get("meters") or []),
+            })
             return
         if path.endswith('/api/add-meter'):
             meter_id = (params.get('meter_id') or [''])[0].strip()

@@ -124,6 +124,38 @@ status_meter_seen() {
   # so it is TSV-safe as the final column.
   _tsv_upsert "${STATUS_METER_LAST_JSON_FILE}" "${id}" \
     "$(printf '%s\t%s\t%s' "${id}" "${last_seen}" "${json_line}")"
+  # A successfully decoded telegram proves the AES key (if any) works —
+  # clear a previously recorded key problem for this meter.
+  _tsv_remove_id "${STATUS_METER_KEY_PROBLEM_FILE}" "${id}"
+}
+
+# Key-problem detector for non-JSON wmbusmeters output lines. At the pinned
+# wmbusmeters version a wrong or missing AES key prints one of:
+#   "... no key to decrypt payload! Permanently ignoring telegrams from id: XXXXXXXX ..."
+#   "... telegram mac check failed, did you use the correct decryption key? Permanently ignoring ... id: XXXXXXXX ..."
+#   "... decrypted content failed check, did you use the correct decryption key? Permanently ignoring ... id: XXXXXXXX ..."
+# and then PERMANENTLY ignores the meter until the pipeline restarts — the
+# user sees a silent "no data" (upstream report pattern:
+# wmbusmeters/wmbusmeters#1859). Record id + reason for the WebUI; cleared by
+# the next successfully decoded JSON in status_meter_seen.
+status_detect_key_problem() {
+  local line="$1"
+  local id reason
+  [[ "${line}" == *"Permanently ignoring telegrams from id:"* ]] || return 0
+  if [[ "${line}" == *"no key to decrypt"* ]]; then
+    reason="key_missing"
+  elif [[ "${line}" == *"correct decryption key"* ]]; then
+    reason="key_invalid"
+  else
+    return 0
+  fi
+  id="${line##*Permanently ignoring telegrams from id: }"
+  id="${id%% *}"
+  id="$(normalize_meter_id "${id}")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
+  _tsv_upsert "${STATUS_METER_KEY_PROBLEM_FILE}" "${id}" \
+    "$(printf '%s\t%s\t%s' "${id}" "${reason}" "$(iso_now)")"
+  warn "key problem for meter ${id}: ${reason} (wmbusmeters ignores it until the next pipeline reload)"
 }
 
 # shellcheck disable=SC2034
