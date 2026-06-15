@@ -82,6 +82,11 @@ STATUS_METER_LAST_JSON_FILE="${BASE}/status_meter_last_json.tsv"
 DISCOVERY_DOCTOR_REQUEST_FILE="${BASE}/.discovery_doctor_request"
 # shellcheck disable=SC2034  # consumed by discovery_doctor_probe (sourced lib)
 STATUS_DISCOVERY_DOCTOR_FILE="${BASE}/status_discovery_doctor.json"
+# Factory reset: webui.py empties options.json (meters=[]) and writes this flag
+# with the removed meter ids (one per line); the heartbeat ticker clears their
+# retained discovery, wipes runtime state and soft-reloads the pipeline so the
+# add-on returns to its post-install state. See the ticker block below.
+FACTORY_RESET_REQUEST_FILE="${BASE}/.factory_reset_request"
 # Per-meter AES key problem (key_missing | key_invalid) detected from
 # wmbusmeters warnings by status_detect_key_problem; cleared by the next
 # successfully decoded JSON (status_meter_seen). Read by webui.py.
@@ -353,6 +358,33 @@ start_esp_subscribers
       rm -f "${DISCOVERY_DOCTOR_REQUEST_FILE}" 2>/dev/null || true
       discovery_doctor_probe || true
     fi
+    # Factory reset: webui.py already emptied options.json (meters=[]) and wrote
+    # the removed ids here. Consume the flag first so a slow teardown cannot be
+    # re-triggered, clear each meter's retained discovery (entities vanish from
+    # HA), wipe runtime state (status_*/search_*/seen + preview meter files), and
+    # soft-reload the decode pipeline — refresh_meter_files then regenerates an
+    # empty meter set, leaving the add-on in its post-install state. The binary,
+    # options.json and the etc/listen/preview config dirs are left intact. NB:
+    # use ${BASE}-literal paths — RELOAD_FLAG/LISTEN_METER_DIR are defined after
+    # this ticker subshell forks, so they are not in scope here.
+    if [[ -f "${FACTORY_RESET_REQUEST_FILE}" ]]; then
+      _fr_ids=()
+      mapfile -t _fr_ids < "${FACTORY_RESET_REQUEST_FILE}" 2>/dev/null || _fr_ids=()
+      rm -f "${FACTORY_RESET_REQUEST_FILE}" 2>/dev/null || true
+      log "Factory reset: clearing discovery for ${#_fr_ids[@]} meter(s), wiping runtime state"
+      for _fr_id in "${_fr_ids[@]}"; do
+        [[ -n "${_fr_id}" ]] || continue
+        clear_meter_discovery "${_fr_id}" || true
+      done
+      rm -f "${BASE}/status_"* "${BASE}/search_"* "${BASE}/seen_ids.txt" 2>/dev/null || true
+      rm -f "${BASE}/preview/etc/wmbusmeters.d/meter-preview-"* \
+            "${BASE}/listen/etc/wmbusmeters.d/meter-preview-"* 2>/dev/null || true
+      # The wipe also removed the heartbeat we stamped at the top of this loop;
+      # re-stamp now so the WebUI never sees a liveness gap before the next tick.
+      printf '%s\n' "$(epoch_now)" > "${STATUS_HEARTBEAT_FILE}" 2>/dev/null || true
+      touch "${BASE}/.reload_pipeline" 2>/dev/null || true
+      status_add_event "ok" "Factory reset applied — add-on returned to post-install state" || true
+    fi
     sleep "${HEARTBEAT_INTERVAL_SECONDS:-10}"
   done
 ) &
@@ -583,8 +615,8 @@ run_once() {
             if [[ "${REQUIRE_TIMESTAMP}" == "true" && -z "${ts}" ]]; then
               warn "Skip publish: missing timestamp for id=${id}"
             else
-              mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
               emit_discovery_from_json "${line}"
+              mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
               status_mark_discovery_published
               write_status_json
             fi
@@ -651,8 +683,8 @@ else
             if [[ "${REQUIRE_TIMESTAMP}" == "true" && -z "${ts}" ]]; then
               warn "Skip publish: missing timestamp for id=${id}"
             else
-              mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
               emit_discovery_from_json "${line}"
+              mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
               status_mark_discovery_published
               write_status_json
             fi

@@ -1,3 +1,18 @@
+## 1.5.37
+
+### Added
+- compare meter driver decodes on demand (98d448a)
+- add factory reset that removes all meters and clears their HA entities (a2e713b)
+
+### Fixed
+- clarify driver compare modal layout (b9fcfd1)
+- compare candidate drivers before adding meters (3224769)
+- compare selected driver against wmbusmeters auto hint (67e32d4)
+- keep compare modal from breaking WebGUI render (03f96c7)
+- scope published-fields expander to action-enabled meter tables (d3fceee)
+- keep built-in drivers and publish discovery before state (5fa0ce4)
+- resolve preview id by LE-substring match on the per-telegram path (Diehl/izar) (dd3ffee)
+
 ## 1.5.36
 
 ### Added

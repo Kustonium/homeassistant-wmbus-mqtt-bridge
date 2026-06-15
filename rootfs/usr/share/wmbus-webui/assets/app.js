@@ -1796,7 +1796,7 @@
                         : ""
                     }
                   </tr>
-                ${state.expandedMeterFields.has(id) ? meterFieldsRow(row, withActions ? 8 : 7) : ""}`;
+                ${(withActions && state.expandedMeterFields.has(id)) ? meterFieldsRow(row, 8) : ""}`;
               })
               .join("")}
           </tbody>
@@ -2540,6 +2540,11 @@
         <button class="btn primary" data-action="run-discovery-doctor">${escapeHtml(t("doctor_run_btn", "Run checks"))}</button>
       </section>
       <section class="section">
+        <div class="section-head"><h2>⚠️ ${escapeHtml(t("reset_title", "Reset add-on"))}</h2></div>
+        <p style="font-size:12px;color:#9eafba;margin:0 0 10px;">${escapeHtml(t("reset_intro", "Removes ALL configured meters, clears their Home Assistant entities (retained discovery), and wipes runtime state (candidates, ignored list, statistics). The add-on returns to its post-install state. This cannot be undone."))}</p>
+        <button class="btn danger" data-action="factory-reset">${escapeHtml(t("reset_btn", "Remove all meters & reset"))}</button>
+      </section>
+      <section class="section">
         <div class="section-head"><h2>${escapeHtml(t("webui_options_snapshot", "Options snapshot"))}</h2></div>
         <div class="code">${escapeHtml(JSON.stringify(data.options || {}, null, 2))}</div>
       </section>
@@ -2709,22 +2714,48 @@
   // State-side sink for driverPickerHtml (see comment there) and the
   // change-driver modal's key field. Updates state WITHOUT re-rendering, so
   // typing keeps focus; the next live render rebuilds from the stored value.
+  function clearEditCompareDom() {
+    const el = document.getElementById("edit-driver-compare-result");
+    if (el) el.innerHTML = "";
+  }
+
   window.__driverPickerSet = function (hiddenId, value) {
     const v = String(value == null ? "" : value);
-    if (hiddenId === "meter-driver" && state.modal) state.modal.driver = v;
-    if (hiddenId === "edit-meter-driver" && state.editModal) state.editModal.driver = v;
+    if (hiddenId === "meter-driver" && state.modal) {
+      state.modal.driver = v;
+      state.modal.compare = null;
+      clearEditCompareDom();
+    }
+    if (hiddenId === "edit-meter-driver" && state.editModal) {
+      state.editModal.driver = v;
+      state.editModal.compare = null;
+      clearEditCompareDom();
+    }
     const h = document.getElementById(hiddenId);
     if (h) h.value = v;
   };
   window.__editModalKeySet = function (value) {
-    if (state.editModal) state.editModal.key = String(value == null ? "" : value);
+    if (state.editModal) {
+      state.editModal.key = String(value == null ? "" : value);
+      state.editModal.compare = null;
+      clearEditCompareDom();
+    }
+  };
+  window.__modalKeySet = function (value) {
+    if (state.modal) {
+      state.modal.key = String(value == null ? "" : value);
+      state.modal.compare = null;
+      clearEditCompareDom();
+    }
   };
 
   function renderEditDriverModal() {
     const em = state.editModal || {};
+    const editKey = String(em.key || "");
+    const editKeyPartial = editKey.length > 0 && editKey.length !== 32;
     return `
       <div class="modal-backdrop">
-        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="edit-driver-title">
+        <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="edit-driver-title">
           <div class="modal-head">
             <h2 id="edit-driver-title">${escapeHtml(t("change_driver_title", "Change driver"))} — ${escapeHtml(em.id || "")}</h2>
           </div>
@@ -2737,12 +2768,12 @@
               // counter, border colour, Save disabled at 1–31 chars. The
               // visual state is ALSO derived from state (em.key) at render
               // time so live SSE rebuilds repaint it correctly mid-typing.
-              const k = String(em.key || "");
-              const partial = k.length > 0 && k.length !== 32;
+              const k = editKey;
+              const partial = editKeyPartial;
               const border = k.length === 32 ? "#1e6b3a" : (partial ? "#6b4a1e" : "");
               const cnt = k.length === 32 ? "✓ 32" : (k.length > 0 ? `${k.length}/32` : "");
               const cntColor = k.length === 32 ? "#4df08d" : "#f3c84b";
-              const keyJs = `(function(inp){var v=inp.value.replace(/[^0-9A-Fa-f]/g,'').slice(0,32);inp.value=v;window.__editModalKeySet(v);var cnt=document.getElementById('edit-aes-key-count');var btn=document.getElementById('edit-driver-save');if(v.length===0){inp.style.borderColor='';if(cnt)cnt.textContent='';if(btn)btn.disabled=false;}else if(v.length===32){inp.style.borderColor='#1e6b3a';if(cnt){cnt.textContent='✓ 32';cnt.style.color='#4df08d';}if(btn)btn.disabled=false;}else{inp.style.borderColor='#6b4a1e';if(cnt){cnt.textContent=v.length+'/32';cnt.style.color='#f3c84b';}if(btn)btn.disabled=true;}})(this)`;
+              const keyJs = `(function(inp){var v=inp.value.replace(/[^0-9A-Fa-f]/g,'').slice(0,32);inp.value=v;window.__editModalKeySet(v);var cnt=document.getElementById('edit-aes-key-count');var btn=document.getElementById('edit-driver-save');var cmp=document.getElementById('edit-driver-compare');if(v.length===0){inp.style.borderColor='';if(cnt)cnt.textContent='';if(btn)btn.disabled=false;if(cmp)cmp.disabled=false;}else if(v.length===32){inp.style.borderColor='#1e6b3a';if(cnt){cnt.textContent='✓ 32';cnt.style.color='#4df08d';}if(btn)btn.disabled=false;if(cmp)cmp.disabled=false;}else{inp.style.borderColor='#6b4a1e';if(cnt){cnt.textContent=v.length+'/32';cnt.style.color='#f3c84b';}if(btn)btn.disabled=true;if(cmp)cmp.disabled=true;}})(this)`;
               return `
             <div style="display:flex;gap:8px;align-items:center;">
               <input id="edit-meter-key" autocomplete="off" maxlength="32" value="${escapeHtml(k)}"
@@ -2752,13 +2783,63 @@
               <span id="edit-aes-key-count" style="font-size:11px;font-weight:700;min-width:40px;text-align:right;color:${cntColor};">${escapeHtml(cnt)}</span>
             </div>`;
             })()}
+            <div style="margin-top:12px;display:flex;gap:8px;align-items:center;">
+              <button id="edit-driver-compare" class="btn" type="button" data-action="compare-driver" data-id="${escapeHtml(em.id || "")}"${editKeyPartial ? " disabled" : ""}>${escapeHtml(t("compare_btn", "Compare"))}</button>
+              <span style="font-size:11px;color:#9eafba;">${escapeHtml(t("compare_hint", "Choose a driver above, enter the AES key if needed, then compare. Left column = saved/auto driver; right column = selected driver."))}</span>
+            </div>
+            ${renderCompareResult(em.compare)}
           </div>
           <div class="modal-actions">
             <button class="btn" type="button" data-action="close-edit-modal">${escapeHtml(t("webui_cancel", "Cancel"))}</button>
-            <button id="edit-driver-save" class="btn primary" type="button" data-action="save-edit-driver" data-id="${escapeHtml(em.id || "")}"${(String(em.key || "").length > 0 && String(em.key || "").length !== 32) ? " disabled" : ""}>${escapeHtml(t("save_btn", "Save"))}</button>
+            <button id="edit-driver-save" class="btn primary" type="button" data-action="save-edit-driver" data-id="${escapeHtml(em.id || "")}"${editKeyPartial ? " disabled" : ""}>${escapeHtml(t("save_btn", "Save"))}</button>
           </div>
         </div>
       </div>`;
+  }
+
+  // On-demand driver comparison panel inside the "Change driver" modal.
+  // state.editModal.compare = {loading} | {error} | {data: <api response>}.
+  // Shows real decoded fields/values for the auto/saved vs selected driver so
+  // the user judges by values, not by a heuristic score.
+  function renderCompareResult(cmp) {
+    if (!cmp) return `<div id="edit-driver-compare-result"></div>`;
+    if (cmp.loading) return `<div id="edit-driver-compare-result"><p style="font-size:12px;color:#9eafba;margin:8px 0 0;">${escapeHtml(t("compare_running", "Decoding…"))}</p></div>`;
+    if (cmp.error) return `<div id="edit-driver-compare-result"><p style="font-size:12px;color:#f3c84b;margin:8px 0 0;">${escapeHtml(cmp.error)}</p></div>`;
+    const d = cmp.data || {};
+    const cur = d.current || {fields: {}};
+    const cand = d.candidate || {fields: {}};
+    const cf = cur.fields || {};
+    const df = cand.fields || {};
+    const sameDriver = Boolean(d.same_driver || String(cur.driver || "").toLowerCase() === String(cand.driver || "").toLowerCase());
+    if (sameDriver) {
+      return `<div id="edit-driver-compare-result">
+        <p style="font-size:12px;color:#9eafba;margin:8px 0 0;">${escapeHtml(t("compare_same_driver", "Both sides use the same driver. Choose a different driver in the Driver field, then click Compare."))}</p>
+      </div>`;
+    }
+    const currentLabel = cur.source === "auto"
+      ? t("compare_auto", "Auto")
+      : t("compare_current", "Saved");
+    const keys = Array.from(new Set([...Object.keys(cf), ...Object.keys(df)])).sort();
+    const cell = (obj, k) => (k in obj) ? escapeHtml(String(obj[k])) : `<span style="color:#5b6b76;">—</span>`;
+    const rows = keys.map(k => {
+      const gain = (k in df) && !(k in cf);
+      const diff = (k in cf) && (k in df) && String(cf[k]) !== String(df[k]);
+      const bg = gain ? "background:#0e2a18;" : (diff ? "background:#2a230e;" : "");
+      return `<tr style="${bg}"><td style="padding:2px 8px;font-family:monospace;font-size:11px;">${escapeHtml(k)}</td><td style="padding:2px 8px;font-size:11px;">${cell(cf, k)}</td><td style="padding:2px 8px;font-size:11px;">${cell(df, k)}</td></tr>`;
+    }).join("");
+    return `<div id="edit-driver-compare-result">
+      <div class="compare-table-wrap">
+        <table style="width:100%;border-collapse:collapse;">
+          <thead><tr style="position:sticky;top:0;background:#0b141b;">
+            <th style="text-align:left;padding:4px 8px;font-size:11px;color:#9eafba;">${escapeHtml(t("compare_field", "Field"))}</th>
+            <th style="text-align:left;padding:4px 8px;font-size:11px;color:#9eafba;">${escapeHtml(currentLabel)}: ${escapeHtml(cur.driver || "")}</th>
+            <th style="text-align:left;padding:4px 8px;font-size:11px;color:#9eafba;">${escapeHtml(t("compare_candidate", "Selected"))}: ${escapeHtml(cand.driver || "")}</th>
+          </tr></thead>
+          <tbody>${rows || `<tr><td colspan="3" style="padding:6px 8px;font-size:11px;color:#9eafba;">${escapeHtml(t("compare_empty", "Neither driver decoded any field (encrypted without a key?)."))}</td></tr>`}</tbody>
+        </table>
+      </div>
+      <p style="font-size:10px;color:#f3c84b;margin:6px 0 0;">⚠️ ${escapeHtml(t("compare_warn", "Green = extra field, amber = different value. More fields does NOT mean correct — verify against the meter's display."))}</p>
+    </div>`;
   }
 
   function renderReportModal() {
@@ -2791,33 +2872,41 @@
 
   function renderModal() {
     const modal = state.modal || {};
+    const modalKey = String(modal.key || "");
+    const modalKeyPartial = modalKey.length > 0 && modalKey.length !== 32;
+    const modalKeyBorder = modalKey.length === 32 ? "#1e6b3a" : (modalKeyPartial ? "#6b4a1e" : "");
+    const modalKeyCount = modalKey.length === 32 ? "✓ 32" : (modalKey.length > 0 ? `${modalKey.length}/32` : "");
+    const modalKeyCountColor = modalKey.length === 32 ? "#4df08d" : "#f3c84b";
     // Inline AES key validation script — runs in the same window context.
     // Strips non-hex chars, validates 0 or 32 hex chars, colours input,
-    // shows char counter, enables/disables submit button (#4).
+    // shows char counter, enables/disables submit and compare buttons.
     const keyValidateJs = `(function(inp){
       var v = inp.value.replace(/[^0-9A-Fa-f]/g,'').slice(0,32);
       inp.value = v;
+      if(window.__modalKeySet) window.__modalKeySet(v);
       var cnt = document.getElementById('aes-key-count');
       var btn = document.getElementById('add-meter-submit');
+      var cmp = document.getElementById('add-driver-compare');
       if(v.length===0){
         inp.style.borderColor='';
-        cnt.textContent='';
-        btn.disabled=false;
+        if(cnt) cnt.textContent='';
+        if(btn) btn.disabled=false;
+        if(cmp) cmp.disabled=false;
       } else if(v.length===32){
         inp.style.borderColor='#1e6b3a';
-        cnt.textContent='✓ 32';
-        cnt.style.color='#4df08d';
-        btn.disabled=false;
+        if(cnt){cnt.textContent='✓ 32';cnt.style.color='#4df08d';}
+        if(btn) btn.disabled=false;
+        if(cmp) cmp.disabled=false;
       } else {
         inp.style.borderColor='#6b4a1e';
-        cnt.textContent=v.length+'/32';
-        cnt.style.color='#f3c84b';
-        btn.disabled=true;
+        if(cnt){cnt.textContent=v.length+'/32';cnt.style.color='#f3c84b';}
+        if(btn) btn.disabled=true;
+        if(cmp) cmp.disabled=true;
       }
     })(this)`;
     return `
       <div class="modal-backdrop">
-        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="add-meter-title">
+        <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="add-meter-title">
           <div class="modal-head">
             <h2 id="add-meter-title">${escapeHtml(t("webui_add_meter", "Add meter"))}</h2>
           </div>
@@ -2842,20 +2931,27 @@
                     <span style="font-size:10px;color:#607a88;font-weight:400;margin-left:6px;">${escapeHtml(t("key_hint_short", "32 hex chars, or leave empty"))}</span>
                   </label>
                   <div style="display:flex;gap:8px;align-items:center;">
-                    <input id="meter-key" name="key" autocomplete="off" value="" maxlength="32"
-                      style="font-family:monospace;flex:1;"
+                    <input id="meter-key" name="key" autocomplete="off" value="${escapeHtml(modalKey)}" maxlength="32"
+                      style="font-family:monospace;flex:1;${modalKeyBorder ? `border-color:${modalKeyBorder};` : ""}"
                       placeholder="${escapeHtml(t("key_input_placeholder", "e.g. 00112233445566778899AABBCCDDEEFF"))}"
                       oninput="${escapeHtml(keyValidateJs)}">
-                    <span id="aes-key-count" style="font-size:11px;font-weight:700;min-width:40px;text-align:right;"></span>
+                    <span id="aes-key-count" style="font-size:11px;font-weight:700;min-width:40px;text-align:right;color:${modalKeyCountColor};">${escapeHtml(modalKeyCount)}</span>
                   </div>
                   <div style="font-size:10px;color:#4a6070;margin-top:3px;">${escapeHtml(t("no_aes_key_note", 'key: "" = no key'))} · zero-key: <span class="mono">0000…0000</span></div>
                   ${modal.aesRequired ? `<div style="font-size:11px;color:#f3c84b;margin-top:6px;">🔐 ${escapeHtml(t("add_aes_warning", "This candidate is encrypted — without the 32-hex AES key it will NOT decode (this is not a bug). You can add it now and enter the key later via the Driver… button. Ask your building manager, the utility company or the meter installer for the key."))}</div>` : ""}
+                </div>
+                <div class="field">
+                  <div style="display:flex;gap:8px;align-items:center;">
+                    <button id="add-driver-compare" class="btn" type="button" data-action="compare-driver" data-id="${escapeHtml(modal.id || "")}"${modalKeyPartial ? " disabled" : ""}>${escapeHtml(t("compare_btn", "Compare"))}</button>
+                    <span style="font-size:11px;color:#9eafba;">${escapeHtml(t("compare_hint", "Choose a driver above, enter the AES key if needed, then compare. Left column = saved/auto driver; right column = selected driver."))}</span>
+                  </div>
+                  ${renderCompareResult(modal.compare)}
                 </div>
               </div>
             </div>
             <div class="modal-actions">
               <button class="btn" type="button" data-action="close-modal">${escapeHtml(t("webui_cancel", "Cancel"))}</button>
-              <button id="add-meter-submit" class="btn primary" type="submit">${escapeHtml(t("webui_add", "Add"))}</button>
+              <button id="add-meter-submit" class="btn primary" type="submit"${modalKeyPartial ? " disabled" : ""}>${escapeHtml(t("webui_add", "Add"))}</button>
             </div>
           </form>
         </div>
@@ -2996,6 +3092,21 @@
       return;
     }
 
+    if (action === "factory-reset") {
+      // Two-step confirm — this is destructive and irreversible.
+      if (!window.confirm(t("reset_confirm", "Remove ALL meters and reset the add-on to its post-install state? Entities, the ignored list and statistics are wiped. This cannot be undone."))) return;
+      try {
+        await postApi("factory-reset", {});
+      } catch (error) {
+        toast(error.message, true);
+        return;
+      }
+      // The bridge clears discovery + wipes state and soft-reloads the pipeline
+      // on its next tick; reuse the soft-reload overlay so the UI waits it out.
+      triggerSoftReload(t("reset_started", "Removing meters and resetting — entities and state are being cleared…"));
+      return;
+    }
+
     if (action === "run-discovery-doctor") {
       state.doctorModal = {loading: true};
       render();
@@ -3040,6 +3151,42 @@
 
     if (action === "close-edit-modal") {
       state.editModal = null;
+      render();
+      return;
+    }
+
+    if (action === "compare-driver") {
+      const id = target.dataset.id || "";
+      const cm = state.editModal || state.modal;
+      if (!id || !cm) return;
+      const driver = cm.driver || "auto";
+      const key = String(cm.key || "").trim();
+      cm.compare = {loading: true};
+      render();
+      // Read the payload directly (not via postApi) to map the error code to a
+      // localised message; the backend returns {ok:false, error:<code>}.
+      try {
+        const resp = await fetch("api/compare-driver", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({meter_id: id, driver, key}),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.ok === false) {
+          const map = {
+            no_raw_telegram: t("compare_no_raw", "No recent telegram stored for this meter — wait for the next reception, then retry."),
+            decode_failed: t("compare_failed", "Decode failed."),
+            invalid_driver: t("compare_failed", "Decode failed."),
+            invalid_key: t("compare_invalid_key", "AES key must be empty or exactly 32 hex characters."),
+            invalid_meter_id: t("compare_failed", "Decode failed."),
+          };
+          cm.compare = {error: map[data.error] || data.error || t("compare_failed", "Decode failed.")};
+        } else {
+          cm.compare = {data};
+        }
+      } catch (error) {
+        cm.compare = {error: error.message};
+      }
       render();
       return;
     }

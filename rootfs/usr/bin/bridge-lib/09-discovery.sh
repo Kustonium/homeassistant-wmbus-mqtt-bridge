@@ -217,6 +217,32 @@ clear_search_discovery_from_json() {
   )
 }
 
+# Remove ALL retained MQTT Discovery configs for one meter id, so its Home
+# Assistant entities disappear (factory reset). Enumerates the retained
+# per-field config topics the same way discovery_doctor_probe counts them
+# (subscribe with a short bounded -W to the wildcard config topic) and clears
+# each with an empty retained payload — the MQTT Discovery removal protocol.
+# Unlike clear_search_discovery_from_json this is keyed on a bare id (no JSON
+# telegram needed) and clears whatever is actually retained on the broker.
+clear_meter_discovery() {
+  [[ "${DISCOVERY_ENABLED}" == "true" ]] || return 0
+  local id
+  id="$(normalize_meter_id "$1")"
+  [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
+
+  clean_legacy_totalm3 "${id}"
+
+  local topic _rest
+  while read -r topic _rest; do
+    [[ -n "${topic}" ]] || continue
+    case "${topic}" in
+      "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/"*/config)
+        mqtt_pub "${topic}" "" "true" || true ;;
+    esac
+  done < <(timeout 5 /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -W 2 -v \
+      -t "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/+/config" 2>/dev/null || true)
+}
+
 # Canary entity for the opt-in HA verification (verify_ha_entities).
 # A hidden diagnostic sensor with a STABLE entity_id (sensor.wmbus_bridge_health)
 # that lets the verification worker ask HA Core API "did you create this entity?".

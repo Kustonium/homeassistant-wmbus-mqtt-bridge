@@ -57,10 +57,42 @@ _preview_acquire_slot() {
 }
 
 preview_decode_raw_if_requested() {
-  local raw="${1:-}" id cfg lock_dir slot_dir last_file now last min_interval
+  # $2 (optional) = authoritative meter id from the candidate (wmbusmeters'
+  # reported id). meter_id_from_raw_hex parses the STANDARD wM-Bus A-field,
+  # which is wrong for manufacturer-specific layouts (e.g. Diehl/izar reports
+  # 20028316 while the raw A-field parses to 83160778) — there the derived id
+  # never matches the preview config keyed by the candidate id, so the one-shot
+  # bailed out and the preview was stuck at "pending" forever. When the caller
+  # knows the real id, pass it as the hint and skip the unreliable parse.
+  local raw="${1:-}" id_hint="${2:-}" id cfg lock_dir slot_dir last_file now last min_interval
   raw="$(printf '%s' "${raw}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
   [[ "${raw}" =~ ^[0-9A-F]+$ ]] || return 0
-  id="$(meter_id_from_raw_hex "${raw}")"
+  if [[ "${id_hint}" =~ ^[0-9A-Fa-f]{8}$ ]]; then
+    id="$(normalize_meter_id "${id_hint}")"
+  else
+    # No hint (the per-telegram path): match this raw to an EXISTING candidate
+    # preview file by the little-endian id substring — the same heuristic
+    # status_find_recent_raw_for_id uses. meter_id_from_raw_hex assumes the
+    # standard wM-Bus A-field, which is wrong for manufacturer-specific layouts
+    # (Diehl/izar reports 20028316 while the A-field parses to 83160778), so the
+    # naive id never matched the preview config keyed by wmbusmeters' id and the
+    # one-shot bailed — leaving the candidate stuck at "decoding…". Scanning the
+    # preview files we actually wrote keys the decode to the real id without any
+    # per-vendor parsing. Fall back to the naive parse when nothing matches.
+    local _raw_lc _pf _cand _le
+    _raw_lc="$(printf '%s' "${raw}" | tr '[:upper:]' '[:lower:]')"
+    id=""
+    for _pf in "${PREVIEW_METER_DIR}"/meter-preview-*; do
+      [[ -e "${_pf}" ]] || continue
+      _cand="${_pf##*/meter-preview-}"
+      [[ "${_cand}" =~ ^[0-9A-Fa-f]{8}$ ]] || continue
+      _le="$(id_to_le_hex "${_cand}")"
+      [[ -n "${_le}" && "${_raw_lc}" == *"${_le}"* ]] || continue
+      id="$(normalize_meter_id "${_cand}")"
+      break
+    done
+    [[ -n "${id}" ]] || id="$(meter_id_from_raw_hex "${raw}")"
+  fi
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   cfg="$(candidate_autodecode_file "${id}")"
   [[ -f "${cfg}" ]] || return 0
@@ -201,7 +233,10 @@ ensure_candidate_autodecode() {
     _recent_row="$(status_find_recent_raw_for_id "${id}" || true)"
     if [[ -n "${_recent_row}" ]]; then
       IFS=$'\t' read -r _ _ _recent_raw <<< "${_recent_row}"
-      [[ -n "${_recent_raw}" ]] && preview_decode_raw_if_requested "${_recent_raw}"
+      # Pass the candidate id explicitly: the raw A-field parse is unreliable
+      # for manufacturer-specific layouts (Diehl/izar), and the preview config
+      # is keyed by this id.
+      [[ -n "${_recent_raw}" ]] && preview_decode_raw_if_requested "${_recent_raw}" "${id}"
     fi
   else
     rm -f "${tmp}" 2>/dev/null || true

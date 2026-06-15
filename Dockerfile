@@ -16,19 +16,19 @@ RUN apk add --no-cache \
 WORKDIR /src
 
 # Pin to a known-good upstream commit instead of master HEAD.
-# Upstream is mid-restructuring (wmbusmeters/wmbusmeters#1940) and master
-# does not always compile (e.g. util.h missing <ctime> after the util.cc
-# split, 2026-06-11). This SHA is the state of the last working image
-# (wmbusmeters --version reported 2.0.0-521-g8c35c4a1), so behaviour is
-# identical to what is deployed. Bump the SHA deliberately — ideally
-# gated by the decode smoke-test (roadmap task 5) — to pick up new
-# upstream drivers.
-# NB: the old `sed` stripping -flto from DEBUG_FLAGS is gone — at this
-# commit -flto appears only in a Makefile comment, so it was a no-op.
-# A full clone (not --depth 1) is required: the Makefile derives the
-# binary's version string via `git describe --tags`, which needs the
-# tag history to report e.g. 2.0.0-521-g8c35c4a1.
-ARG WMBUSMETERS_COMMIT=8c35c4a142c505f3a9e2791daa7a27930b9de5ce
+# Upstream's restructuring (wmbusmeters/wmbusmeters#1940) once left master
+# uncompilable (util.h missing <ctime> after the util.cc split, 2026-06-11);
+# that is why this is pinned to an explicit SHA rather than tracking master.
+# Upstream fixed the build (commit "Add ctime for docker builds", 2026-06-11),
+# so this pin is bumped 8c35c4a1 (2.0.0-521) -> ad20d83a (2.0.0-541): +20
+# commits of driver updates/fixes. ad20d83a was built locally and passes all
+# 13 golden decode fixtures (tests/fixtures/golden.tsv) with no field/value
+# regression. Every bump is gated in CI by decode-smoke + the standalone
+# boot-test (bump needs both), so a regression never reaches a published image.
+# NB: no `sed` stripping -flto — at this commit -flto is only a Makefile
+# comment. A full clone (not --depth 1) is required: the Makefile derives the
+# version string via `git describe --tags` (e.g. 2.0.0-541-gad20d83a).
+ARG WMBUSMETERS_COMMIT=ad20d83a576e2870c6f29246e6d5202da17d61a5
 RUN git clone https://github.com/wmbusmeters/wmbusmeters.git . \
   && git checkout --detach "${WMBUSMETERS_COMMIT}" \
   && ./configure \
@@ -38,17 +38,26 @@ RUN git clone https://github.com/wmbusmeters/wmbusmeters.git . \
 
 # Driver catalog for the WebUI "Add meter" driver suggestions. Generated at
 # build time from the pinned wmbusmeters sources (drivers/src/*.xmq) plus the
-# built-in C++ drivers reported by --listmeters, so a WMBUSMETERS_COMMIT bump
-# refreshes the list automatically. NB: at this pin --listmeters prints only
-# the built-in C++ drivers (the xmq drivers were added to its output upstream
-# after the pin), hence the explicit xmq scan.
-RUN { /out/wmbusmeters --listmeters 2>/dev/null | awk '{print $1"\t"$2}'; \
+# built-in C++ drivers reported by --listdrivers (or the older --listmeters).
+# Keep the compatibility fallback: upstream renamed the option and a silent
+# empty list would hide built-in drivers such as izar from the WebUI.
+RUN set -eu; \
+    if /out/wmbusmeters --listdrivers > /tmp/wmbus-driver-list 2>/dev/null; then \
+      :; \
+    elif /out/wmbusmeters --listmeters > /tmp/wmbus-driver-list 2>/dev/null; then \
+      :; \
+    else \
+      echo "wmbusmeters exposes neither --listdrivers nor --listmeters" >&2; \
+      exit 1; \
+    fi; \
+    { awk '{print $1"\t"$2}' /tmp/wmbus-driver-list; \
       for f in drivers/src/*.xmq; do \
         awk -F= '/^[[:space:]]*name[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);n=$2} /^[[:space:]]*meter_type[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);t=$2; print n"\t"t; exit}' "$f"; \
       done; \
     } | sort -u \
       | awk -F'\t' 'BEGIN{printf "["; s=""} $1!=""{printf "%s{\"driver\":\"%s\",\"type\":\"%s\"}",s,$1,$2; s=","} END{print "]"}' \
-      > /out/drivers.json
+      > /out/drivers.json; \
+    grep -q '"driver":"izar"' /out/drivers.json || { echo "built-in driver izar missing from drivers.json" >&2; exit 1; }
 
 # --- runtime: HA add-on ---
 FROM ${BUILD_FROM} AS addon
