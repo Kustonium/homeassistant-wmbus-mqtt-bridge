@@ -893,6 +893,25 @@ tr:last-child td {
   box-shadow: var(--shadow);
 }
 
+.modal.modal-wide {
+  width: min(980px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal.modal-wide .modal-body {
+  overflow: auto;
+}
+
+.compare-table-wrap {
+  margin-top: 10px;
+  border: 1px solid #1d2f3c;
+  border-radius: 6px;
+  overflow: auto;
+  max-height: min(62vh, 620px);
+}
+
 .modal-head,
 .modal-body,
 .modal-actions {

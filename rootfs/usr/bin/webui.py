@@ -38,6 +38,10 @@ CANDIDATE_ANALYSIS_TSV = BASE / "status_candidate_analysis.tsv"
 # Last raw telegram per candidate, written by status_record_candidate_raw
 # (bridge-lib/06-candidates.sh). Feeds the "export for issue report" action.
 CANDIDATE_RAW_TSV = BASE / "status_candidate_raw.tsv"
+# Rolling RAW frames (tail 200), written by status_raw_seen — used to find a
+# configured meter's last frame (by little-endian id substring) for the
+# on-demand driver comparison.
+RECENT_RAW_TSV = BASE / "status_recent_raw.tsv"
 # Last full decoded JSON per configured meter (status_meter_seen in
 # bridge-lib/07-meters.sh). Feeds the "published fields" expander.
 METER_LAST_JSON_TSV = BASE / "status_meter_last_json.tsv"
@@ -50,6 +54,11 @@ METER_KEY_PROBLEM_TSV = BASE / "status_meter_key_problem.tsv"
 # writes the JSON result.
 DISCOVERY_DOCTOR_REQUEST = BASE / ".discovery_doctor_request"
 STATUS_DISCOVERY_DOCTOR_JSON = BASE / "status_discovery_doctor.json"
+# Factory reset: this endpoint empties options.json (meters=[]) and writes the
+# removed ids here (one per line). bridge.sh's heartbeat ticker consumes the
+# flag, clears each meter's retained discovery, wipes runtime state and
+# soft-reloads — returning the add-on to its post-install state.
+FACTORY_RESET_REQUEST = BASE / ".factory_reset_request"
 WMBUSMETERS_BIN = "/usr/bin/wmbusmeters"
 OPTIONS_JSON = BASE / "options.json"
 # Per-minute rate dashboard files written by bridge.sh
@@ -363,6 +372,169 @@ def candidate_issue_report(meter_id: str) -> tuple[bool, dict]:
         "report": report,
         "raw_ts": str((raw_row or {}).get("ts") or ""),
         "key_used": bool(key),
+    }
+
+
+def _id_le_hex(mid: str) -> str:
+    """Meter id in little-endian byte order, lowercase — the form it appears in
+    inside a wMBus frame's A-field (e.g. 22344799 -> 99473422)."""
+    pairs = [mid[i:i + 2] for i in range(0, len(mid), 2)]
+    return "".join(reversed(pairs)).lower()
+
+
+def _resolve_raw_for_id(mid: str) -> tuple[str, str]:
+    """Return (raw_hex, ts) of the most recent stored frame for this id, or
+    ("",""). Candidates have a keyed RAW row; configured meters do not, so fall
+    back to the most recent frame in status_recent_raw.tsv whose hex contains the
+    id in little-endian order (the same matching the preview path uses)."""
+    rows = read_tsv(CANDIDATE_RAW_TSV, ["id", "ts", "raw_len", "raw"])
+    row = next((r for r in rows if normalize_meter_id(r.get("id")) == mid), None)
+    if row and str(row.get("raw") or "").strip():
+        return str(row["raw"]).strip(), str(row.get("ts") or "")
+
+    le = _id_le_hex(mid)
+    match = ("", "")
+    if le:
+        for r in read_tsv(RECENT_RAW_TSV, ["ts", "raw_len", "raw"]):
+            raw = str(r.get("raw") or "").strip()
+            if le in raw.lower():
+                match = (raw, str(r.get("ts") or ""))  # keep last (most recent)
+    return match
+
+
+def _decode_with_driver(raw: str, driver: str, mid: str, key: str) -> dict | None:
+    """Decode one RAW frame with a forced driver and return its data fields
+    (meta keys stripped), {} if nothing decoded, or None on a hard failure.
+    wmbusmeters validates the driver itself, so a wrong driver yields few/odd
+    fields rather than an error — which is exactly why the UI shows values."""
+    driver = (driver or "auto").strip() or "auto"
+    if not re.match(r"^[A-Za-z0-9_]+$", driver):
+        return None
+    raw = re.sub(r"\s+", "", raw or "")
+    if not re.fullmatch(r"[0-9A-Fa-f]+", raw or ""):
+        return None
+    mid_lc = mid.lower()
+    key_arg = key if key else "NOKEY"
+    try:
+        proc = subprocess.run(
+            [
+                WMBUSMETERS_BIN,
+                "--silent",
+                "--format=json",
+                "stdin:hex",
+                f"compare_{mid_lc}",
+                driver,
+                mid_lc,
+                key_arg,
+            ],
+            input=f"{raw}\n",
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    for line in reversed((proc.stdout or "").splitlines()):
+        line = line.strip()
+        if line.startswith("{") and '"_":"telegram"' in line:
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                return None
+            drop = {"_", "name", "id", "meter", "timestamp", "media"}
+            return {k: v for k, v in obj.items() if k not in drop}
+    return {}
+
+
+def _analyze_auto_driver(raw: str, key: str) -> str:
+    """Return the driver name from wmbusmeters' "Auto driver" line, if any."""
+    raw = re.sub(r"\s+", "", raw or "")
+    if not re.fullmatch(r"[0-9A-Fa-f]+", raw or ""):
+        return ""
+    analyze_arg = f"--analyze={key}" if key else "--analyze"
+    try:
+        proc = subprocess.run(
+            [WMBUSMETERS_BIN, analyze_arg, raw],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+    output = (proc.stdout or "") + (proc.stderr or "")
+    match = re.search(r"(?im)^\s*Auto driver\s*:\s*([A-Za-z0-9_]+)\b", output)
+    if not match:
+        return ""
+    driver = match.group(1).strip()
+    if not driver or driver.lower() == "unknown":
+        return ""
+    return driver
+
+
+def compare_meter_drivers(meter_id: str, requested_driver: str, key_override: str | None = None) -> tuple[bool, dict]:
+    """Decode a meter's last frame with wmbusmeters' auto driver (when useful)
+    or the saved driver, and with the requested driver. Pure read + short-lived
+    wmbusmeters calls (~ms each); no pipeline interaction."""
+    mid = normalize_meter_id(meter_id)
+    if not VALID_ID_RE.match(mid):
+        return False, {"ok": False, "error": "invalid_meter_id"}
+
+    raw, raw_ts = _resolve_raw_for_id(mid)
+    if not raw:
+        return False, {"ok": False, "error": "no_raw_telegram"}
+
+    key = ""
+    current_driver = "auto"
+    configured = False
+    options = read_json(OPTIONS_JSON)
+    if isinstance(options, dict):
+        for m in options.get("meters", []) or []:
+            if isinstance(m, dict) and normalize_meter_id(m.get("meter_id")) == mid:
+                configured = True
+                k = str(m.get("key") or "").strip()
+                if re.match(r"^[0-9A-Fa-f]{32}$", k):
+                    key = k
+                current_driver = str(m.get("type") or "").strip() or "auto"
+                break
+
+    requested_driver = (requested_driver or "").strip() or current_driver
+    if not re.match(r"^[A-Za-z0-9_]+$", requested_driver):
+        return False, {"ok": False, "error": "invalid_driver"}
+
+    key_override = (key_override or "").strip()
+    if key_override:
+        if not re.match(r"^[0-9A-Fa-f]{32}$", key_override):
+            return False, {"ok": False, "error": "invalid_key"}
+        key = key_override
+
+    auto_driver = _analyze_auto_driver(raw, key)
+    baseline_driver = current_driver
+    baseline_source = "saved" if configured else "auto"
+    if not configured and auto_driver:
+        baseline_driver = auto_driver
+    elif (
+        current_driver.lower() == requested_driver.lower()
+        and auto_driver
+        and auto_driver.lower() != requested_driver.lower()
+    ):
+        baseline_driver = auto_driver
+        baseline_source = "auto"
+
+    cur = _decode_with_driver(raw, baseline_driver, mid, key)
+    cand = _decode_with_driver(raw, requested_driver, mid, key)
+    if cur is None or cand is None:
+        return False, {"ok": False, "error": "decode_failed"}
+
+    return True, {
+        "ok": True,
+        "meter_id": mid,
+        "raw_ts": raw_ts,
+        "key_used": bool(key),
+        "auto_driver": auto_driver,
+        "saved_driver": current_driver,
+        "same_driver": baseline_driver.lower() == requested_driver.lower(),
+        "current": {"driver": baseline_driver, "source": baseline_source, "fields": cur},
+        "candidate": {"driver": requested_driver, "fields": cand},
     }
 
 
@@ -872,6 +1044,81 @@ def update_meter_in_options(meter_id: str, driver: str, key: str | None = None) 
     # Fallback: file-only write (plain Docker / no SUPERVISOR_TOKEN).
     write_json_atomic(OPTIONS_JSON, options)
     msg = f"Meter {meter_id} driver changed to {driver} (file only — no SUPERVISOR_TOKEN). Reloading pipeline to apply."
+    webui_add_event("warn", msg)
+    return True, msg
+
+
+def factory_reset() -> tuple[bool, str]:
+    """Remove ALL configured meters and return the add-on to its post-install state.
+
+    Persists meters=[] (Supervisor-first, same as remove_meter_from_options),
+    then writes the removed ids to FACTORY_RESET_REQUEST. bridge.sh's heartbeat
+    ticker consumes that flag: it clears each meter's retained MQTT Discovery
+    (so the entities disappear from Home Assistant), wipes runtime state
+    (status_*/search_*/seen + preview meter files) and soft-reloads the pipeline.
+    The flag is written only after options are persisted, so a failed persist
+    never triggers a teardown.
+    """
+    import urllib.request
+
+    options = read_json(OPTIONS_JSON)
+    if not isinstance(options, dict):
+        return False, "Cannot read options.json."
+
+    meters = options.get("meters", [])
+    if not isinstance(meters, list):
+        meters = []
+
+    ids = []
+    for m in meters:
+        if isinstance(m, dict) and m.get("meter_id"):
+            mid = normalize_meter_id(m.get("meter_id"))
+            if VALID_ID_RE.match(mid):
+                ids.append(mid)
+
+    options["meters"] = []
+
+    def _signal_bridge() -> None:
+        # Hand the removed ids to bridge.sh for discovery teardown + state wipe.
+        try:
+            FACTORY_RESET_REQUEST.write_text(
+                "".join(f"{i}\n" for i in ids), encoding="utf-8"
+            )
+        except OSError as exc:
+            webui_add_event("warn", f"Factory reset: cannot write request flag: {exc}")
+
+    token = os.environ.get("SUPERVISOR_TOKEN", "")
+    if token:
+        try:
+            payload = json.dumps({"options": options}, ensure_ascii=False).encode("utf-8")
+            req = urllib.request.Request(
+                "http://supervisor/addons/self/options",
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status in (200, 201):
+                    write_json_atomic(OPTIONS_JSON, options)
+                    _signal_bridge()
+                    msg = (f"Factory reset: removed {len(ids)} meter(s); clearing entities "
+                           f"and runtime state, reloading pipeline.")
+                    webui_add_event("ok", msg)
+                    return True, msg
+                body = resp.read().decode("utf-8", errors="replace")
+                return False, f"Supervisor API HTTP {resp.status}: {body[:200]}"
+        except Exception as exc:
+            webui_add_event("error", f"Supervisor API factory reset failed: {exc}")
+            return False, f"Supervisor API failed: {exc}"
+
+    # Fallback: file-only write (plain Docker / no SUPERVISOR_TOKEN).
+    write_json_atomic(OPTIONS_JSON, options)
+    _signal_bridge()
+    msg = (f"Factory reset: removed {len(ids)} meter(s) (file only — no SUPERVISOR_TOKEN); "
+           f"clearing entities and runtime state, reloading pipeline.")
     webui_add_event("warn", msg)
     return True, msg
 
@@ -2040,7 +2287,8 @@ class Handler(BaseHTTPRequestHandler):
             '/api/app', '/api/events', '/api/status', '/api/add-meter', '/api/remove-meter',
             '/api/search-control', '/api/restart-bridge', '/api/reload-pipeline',
             '/api/preview-candidate', '/api/cancel-preview',
-            '/api/ignore', '/api/unignore',
+            '/api/ignore', '/api/unignore', '/api/factory-reset',
+            '/api/compare-driver',
         )
         if any(path.endswith(suffix) for suffix in api_suffixes):
             return path
@@ -2073,6 +2321,17 @@ class Handler(BaseHTTPRequestHandler):
             key = (params.get('key') or [''])[0].strip()
             ok, msg = update_meter_in_options(meter_id, driver, key or None)
             self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
+            return
+        if path.endswith('/api/factory-reset'):
+            ok, msg = factory_reset()
+            self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
+            return
+        if path.endswith('/api/compare-driver'):
+            meter_id = (params.get('meter_id') or [''])[0].strip()
+            driver = (params.get('driver') or [''])[0].strip()
+            key = (params.get('key') or [''])[0].strip()
+            ok, payload = compare_meter_drivers(meter_id, driver, key)
+            self._send_json(200 if ok else 400, payload)
             return
         if path.endswith('/api/discovery-doctor'):
             # Ask the bridge for a live broker probe and wait for the result.
