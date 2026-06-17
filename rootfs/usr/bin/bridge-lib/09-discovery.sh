@@ -43,6 +43,27 @@ emit_discovery_from_json() {
   local dev_mdl="${meter:-wmbusmeter}"
   local dev_mfr="wmbusmeters"
 
+  # expire_after lets HA mark the entity unavailable once the meter stops
+  # talking. Base it on the meter's observed average telegram interval, x2 for
+  # safety, falling back to 3600s (1h) before we have history. It depends only
+  # on the meter id (identical for every field), so compute it once here and
+  # reuse it for the measurement loop and the status entities below.
+  local _seen_for_expire _avg_for_expire _s15_for_expire _s60_for_expire
+  IFS=$'\t' read -r _seen_for_expire _avg_for_expire _s15_for_expire _s60_for_expire \
+    < <(status_seen_stats "${id}" "meter")
+  local expire_after=3600
+  if [[ "${_avg_for_expire}" =~ ^[0-9]+$ ]]; then
+    local _double=$(( _avg_for_expire * 2 ))
+    if (( _double > expire_after )); then
+      expire_after=${_double}
+    fi
+  fi
+  # Round to nearest minute so small avg fluctuations don't churn the discovery
+  # cache. Cache key includes the rounded value so when expire_after changes
+  # (e.g. stats stabilize) HA gets an updated config and offline detection
+  # self-tunes.
+  expire_after=$(( (expire_after / 60) * 60 ))
+
   while IFS= read -r key; do
     [[ -n "${key}" ]] || continue
 
@@ -59,28 +80,6 @@ emit_discovery_from_json() {
     cfg_topic="${DISCOVERY_PREFIX}/sensor/${uniq}/${obj}/config"
     unique_id="${uniq}_${obj}"
     sensor_name="${name} ${key}"
-
-    # expire_after lets HA mark the entity unavailable once the meter
-    # stops talking. Base it on the meter's observed average telegram
-    # interval, multiplied by 2 for safety. Fall back to 3600s (1h)
-    # before we have enough history — most consumer wMBus meters
-    # transmit at intervals of 30s..1h, so 1h is a safe floor that
-    # won't false-positive on fresh installs.
-    local _seen_for_expire _avg_for_expire _s15_for_expire _s60_for_expire
-    IFS=$'\t' read -r _seen_for_expire _avg_for_expire _s15_for_expire _s60_for_expire \
-      < <(status_seen_stats "${id}" "meter")
-    local expire_after=3600
-    if [[ "${_avg_for_expire}" =~ ^[0-9]+$ ]]; then
-      local _double=$(( _avg_for_expire * 2 ))
-      if (( _double > expire_after )); then
-        expire_after=${_double}
-      fi
-    fi
-    # Round to nearest minute so small avg fluctuations don't churn
-    # the discovery cache. Cache key includes the rounded value so
-    # when expire_after changes (e.g. stats stabilize) HA gets an
-    # updated config and the offline detection self-tunes.
-    expire_after=$(( (expire_after / 60) * 60 ))
 
     cache_key="${id}|${obj}|${expire_after}"
     [[ -n "${DISCOVERY_SENT_FIELD[${cache_key}]+x}" ]] && continue
@@ -148,6 +147,101 @@ emit_discovery_from_json() {
       | .key
     ' <<<"${json_line}" 2>/dev/null || true
   )
+
+  # --- status diagnostic entities ---
+  # The wmbusmeters "status" field is a string (OK, or space-separated error
+  # flags), so it never matches the numeric filter above and would get no
+  # entity. Surface it explicitly as two diagnostic entities under the same
+  # device: a text sensor with the raw status, and a binary_sensor
+  # (device_class problem) that is ON for any non-OK value. Passthrough only --
+  # the text shown is exactly what wmbusmeters emits; the only literal is the
+  # OK baseline (wmbusmeters' default_message for the error-flags lookup).
+  if [[ "$(jq -r 'has("status")' <<<"${json_line}" 2>/dev/null || echo false)" == "true" ]]; then
+    local st_cache st_cfg st_payload bp_cache bp_cfg bp_payload
+
+    st_cache="${id}|status|${expire_after}"
+    if [[ -z "${DISCOVERY_SENT_FIELD[${st_cache}]+x}" ]]; then
+      st_cfg="${DISCOVERY_PREFIX}/sensor/${uniq}/status/config"
+      st_payload="$(jq -c -n \
+        --arg name "${name} status" \
+        --arg uniq "${uniq}_status" \
+        --arg st "${state_topic}" \
+        --arg did "${uniq}" \
+        --arg dname "${dev_name}" \
+        --arg dmdl "${dev_mdl}" \
+        --arg dmfr "${dev_mfr}" \
+        --argjson expire "${expire_after}" \
+        '{
+           name: $name,
+           unique_id: $uniq,
+           state_topic: $st,
+           value_template: "{{ value_json.get('\''status'\'') | default(none) }}",
+           availability: [
+             {
+               topic: $st,
+               value_template: "{{ '\''online'\'' if value_json.get('\''status'\'') is not none else '\''offline'\'' }}"
+             }
+           ],
+           json_attributes_topic: $st,
+           entity_category: "diagnostic",
+           icon: "mdi:alert-circle-outline",
+           expire_after: $expire,
+           device: {
+             identifiers: [$did],
+             name: $dname,
+             model: $dmdl,
+             manufacturer: $dmfr
+           }
+         }')"
+      if mqtt_pub "${st_cfg}" "${st_payload}" "${DISCOVERY_RETAIN}"; then
+        DISCOVERY_SENT_FIELD["${st_cache}"]=1
+      else
+        warn "discovery: failed to publish status sensor for id=${id} (will retry on next telegram)"
+      fi
+    fi
+
+    bp_cache="${id}|status_problem|${expire_after}"
+    if [[ -z "${DISCOVERY_SENT_FIELD[${bp_cache}]+x}" ]]; then
+      bp_cfg="${DISCOVERY_PREFIX}/binary_sensor/${uniq}/status_problem/config"
+      bp_payload="$(jq -c -n \
+        --arg name "${name} problem" \
+        --arg uniq "${uniq}_status_problem" \
+        --arg st "${state_topic}" \
+        --arg did "${uniq}" \
+        --arg dname "${dev_name}" \
+        --arg dmdl "${dev_mdl}" \
+        --arg dmfr "${dev_mfr}" \
+        --argjson expire "${expire_after}" \
+        '{
+           name: $name,
+           unique_id: $uniq,
+           state_topic: $st,
+           value_template: "{{ '\''ON'\'' if value_json.get('\''status'\'') not in [none, '\''OK'\'', '\'''\''] else '\''OFF'\'' }}",
+           payload_on: "ON",
+           payload_off: "OFF",
+           device_class: "problem",
+           availability: [
+             {
+               topic: $st,
+               value_template: "{{ '\''online'\'' if value_json.get('\''status'\'') is not none else '\''offline'\'' }}"
+             }
+           ],
+           entity_category: "diagnostic",
+           expire_after: $expire,
+           device: {
+             identifiers: [$did],
+             name: $dname,
+             model: $dmdl,
+             manufacturer: $dmfr
+           }
+         }')"
+      if mqtt_pub "${bp_cfg}" "${bp_payload}" "${DISCOVERY_RETAIN}"; then
+        DISCOVERY_SENT_FIELD["${bp_cache}"]=1
+      else
+        warn "discovery: failed to publish status problem binary_sensor for id=${id} (will retry on next telegram)"
+      fi
+    fi
+  fi
 }
 
 
@@ -215,6 +309,14 @@ clear_search_discovery_from_json() {
       | .key
     ' <<<"${json_line}" 2>/dev/null || true
   )
+
+  # Mirror emit_discovery_from_json's status block: clear the status diagnostic
+  # entities too, in case a previous buggy search run created them.
+  if [[ -z "${SEARCH_DISCOVERY_CLEARED_FIELD[${id}|status]+x}" ]]; then
+    mqtt_pub "${DISCOVERY_PREFIX}/sensor/${uniq}/status/config" "" "true" || true
+    mqtt_pub "${DISCOVERY_PREFIX}/binary_sensor/${uniq}/status_problem/config" "" "true" || true
+    SEARCH_DISCOVERY_CLEARED_FIELD["${id}|status"]=1
+  fi
 }
 
 # Remove ALL retained MQTT Discovery configs for one meter id, so its Home
@@ -236,11 +338,12 @@ clear_meter_discovery() {
   while read -r topic _rest; do
     [[ -n "${topic}" ]] || continue
     case "${topic}" in
-      "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/"*/config)
+      "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/"*/config | "${DISCOVERY_PREFIX}/binary_sensor/wmbus_${id}/"*/config)
         mqtt_pub "${topic}" "" "true" || true ;;
     esac
   done < <(timeout 5 /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -W 2 -v \
-      -t "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/+/config" 2>/dev/null || true)
+      -t "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/+/config" \
+      -t "${DISCOVERY_PREFIX}/binary_sensor/wmbus_${id}/+/config" 2>/dev/null || true)
 }
 
 # Canary entity for the opt-in HA verification (verify_ha_entities).

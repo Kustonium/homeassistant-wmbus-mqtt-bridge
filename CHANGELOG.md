@@ -1,3 +1,15 @@
+## 1.5.38
+
+### Added
+- Status diagnostic entities for every meter that reports a `status` field: a
+  text sensor with the raw status and a `binary_sensor` (`device_class: problem`)
+  that turns on for any non-`OK` state. Both appear in the device's Diagnostics
+  section and are removed together with the meter. The status text is passed
+  through verbatim from wmbusmeters, so richer drivers expose more detail — e.g.
+  `elf2` decodes the full heat-meter error flags (`DIFFERENTIAL_TEMPERATURE_TOO_LOW`,
+  `TEMPORARY_ERROR`, …) while the older `elf` driver reports only the generic TPL
+  status. Documented in README and docs/ (EN/PL/DE/CS/SK) and ARCHITECTURE.md.
+
 ## 1.5.37
 
 ### Added
