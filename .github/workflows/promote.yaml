@@ -210,8 +210,15 @@ jobs:
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add rootfs/ Dockerfile config.yaml CHANGELOG.md
-          [[ -d translations ]] && git add translations/ || true
+          # Stage the FULL result of the dev->stable sync, not a hand-picked
+          # list. The "Copy runtime files" step already rm-rf+cp-r's rootfs,
+          # Dockerfile, docker, translations, wmbusmeters-mqtt-stdin, README.md,
+          # THIRD_PARTY_NOTICES.md and docs/ (and removes docs/CLAUDE_HANDOFF.md),
+          # and the next step rewrites config.yaml. The old explicit list omitted
+          # README/docs/docker/THIRD_PARTY, so those were copied but never
+          # committed — stable doc parity silently never happened (README stayed
+          # stale at 1.5.38). git add -A stages exactly what the sync produced.
+          git add -A
           git diff --staged --stat
 
           if git diff --staged --quiet; then
