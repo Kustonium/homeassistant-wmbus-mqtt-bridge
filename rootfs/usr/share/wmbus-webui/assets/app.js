@@ -2505,6 +2505,53 @@
     `;
   }
 
+  // Editable add-on options, generated from config_options (parsed server-side
+  // from config.yaml schema) so the form never drifts from HA's own. Values
+  // live in state.configEdits (not the DOM) so live SSE re-renders never lose
+  // typing — same "state, not DOM" rule the modals use. Secrets are write-only.
+  function renderConfigForm() {
+    const opts = ((state.data || {}).config_options) || [];
+    if (!opts.length) return "";
+    const edits = state.configEdits || {};
+    const inStyle = "font-family:monospace;width:180px;max-width:46vw;";
+    const field = (s) => {
+      const k = s.key;
+      const cur = (k in edits) ? edits[k] : s.value;
+      const desc = t("cfg_desc_" + k, "");
+      let input;
+      if (s.type === "bool") {
+        const on = (cur === true || String(cur) === "true");
+        input = `<input type="checkbox" ${on ? "checked" : ""} onchange="window.__cfgSet('${k}', this.checked)">`;
+      } else if (s.type === "enum") {
+        input = `<select onchange="window.__cfgSet('${k}', this.value)" style="${inStyle}">${(s.choices || []).map(c => `<option value="${escapeHtml(c)}" ${String(cur) === c ? "selected" : ""}>${escapeHtml(c)}</option>`).join("")}</select>`;
+      } else if (s.type === "int" || s.type === "float") {
+        input = `<input type="number" step="${s.type === "float" ? "any" : "1"}" value="${escapeHtml(String(cur == null ? "" : cur))}" oninput="window.__cfgSet('${k}', this.value)" style="${inStyle}">`;
+      } else if (s.secret) {
+        const ph = s.secret_set ? t("cfg_secret_set", "•••• set — leave blank to keep") : t("cfg_secret_empty", "(not set)");
+        input = `<input type="password" autocomplete="new-password" value="${escapeHtml(String((k in edits) ? edits[k] : ""))}" placeholder="${escapeHtml(ph)}" oninput="window.__cfgSet('${k}', this.value)" style="${inStyle}">`;
+      } else {
+        input = `<input type="text" value="${escapeHtml(String(cur == null ? "" : cur))}" oninput="window.__cfgSet('${k}', this.value)" style="${inStyle}">`;
+      }
+      return `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 0;border-bottom:1px solid #15222c;">
+          <div style="display:flex;flex-direction:column;gap:2px;min-width:0;">
+            <code style="font-size:12px;color:#cfe3ee;">${escapeHtml(k)}</code>
+            ${desc ? `<span style="font-size:11px;color:#9eafba;">${escapeHtml(desc)}</span>` : ""}
+          </div>
+          <div style="flex:0 0 auto;text-align:right;">${input}</div>
+        </div>`;
+    };
+    return `
+      <section class="section">
+        <div class="section-head"><h2>⚙️ ${escapeHtml(t("cfg_title", "Configuration"))}</h2></div>
+        <p style="font-size:12px;color:#9eafba;margin:0 0 10px;">${escapeHtml(t("cfg_intro", "Edit the add-on options here — the same options as the Home Assistant Configuration tab, with an explanation of each. Core options take effect after an add-on restart."))}</p>
+        ${opts.map(field).join("")}
+        <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+          <button class="btn primary" data-action="save-config">${escapeHtml(t("cfg_save", "Save options"))}</button>
+          <span style="font-size:11px;color:#f3c84b;">⚠️ ${escapeHtml(t("cfg_restart_note", "After saving, restart the add-on (top bar) to apply core options."))}</span>
+        </div>
+      </section>`;
+  }
+
   function settingsPage() {
     const data = state.data || {};
     const model = data.model || {};
@@ -2544,11 +2591,19 @@
         <p style="font-size:12px;color:#9eafba;margin:0 0 10px;">${escapeHtml(t("reset_intro", "Removes ALL configured meters, clears their Home Assistant entities (retained discovery), and wipes runtime state (candidates, ignored list, statistics). The add-on returns to its post-install state. This cannot be undone."))}</p>
         <button class="btn danger" data-action="factory-reset">${escapeHtml(t("reset_btn", "Remove all meters & reset"))}</button>
       </section>
+      ${renderConfigForm()}
       <section class="section">
         <div class="section-head"><h2>${escapeHtml(t("webui_options_snapshot", "Options snapshot"))}</h2></div>
-        <div class="code">${escapeHtml(JSON.stringify(data.options || {}, null, 2))}</div>
+        <div class="code">${escapeHtml(JSON.stringify(maskSecrets(data.options || {}), null, 2))}</div>
       </section>
     `;
+  }
+
+  // Never render the MQTT password in plaintext in the snapshot.
+  function maskSecrets(obj) {
+    const o = Object.assign({}, obj);
+    if (o.external_mqtt_password) o.external_mqtt_password = "••••••";
+    return o;
   }
 
   // Discovery Doctor modal — renders the checklist from state.doctorModal:
@@ -2733,6 +2788,12 @@
     }
     const h = document.getElementById(hiddenId);
     if (h) h.value = v;
+  };
+  // Settings config-form sink: store edits in state (not the DOM) so live SSE
+  // re-renders never lose typing. No render() per keystroke (would drop focus).
+  window.__cfgSet = function (key, value) {
+    if (!state.configEdits) state.configEdits = {};
+    state.configEdits[key] = value;
   };
   window.__editModalKeySet = function (value) {
     if (state.editModal) {
@@ -3151,6 +3212,31 @@
 
     if (action === "close-edit-modal") {
       state.editModal = null;
+      render();
+      return;
+    }
+
+    if (action === "save-config") {
+      const opts = ((state.data || {}).config_options) || [];
+      const edits = state.configEdits || {};
+      const payload = {};
+      for (const s of opts) {
+        const k = s.key;
+        if (s.secret) {
+          // Blank/untouched secret = keep current — only send a typed value.
+          if (k in edits && String(edits[k]) !== "") payload[k] = edits[k];
+        } else {
+          payload[k] = (k in edits) ? edits[k] : s.value;
+        }
+      }
+      try {
+        const res = await postApi("save-config", payload);
+        state.configEdits = {};
+        await fetchData(currentLang());
+        toast(res.message || t("cfg_saved", "Options saved. Restart to apply."));
+      } catch (error) {
+        toast(error.message, true);
+      }
       render();
       return;
     }

@@ -50,6 +50,14 @@ flowchart LR
 > (ESP32 + CC1101/SX1276/SX1262, publikuje RAW HEX). Oba projekty sú nezávislé —
 > add-on prijíma hex z ľubovoľného zdroja publikujúceho na `raw_topic`.
 
+> 🌉 **Ako celok tvoria ESP (RF prijímač) a tento add-on (dekodér)
+> distribuovaný _wM-Bus → Home Assistant gateway_** — rádio je tam, kde je
+> signál, a dekódovanie (dešifrovanie, drivery, ~120 typov meračov) beží na HA.
+> Na rozdiel od monolitických wM-Bus gateway (rádio + dekodér v jednej krabičke)
+> nepotrebuje lokálny USB dongle a škáluje pridávaním lacných ESP uzlov.
+>
+> **Každá polovica funguje aj samostatne a sú zameniteľné:** ESP kŕmi ľubovoľný MQTT backend (Node-RED, vlastný skript, vlastný dekodér) a add-on dekóduje hex z ľubovoľného zdroja na `raw_topic` (tento ESP, rtl-wmbus, iný gateway, replay nástroj) — spolupracujú, ale ani jedna nezávisí od druhej.
+
 ---
 
 ## 2. Požiadavky
@@ -60,6 +68,10 @@ flowchart LR
 
 > ⚠️ Neprevádzkuj paralelne oficiálny add-on `wmbusmeters` — tento projekt má vlastnú
 > inštanciu a navzájom by sa zdvojovali.
+
+> 🧱 **Hranica zodpovednosti.** Projekt poskytuje dvoch MQTT klientov — firmware ESP (rádio → MQTT) a tento add-on (MQTT → dekódovanie → HA); jeho rozsah končí pri MQTT téme. **Samotný broker — autentifikácia, ACL, TLS, sieťová expozícia a prípadný bridging broker-broker pre vzdialené/distribuované inštalácie (lokalita A → internet → lokalita B) — je zodpovednosťou prevádzkovateľa.** Odporúčané: broker drž v LAN; pre vzdialený prístup použi tunel/VPN alebo bridging brokera s TLS; nevystavuj port 1883 ani WebUI (8099) priamo do internetu. Pozn.: pri meračoch s AES ostáva payload šifrovaný meračom end-to-end, nezávisle od transportu brokera.
+
+> ⚠️ **Začiatočník? Prečítaj si to, než niečo vystavíš.** **Nepresmerovávaj** na domácom routeri port brokera (1883) ani Home Assistant do internetu — vystavený broker môže čítať a zneužiť ktokoľvek. Pre prístup zvonku použi hotové bezpečné riešenie: **Home Assistant Cloud (Nabu Casa)** alebo add-ony **Tailscale** / **Cloudflare Tunnel**. Nie si si istý? Nechaj všetko v domácej sieti — add-on na svoju funkciu internet nepotrebuje.
 
 ---
 
@@ -150,6 +162,15 @@ Nájdi kurzorom na **ⓘ** pri hlavičke PRÍJEM — máš legendu. Stručne:
 - Kandidáti bez AES sa dekódujú automaticky — stĺpec **Hodnota** ukazuje živý náhľad
   bez konfigurácie.
 - **Pridať** uloží merač a prenačíta pipeline.
+- **Porovnať** v modale **Pridať** alebo **Driver…** dekóduje posledný telegram dvoma
+  drivermi bez uloženia zmien. Vyber driver v poli **Driver**, pri šifrovanom
+  merači zadaj AES kľúč a klikni na **Porovnať**. Ľavý stĺpec je uložený driver
+  alebo auto-detekcia `wmbusmeters`, pravý stĺpec je tebou vybraný driver. Zelené
+  riadky sú ďalšie polia, žlté riadky iné hodnoty; viac polí **neznamená**
+  automaticky správne — over hodnoty na displeji merača.
+- **Hlásenie…** pre kandidáta zámerne nepoužíva AES kľúč a nezobrazuje súkromné
+  odpočty. Ak chceš vidieť hodnoty pred pridaním merača, použi **Pridať →
+  Porovnať** a zadaj AES kľúč v tomto modale.
 - **Odstrániť vybrané** — zaškrtni checkboxy a odober viac naraz (tlačidlo nad tabuľkou).
 
 ---
@@ -178,6 +199,12 @@ flowchart TD
 
 Kým príde prvý telegram, dashboard ukazuje panel **„čaká na prvý telegram"**. Plný
 reštart add-onu je len núdzová záloha.
+
+**Nepodporovaný merač?** Ak sa kandidát nikdy nedekóduje (neznámy driver /
+„unknown format signature"), použite tlačidlo **Hlásenie…** v jeho riadku:
+add-on zostaví hotový blok hlásenia pre upstream projekt wmbusmeters (surový
+telegram + výstup `wmbusmeters --analyze`). Telegram obsahuje sériové číslo
+merača; AES kľúč nie je nikdy priložený.
 
 ---
 
@@ -219,6 +246,22 @@ Z [`config.yaml`](../config.yaml).
 | `state_retain` | bool | `false` | Retained stav |
 | `verify_ha_entities` | bool | `false` | (Opt-in) opýtaj sa HA Core API, či entity skutočne vznikli. Zapnutie udelí read-only prístup k HA Core API. |
 
+Každá entita z Discovery má **availability template**: ak v poslednom telegrame
+merača chýba dané pole (niektoré merače striedajú krátke a plné rámce), entita
+zobrazí `unavailable` namiesto zastaranej alebo falošnej hodnoty — a
+automaticky sa obnoví s ďalším telegramom, ktorý pole obsahuje. Nezávisle od
+toho automaticky ladené `expire_after` (cca 2× pozorovaný interval vysielania
+merača, minimálne 1 h) označí entity ako `unavailable`, keď merač stíchne.
+
+Okrem číselných meracích senzorov každý merač, ktorý hlási pole `status`,
+dostane aj dve **diagnostické** entity (v sekcii *Diagnostika* zariadenia):
+`sensor` so surovým textom stavu a `binary_sensor` (`device_class: problem`),
+ktorý sa zapne vždy, keď je stav iný než `OK`. Text sa preberá doslovne z
+wmbusmeters, takže konkrétne príznaky závisia od ovládača — napr. `elf2`
+dekóduje celé bitové pole chýb merača tepla (`DIFFERENTIAL_TEMPERATURE_TOO_LOW`,
+`TEMPORARY_ERROR`, …), zatiaľ čo starší ovládač `elf` hlási len všeobecný TPL
+stav. Pre bohatšiu diagnostiku zvoľte `elf2`.
+
 ### Režim SEARCH
 
 | Pole | Typ | Predvolené | Popis |
@@ -235,6 +278,8 @@ Z [`config.yaml`](../config.yaml).
 |---|---|---|---|
 | `loglevel` | enum | `normal` | `normal` / `verbose` / `debug` |
 | `debug_every_n` | int | `0` | Extra diagnostika každý N-tý telegram |
+
+> 💡 Všetky vyššie uvedené možnosti sa dajú upraviť aj priamo vo WebUI v **Nastavenia → Konfigurácia** (s popisom pri každej); kľúčové možnosti sa prejavia po reštarte doplnku.
 
 ### Merače — `meters[]`
 
@@ -259,6 +304,34 @@ hlavička `Accept-Language` → predvolene `en`. Prepínač vpravo hore.
 ---
 
 ## 10. Riešenie problémov
+
+### „Telegramy dorazia na broker, ale v HA nie sú entity"
+
+Spusti **Discovery Doctor** (pohľad NASTAVENIA): checklist jedným kliknutím
+overí pripojenie k brokeru, či je MQTT Discovery zapnuté a retained, či Home
+Assistant skutočne počúva nakonfigurovaný `discovery_prefix` (cez retained
+birth message HA) a či na brokeri existujú retained discovery configy pre
+každý nakonfigurovaný merač — s náhľadom payloadu a tlačidlom **Vynútiť
+re-discovery**. Bez hrabania v logoch a `mosquitto_sub`.
+
+### „Chcem začať odznova — odstrániť všetky merače"
+
+V zobrazení NASTAVENIA tlačidlo **Resetovať doplnok** odstráni VŠETKY
+nakonfigurované merače, vymaže ich entity v Home Assistante (publikuje prázdne
+retained discovery configy, takže entity zmiznú) a vyčistí behový stav
+(kandidáti, zoznam ignorovaných, štatistiky). Doplnok sa vráti do stavu po
+inštalácii. Akcia je nezvratná a najprv vyžaduje potvrdenie.
+
+### „Môj merač šifruje telegramy — čo teraz?"
+
+Väčšina fakturačných meračov šifruje payload (kandidát má odznak **AES req.**).
+Bez individuálneho 128-bitového AES kľúča (32 hex znakov) je dekódovanie
+nemožné — nie je to chyba. Kde kľúč získať: **správca budovy / družstvo**,
+**dodávateľ média**, ktorý merač fakturuje, alebo **inštalatér merača**. Merač
+môžeš pridať bez kľúča a doplniť ho neskôr tlačidlom **Driver…**. Ak je kľúč
+chybný alebo chýba, wmbusmeters merač ticho ignoruje — add-on to deteguje a
+pri merači ukáže červený status **🔑 AES kľúč neplatný / chýba AES kľúč**; po
+oprave kľúča sa pipeline prenačíta a dekódovanie sa obnoví s ďalším telegramom.
 
 ### „Nevidím žiadne telegramy" (RAW count = 0)
 1. Publikuje prijímač na `wmbus/<čokoľvek>/telegram`? Test: `mosquitto_sub -h <broker> -t 'wmbus/#' -v`.

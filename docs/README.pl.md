@@ -52,6 +52,15 @@ flowchart LR
 > (ESP32 + CC1101/SX1276/SX1262, publikuje RAW HEX). Oba projekty są niezależne —
 > add-on przyjmuje hex z dowolnego źródła publikującego na `raw_topic`.
 
+> 🌉 **Całościowo ESP (odbiornik radiowy) i ten add-on (dekoder) tworzą
+> rozproszony _gateway wM-Bus → Home Assistant_** — radio stoi tam, gdzie jest
+> zasięg, a dekodowanie (deszyfracja, drivery, ~120 typów liczników) działa na
+> HA. W odróżnieniu od monolitycznych bramek wM-Bus (radio + dekoder w jednym
+> pudełku) nie wymaga lokalnego dongla USB i skaluje się przez dostawianie
+> tanich węzłów ESP.
+>
+> **Każdą połowę można też używać samodzielnie i są wymienne:** ESP karmi dowolny backend MQTT (Node-RED, własny skrypt, własny dekoder), a add-on dekoduje hex z dowolnego źródła na `raw_topic` (ten ESP, rtl-wmbus, inny gateway, narzędzie replay) — współpracują, ale żadna nie zależy od drugiej.
+
 ---
 
 ## 2. Wymagania
@@ -62,6 +71,10 @@ flowchart LR
 
 > ⚠️ Nie instaluj równolegle oficjalnego add-onu `wmbusmeters` — ten projekt ma
 > własną instancję i będą się dublować.
+
+> 🧱 **Granica odpowiedzialności.** Projekt dostarcza dwóch klientów MQTT — firmware ESP (radio → MQTT) i ten add-on (MQTT → dekodowanie → HA); jego zakres kończy się na temacie MQTT. **Sam broker — uwierzytelnianie, ACL, TLS, ekspozycja sieciowa oraz ewentualny mostek broker-broker dla instalacji zdalnych/rozproszonych (lokalizacja A → internet → lokalizacja B) — jest odpowiedzialnością operatora.** Zalecane: trzymaj broker w LAN; do dostępu zdalnego użyj tunelu/VPN albo mostka brokera z TLS; nie wystawiaj portu 1883 ani WebUI (8099) wprost do internetu. Uwaga: dla liczników z AES payload pozostaje zaszyfrowany przez licznik end-to-end, niezależnie od transportu brokera.
+
+> ⚠️ **Początkujący? Przeczytaj, zanim cokolwiek wystawisz.** **Nie** przekierowuj na domowym routerze portu brokera (1883) ani Home Assistanta do internetu — wystawiony broker może odczytać i wykorzystać ktokolwiek. Do dostępu z zewnątrz użyj gotowego, bezpiecznego rozwiązania: **Home Assistant Cloud (Nabu Casa)** albo dodatków **Tailscale** / **Cloudflare Tunnel**. Nie masz pewności? Zostaw wszystko w sieci domowej — add-on do działania nie potrzebuje internetu.
 
 ---
 
@@ -153,6 +166,16 @@ Najedź na **ⓘ** przy nagłówku ODBIÓR — masz legendę. W skrócie:
 - Kandydaci bez AES dekodują się automatycznie — w kolumnie **Wartość** widać
   podgląd na żywo bez konfigurowania.
 - **Dodaj** zapisuje licznik do konfiguracji i przeładowuje pipeline.
+- **Porównaj** w modalu **Dodaj** lub **Driver…** dekoduje ostatni telegram dwoma
+  driverami bez zapisywania zmian. Wybierz driver w polu **Sterownik**, wpisz
+  klucz AES jeśli licznik jest szyfrowany i kliknij **Porównaj**. Lewa kolumna to
+  driver zapisany albo auto-detekcja `wmbusmeters`, prawa kolumna to driver
+  wybrany przez Ciebie. Zielone wiersze oznaczają dodatkowe pola, żółte — inną
+  wartość; więcej pól **nie** znaczy automatycznie poprawnie, więc porównaj
+  wartości z wyświetlaczem licznika.
+- **Zgłoszenie…** dla kandydata celowo nie używa klucza AES i nie pokazuje
+  prywatnych odczytów. Jeśli chcesz zobaczyć wartości przed dodaniem licznika,
+  użyj **Dodaj → Porównaj** i wpisz klucz AES w tym modalu.
 - **Usuń zaznaczone** — zaznacz checkboxy i usuń kilka naraz (przycisk nad tabelą).
 
 ---
@@ -182,6 +205,12 @@ flowchart TD
 
 Zanim przyjdzie pierwszy telegram, dashboard pokazuje sekcję **„czeka na pierwszy
 telegram"**. Pełny restart dodatku jest tylko awaryjnym fallbackiem.
+
+**Niewspierany licznik?** Jeśli kandydat nigdy się nie dekoduje (nieznany driver
+/ „unknown format signature"), użyj przycisku **Zgłoszenie…** w jego wierszu:
+add-on buduje gotowy do wklejenia blok zgłoszenia do projektu wmbusmeters
+(surowy telegram + wynik `wmbusmeters --analyze`). Telegram zawiera numer
+seryjny licznika; klucz AES nigdy nie jest dołączany.
 
 ---
 
@@ -225,6 +254,23 @@ Z [`config.yaml`](../config.yaml).
 | `state_retain` | bool | `false` | Retained dla stanu |
 | `verify_ha_entities` | bool | `false` | (Opt-in) pyta HA Core API, czy encje faktycznie powstały. Włączenie nadaje read-only dostęp do HA Core API. |
 
+Każda encja z Discovery ma **availability template**: gdy w ostatnim telegramie
+licznika brakuje danego pola (niektóre liczniki wysyłają naprzemiennie ramki
+krótkie i pełne), encja pokazuje `unavailable` zamiast przestarzałej lub
+fałszywej wartości — i wraca automatycznie przy następnym telegramie
+zawierającym to pole. Niezależnie od tego auto-strojony `expire_after`
+(ok. 2× zaobserwowany interwał nadawania licznika, minimum 1 h) oznacza encje
+jako `unavailable`, gdy licznik zamilknie.
+
+Poza liczbowymi sensorami pomiarowymi każdy licznik raportujący pole `status`
+dostaje też dwie encje **diagnostyczne** (w sekcji *Diagnostyka* urządzenia):
+`sensor` z surowym tekstem statusu oraz `binary_sensor` (`device_class:
+problem`), który włącza się, gdy status jest inny niż `OK`. Tekst jest
+przekazywany 1:1 z wmbusmeters, więc konkretne flagi zależą od drivera — np.
+`elf2` dekoduje pełne pole błędów ciepłomierza
+(`DIFFERENTIAL_TEMPERATURE_TOO_LOW`, `TEMPORARY_ERROR`, …), podczas gdy starszy
+`elf` raportuje tylko ogólny status TPL. Dla pełnej diagnostyki wybierz `elf2`.
+
 ### Tryb SEARCH
 
 | Pole | Typ | Domyślnie | Opis |
@@ -265,6 +311,45 @@ nagłówek `Accept-Language` → domyślnie `en`. Przełącznik w prawym górnym
 ---
 
 ## 10. Rozwiązywanie problemów
+
+### „Telegramy docierają do brokera, ale w HA nie ma encji"
+
+Uruchom **Discovery Doctor** (widok USTAWIENIA): checklista jednym kliknięciem
+sprawdza połączenie z brokerem, czy MQTT Discovery jest włączone i retained,
+czy Home Assistant faktycznie nasłuchuje skonfigurowanego `discovery_prefix`
+(po retained birth message HA) oraz czy retained configi discovery istnieją na
+brokerze dla każdego skonfigurowanego licznika — z podglądem payloadu i
+przyciskiem **Wymuś ponowne discovery**. Bez grzebania w logach i
+`mosquitto_sub`.
+
+### „Chcę zacząć od zera — usuń wszystkie liczniki"
+
+W widoku USTAWIENIA przycisk **Wyzeruj add-on** usuwa WSZYSTKIE skonfigurowane
+liczniki, kasuje ich encje w Home Assistant (publikuje puste retained configi
+discovery, więc encje znikają) i czyści stan runtime (kandydaci, lista
+ignorowanych, statystyki). Add-on wraca do stanu jak po instalacji. Operacja
+jest nieodwracalna i wymaga potwierdzenia.
+
+### „Chcę zmieniać opcje bez wychodzenia z WebUI"
+
+Widok USTAWIENIA ma edytowalny formularz **Konfiguracja** z tymi samymi opcjami
+co zakładka Konfiguracja w Home Assistant, z opisem „po co są" przy każdej.
+Formularz jest generowany ze schematu add-onu, więc zawsze zgadza się z HA. Zapis
+trafia do opcji przez Supervisor API; hasło MQTT jest tylko do zapisu (zostaw
+puste, by zachować). Opcje rdzenne wchodzą w życie po restarcie add-onu (górny
+pasek).
+
+### „Mój licznik szyfruje telegramy — co dalej?"
+
+Większość liczników rozliczeniowych szyfruje payload (kandydat ma odznakę
+**AES req.**). Bez indywidualnego 128-bitowego klucza AES (32 znaki hex)
+dekodowanie jest niemożliwe — to nie jest błąd. Skąd wziąć klucz: **zarządca
+budynku / spółdzielnia**, **dostawca medium**, który rozlicza licznik, albo
+**instalator licznika**. Licznik możesz dodać bez klucza i uzupełnić go później
+przyciskiem **Driver…**. Jeśli klucz jest błędny lub go brak, wmbusmeters po
+cichu ignoruje licznik — add-on to wykrywa i pokazuje czerwony status **🔑
+klucz AES nieprawidłowy / brak klucza AES** przy liczniku; po poprawieniu
+klucza pipeline się przeładowuje i dekodowanie wraca przy następnym telegramie.
 
 ### „Nie widzę żadnych telegramów" (RAW count = 0)
 1. Odbiornik publikuje na `wmbus/<cokolwiek>/telegram`? Test: `mosquitto_sub -h <broker> -t 'wmbus/#' -v`.

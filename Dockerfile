@@ -15,20 +15,24 @@ RUN apk add --no-cache \
 
 WORKDIR /src
 
-# Pin to a known-good upstream commit instead of master HEAD.
-# Upstream's restructuring (wmbusmeters/wmbusmeters#1940) once left master
-# uncompilable (util.h missing <ctime> after the util.cc split, 2026-06-11);
-# that is why this is pinned to an explicit SHA rather than tracking master.
-# Upstream fixed the build (commit "Add ctime for docker builds", 2026-06-11),
-# so this pin is bumped 8c35c4a1 (2.0.0-521) -> ad20d83a (2.0.0-541): +20
-# commits of driver updates/fixes. ad20d83a was built locally and passes all
-# 13 golden decode fixtures (tests/fixtures/golden.tsv) with no field/value
-# regression. Every bump is gated in CI by decode-smoke + the standalone
-# boot-test (bump needs both), so a regression never reaches a published image.
-# NB: no `sed` stripping -flto — at this commit -flto is only a Makefile
-# comment. A full clone (not --depth 1) is required: the Makefile derives the
-# version string via `git describe --tags` (e.g. 2.0.0-541-gad20d83a).
-ARG WMBUSMETERS_COMMIT=ad20d83a576e2870c6f29246e6d5202da17d61a5
+# Pin to a known-good upstream commit instead of tracking master HEAD. The pin
+# gives reproducible image builds plus a CI gate (decode-smoke + the standalone
+# boot-test run on every bump), independent of upstream master moving under us.
+# It originally also worked around master being briefly uncompilable
+# (wmbusmeters/wmbusmeters#1940, util.h missing <ctime>, 2026-06-11) — long fixed
+# — but the pin stays for reproducibility, not just that incident.
+#
+# Bumped ad20d83a (2.0.0-541) -> ac4f2953 (tag 3.0.0, 2026-06-17). This is a
+# MAJOR upstream release, so it was verified locally before pinning: builds
+# clean, passes all 13 golden decode fixtures (tests/fixtures/golden.tsv) with no
+# field/value regression, and `--listdrivers` still lists the built-in izar
+# driver (123 drivers) consumed by the WebUI catalog below.
+# NB: 3.0.0 removed `--listmeters`; the drivers.json step already prefers
+# `--listdrivers`, so the legacy fallback there is now historical (harmless).
+# A full clone (not --depth 1) is required: the Makefile derives the version
+# string via `git describe --tags`. The Alpine build itself is the final gate in
+# CI's build + boot-test jobs (local verification above is Ubuntu/WSL).
+ARG WMBUSMETERS_COMMIT=ac4f295369a48ef51cb835e6920b62cbee743bd6
 RUN git clone https://github.com/wmbusmeters/wmbusmeters.git . \
   && git checkout --detach "${WMBUSMETERS_COMMIT}" \
   && ./configure \

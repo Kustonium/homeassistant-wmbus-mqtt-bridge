@@ -1,3 +1,8 @@
+## 1.5.39
+
+### Added
+- edit add-on options from WebUI Settings, generated from the schema (78e4b51)
+
 ## 1.5.38
 
 ### Added

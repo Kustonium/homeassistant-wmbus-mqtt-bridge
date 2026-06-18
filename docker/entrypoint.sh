@@ -25,7 +25,7 @@ if [[ ! -f "${OPTIONS_JSON}" ]]; then
 
   "search_mode": false,
   "search_expected_value_m3": 0,
-  "search_tolerance_m3": 1,
+  "search_tolerance_m3": 0.05,
   "search_delta_mode": false,
   "search_min_delta_m3": 0.001,
   "search_topic": "wmbus/search/candidates",
@@ -55,6 +55,12 @@ MQTT_USER="$(jq -r '.external_mqtt_username // .mqtt.username // ""' "${OPTIONS_
 MQTT_PASS="$(jq -r '.external_mqtt_password // .mqtt.password // ""' "${OPTIONS_JSON}")"
 
 export MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASS
+
+WEBUI_PORT="${WEBUI_PORT:-8099}"
+export WEBUI_PORT
+
+echo "[wmbus-bridge] Starting WebGUI on port ${WEBUI_PORT}..."
+/usr/bin/python3 /usr/bin/webui.py &
 
 echo "[wmbus-bridge] Starting core bridge..."
 exec /usr/bin/bridge.sh
