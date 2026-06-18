@@ -51,6 +51,15 @@ flowchart LR
 > verwendet (ESP32 + CC1101/SX1276/SX1262, veröffentlicht RAW HEX). Beide Projekte
 > sind unabhängig — das Add-on nimmt Hex von jeder Quelle an, die auf `raw_topic` veröffentlicht.
 
+> 🌉 **Als Ganzes bilden der ESP (RF-Empfänger) und dieses Add-on (Decoder)
+> ein verteiltes _wM-Bus → Home-Assistant-Gateway_** — das Funkmodul steht dort,
+> wo Empfang ist, das Dekodieren (Entschlüsselung, Treiber, ~120 Zählertypen)
+> läuft auf HA. Anders als monolithische wM-Bus-Gateways (Funk + Decoder in
+> einer Box) braucht es keinen lokalen USB-Dongle und skaliert durch das
+> Hinzufügen günstiger ESP-Knoten.
+>
+> **Jede Hälfte läuft auch eigenständig und ist austauschbar:** der ESP speist ein beliebiges MQTT-Backend (Node-RED, ein eigenes Skript, ein eigener Decoder), und das Add-on dekodiert Hex aus beliebiger Quelle auf `raw_topic` (dieser ESP, rtl-wmbus, ein anderes Gateway, das Replay-Tool) — sie kooperieren, aber keine hängt von der anderen ab.
+
 ---
 
 ## 2. Voraussetzungen
@@ -61,6 +70,10 @@ flowchart LR
 
 > ⚠️ Betreibe nicht parallel das offizielle `wmbusmeters`-Add-on — dieses Projekt
 > hat seine eigene Instanz und sie würden sich doppeln.
+
+> 🧱 **Verantwortungsgrenze.** Dieses Projekt liefert zwei MQTT-Clients — die ESP-Firmware (Funk → MQTT) und dieses Add-on (MQTT → Dekodierung → HA); sein Geltungsbereich endet am MQTT-Topic. **Der Broker selbst — Authentifizierung, ACLs, TLS, Netzwerk-Exposition und ein etwaiges Broker-zu-Broker-Bridging für entfernte/verteilte Setups (Standort A → Internet → Standort B) — liegt in der Verantwortung des Betreibers.** Empfohlen: Broker im LAN halten; für Fernzugriff Tunnel/VPN oder Broker-Bridging mit TLS nutzen; Port 1883 und die WebUI (8099) nicht direkt ins Internet stellen. Hinweis: bei AES-verschlüsselten Zählern bleibt die Nutzlast vom Zähler Ende-zu-Ende verschlüsselt, unabhängig vom Broker-Transport.
+
+> ⚠️ **Neu hier? Lies das, bevor du etwas exponierst.** Leite den Broker-Port (1883) oder Home Assistant **nicht** über deinen Heimrouter ins Internet weiter — ein exponierter Broker kann von jedem gelesen und missbraucht werden. Für Zugriff von außen nutze eine fertige, sichere Option: **Home Assistant Cloud (Nabu Casa)** oder die Add-ons **Tailscale** / **Cloudflare Tunnel**. Unsicher? Lass alles im Heimnetz — das Add-on braucht keinen Internetzugang.
 
 ---
 
@@ -153,6 +166,16 @@ Fahre mit der Maus über das **ⓘ** neben der EMPFANG-Überschrift für eine Le
 - Kandidaten ohne AES werden automatisch dekodiert — die Spalte **Wert** zeigt eine
   Live-Vorschau ohne Konfiguration.
 - **Hinzufügen** speichert den Zähler und lädt die Pipeline neu.
+- **Vergleichen** im Modal **Hinzufügen** oder **Driver…** dekodiert das letzte
+  Telegramm mit zwei Treibern, ohne Änderungen zu speichern. Wähle einen Treiber
+  im Feld **Treiber**, gib bei verschlüsselten Zählern den AES-Schlüssel ein und
+  klicke **Vergleichen**. Links steht der gespeicherte Treiber oder die
+  Auto-Erkennung von `wmbusmeters`, rechts der ausgewählte Treiber. Grüne Zeilen
+  sind zusätzliche Felder, gelbe Zeilen andere Werte; mehr Felder bedeuten **nicht**
+  automatisch richtig — prüfe die Werte am Zählerdisplay.
+- **Melden…** für einen Kandidaten verwendet absichtlich keinen AES-Schlüssel und
+  zeigt keine privaten Zählerstände. Werte vor dem Hinzufügen siehst du über
+  **Hinzufügen → Vergleichen** mit AES-Schlüssel in diesem Modal.
 - **Ausgewählte entfernen** — Checkboxen markieren und mehrere auf einmal entfernen
   (Button über der Tabelle).
 
@@ -183,6 +206,13 @@ flowchart TD
 
 Bis das erste Telegramm eintrifft, zeigt das Dashboard ein Panel **„wartet auf das
 erste Telegramm"**. Ein voller Add-on-Neustart ist nur ein Notfall-Fallback.
+
+**Nicht unterstützter Zähler?** Wenn ein Kandidat nie dekodiert wird (unbekannter
+Treiber / „unknown format signature"), nutzen Sie den Button **Meldung…** in
+seiner Zeile: das Add-on erstellt einen fertigen Issue-Block für das
+wmbusmeters-Upstream-Projekt (Roh-Telegramm + `wmbusmeters --analyze`-Ausgabe).
+Das Telegramm enthält die Seriennummer des Zählers; der AES-Schlüssel wird nie
+beigefügt.
 
 ---
 
@@ -226,6 +256,24 @@ Aus [`config.yaml`](../config.yaml).
 | `state_retain` | bool | `false` | Retained State |
 | `verify_ha_entities` | bool | `false` | (Opt-in) die HA Core API fragen, ob die Entitäten tatsächlich erstellt wurden. Aktivierung gewährt Lesezugriff auf die HA Core API. |
 
+Jede per Discovery angelegte Entität trägt ein **Availability-Template**: fehlt
+ein Feld im letzten Telegramm des Zählers (manche Zähler senden abwechselnd
+kurze und vollständige Rahmen), zeigt die Entität `unavailable` statt eines
+veralteten oder falschen Werts — und erholt sich automatisch mit dem nächsten
+Telegramm, das das Feld enthält. Unabhängig davon markiert ein automatisch
+abgestimmtes `expire_after` (ca. 2× das beobachtete Sendeintervall des Zählers,
+mindestens 1 h) Entitäten als `unavailable`, wenn der Zähler verstummt.
+
+Über die numerischen Mess-Sensoren hinaus erhält jeder Zähler, der ein Feld
+`status` meldet, zwei **Diagnose**-Entitäten (im Abschnitt *Diagnose* des
+Geräts): einen `sensor` mit dem rohen Statustext und einen `binary_sensor`
+(`device_class: problem`), der *an* ist, sobald der Status etwas anderes als
+`OK` ist. Der Text wird unverändert von wmbusmeters übernommen, die konkreten
+Flags hängen also vom Treiber ab — z. B. dekodiert `elf2` das vollständige
+Fehler-Bitfeld des Wärmezählers (`DIFFERENTIAL_TEMPERATURE_TOO_LOW`,
+`TEMPORARY_ERROR`, …), während der ältere Treiber `elf` nur den allgemeinen
+TPL-Status meldet. Für die umfangreichere Diagnose `elf2` wählen.
+
 ### SEARCH-Modus
 
 | Feld | Typ | Default | Beschreibung |
@@ -242,6 +290,8 @@ Aus [`config.yaml`](../config.yaml).
 |---|---|---|---|
 | `loglevel` | enum | `normal` | `normal` / `verbose` / `debug` |
 | `debug_every_n` | int | `0` | Zusätzliche Diagnose alle N Telegramme |
+
+> 💡 Alle obigen Optionen sind auch direkt in der WebUI unter **Einstellungen → Konfiguration** editierbar (mit einer Erklärung je Option); Kernoptionen wirken nach einem Add-on-Neustart.
 
 ### Zähler — `meters[]`
 
@@ -266,6 +316,39 @@ Häufige Treiber: Wasser — `multical21`, `iperl`, `hydrodigit`, `hydrus`, `mkr
 ---
 
 ## 10. Fehlerbehebung
+
+### „Telegramme erreichen den Broker, aber keine Entitäten in HA"
+
+Starten Sie den **Discovery Doctor** (Ansicht EINSTELLUNGEN): eine
+Ein-Klick-Checkliste prüft die Broker-Verbindung, ob MQTT Discovery aktiviert
+und retained ist, ob Home Assistant tatsächlich auf dem konfigurierten
+`discovery_prefix` hört (über HAs retained Birth-Message) und ob retained
+Discovery-Configs für jeden konfigurierten Zähler auf dem Broker existieren —
+mit Payload-Vorschau und einem Button **Re-Discovery erzwingen**. Kein
+Log-Graben, kein `mosquitto_sub`.
+
+### „Ich möchte neu anfangen — alle Zähler entfernen"
+
+In der Ansicht EINSTELLUNGEN entfernt **Add-on zurücksetzen** ALLE
+konfigurierten Zähler, löscht ihre Home-Assistant-Entitäten (es werden leere
+retained Discovery-Configs veröffentlicht, sodass die Entitäten verschwinden)
+und setzt den Laufzeitzustand zurück (Kandidaten, Ignorierliste, Statistiken).
+Das Add-on kehrt in den Zustand nach der Installation zurück. Die Aktion ist
+unumkehrbar und fragt vorher nach Bestätigung.
+
+### „Mein Zähler verschlüsselt seine Telegramme — was nun?"
+
+Die meisten Abrechnungszähler verschlüsseln ihre Payload (der Kandidat zeigt
+das Badge **AES req.**). Ohne den individuellen 128-Bit-AES-Schlüssel (32
+Hex-Zeichen) ist keine Dekodierung möglich — das ist kein Fehler. Woher der
+Schlüssel kommt: **Hausverwaltung / Genossenschaft**, der **Versorger**, der
+den Zähler abrechnet, oder der **Installateur**. Sie können den Zähler ohne
+Schlüssel hinzufügen und ihn später über den **Treiber…**-Button nachtragen.
+Bei falschem oder fehlendem Schlüssel ignoriert wmbusmeters den Zähler
+stillschweigend — das Add-on erkennt das und zeigt einen roten Status **🔑
+AES-Schlüssel ungültig / AES-Schlüssel fehlt** an der Zählerzeile; nach der
+Korrektur lädt die Pipeline neu und die Dekodierung läuft mit dem nächsten
+Telegramm weiter.
 
 ### „Ich sehe keine Telegramme" (RAW count = 0)
 1. Veröffentlicht der Empfänger auf `wmbus/<irgendetwas>/telegram`? Test: `mosquitto_sub -h <broker> -t 'wmbus/#' -v`.

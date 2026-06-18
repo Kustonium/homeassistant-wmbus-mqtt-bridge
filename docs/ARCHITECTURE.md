@@ -151,12 +151,34 @@ hold "this run only" data; the rest persist in `/data`.
 | `status_raw_count.txt` / `status_last_raw_seen.txt` | text | RAW telegram counter + last-seen (file-backed; subshell-safe) |
 | `status_recent_raw.tsv` | TSV | recent RAW hex (tail 200), for candidate RAW lookup |
 | `status_candidate_analysis.tsv` / `_raw.tsv` / `_values.tsv` / `_preview_state.tsv` | TSV | candidate encryption analysis, RAW, decoded preview values, preview state machine |
+| `status_meter_last_json.tsv` | TSV | `id <TAB> ts <TAB> json` — last full decoded JSON per configured meter (written by `status_meter_seen`); feeds the WebUI "published fields" expander (rendered only in the action-enabled meter tables — METERS/RECEIVING — where the toggle button lives; never in the read-only PANEL dashboard) |
+| `.discovery_doctor_request` / `status_discovery_doctor.json` | flag / JSON | Discovery Doctor: webui touches the flag, the heartbeat ticker runs `discovery_doctor_probe` (broker probe via `mosquitto_sub`) and writes the result |
+| `.factory_reset_request` | flag | Factory reset (Settings → "Reset add-on"): webui empties `options.json` (`meters=[]`) and writes the removed ids here (one per line). The heartbeat ticker consumes the flag, runs `clear_meter_discovery` per id (empty retained config → entities vanish from HA), wipes runtime state (`status_*`/`search_*`/`seen_ids.txt` + preview meter files) and soft-reloads the pipeline (`.reload_pipeline`), returning the add-on to its post-install state. `options.json`, the wmbusmeters binary and the `etc/listen/preview` config dirs are left intact |
+| `status_meter_key_problem.tsv` | TSV | `id <TAB> reason <TAB> ts` — AES key problem (`key_missing` / `key_invalid`) detected by `status_detect_key_problem` from wmbusmeters warnings (which then permanently ignores the meter until reload); cleared by the next decoded JSON |
 | `status_ha_presence.txt` / `status_broker_info.txt` / `status_ha_verification.txt` | text | MQTT→HA healthcheck signals (see [memory: mqtt-ha-healthcheck]) |
 | `status_heartbeat.txt` | text | liveness ticker (WebUI STALE threshold) — must survive soft reload |
 | `status_esp_telegram_devices.tsv` | TSV | per-ESP device tracker: name, last_telegram_epoch, topic, count (**truncated at startup**) |
 | `status_esp_health.json` / `status_esp_meters.json` | JSON map | per-ESP `/health` pulse and `/meters` flags (keyed by device) |
 | `status_esp_meter_snapshot.json` / `status_esp_meter_window.json` | JSON map | per-ESP per-meter reception windows (diag, opt-in) |
 | `status_wmbusmeters_version.txt`, `status_official_meters_count.txt`, `status_rate_history.tsv`, `status_bridge_start.txt`, `status_discovery_published.flag` | misc | version, configured-count, rate sparkline, start time, discovery-published flag |
+
+The WebUI driver comparison endpoint is deliberately read-only. For a configured
+meter it resolves the latest RAW frame from `status_recent_raw.tsv`; for an
+unconfigured candidate it can use `status_candidate_raw.tsv`. It then runs short
+`wmbusmeters --format=json` forced-driver decodes (`stdin:hex`) with the saved or
+typed AES key and shows the decoded fields side by side. The result is advisory:
+`wmbusmeters` auto detection and "more fields" are hints, not proof that the
+driver is correct.
+
+The Settings view also exposes an **editable options form**. Its fields are not
+hand-coded: `config_options_spec()` parses the `schema:`/`options:` blocks from
+the baked `config.yaml`, so the form can never drift from HA's own config schema
+(add an option to `config.yaml` and it appears automatically). `POST
+/api/save-config` validates each value against its schema type and persists via
+the Supervisor API (`save_config_options`), exactly like the meter edits. Secret
+fields (`external_mqtt_password`) are write-only: the value is never sent to the
+browser and a blank input keeps the current one. As with the HA config tab, core
+options take effect only after an add-on restart.
 
 `options.json` (the add-on config) is **owned by Supervisor**, not the bridge.
 Supervisor rewrites it from its DB on every start; the bridge only reads it (see
@@ -249,6 +271,31 @@ Concretely:
 - Decoded meters are published as HA MQTT Discovery entities (prefix configurable,
   retained). `discovery_published` is file-flagged (`status_discovery_published.flag`)
   so the frequent raw-counter subshell can't clobber it.
+- Discovery is emitted before the matching state payload. With the default
+  `state_retain=false`, this keeps the retained config on the broker before the
+  non-retained state payload for the same telegram is sent.
+- **Per-field availability** (`09-discovery.sh`, `emit_discovery_from_json`): every
+  entity's config carries an availability template on its own state topic —
+  `{{ 'online' if value_json.get('<key>') is not none else 'offline' }}`. A field
+  missing from the latest (partial) telegram turns only that entity `unavailable`
+  instead of leaving a stale/false value (local analog of upstream issue #1922).
+  `value_template` uses the warning-free `value_json.get(...) | default(none)`.
+  No `availability_mode` is needed — this is the only availability source.
+- **`expire_after` self-tunes**: 2× the meter's observed average telegram interval
+  (from `status_seen_stats`), floor 3600 s, rounded to whole minutes; the rounded
+  value is part of the discovery cache key, so a changed interval republishes the
+  config. The in-memory cache is empty on restart, so existing installs pick up
+  config changes automatically.
+- **Status diagnostic entities** (`09-discovery.sh`, `emit_discovery_from_json`): the
+  string `status` field never matches the numeric field filter, so it is surfaced
+  explicitly when present — a `sensor` (`entity_category: diagnostic`) with the raw
+  text and a `binary_sensor` (`device_class: problem`, `entity_category: diagnostic`)
+  whose template is `{{ 'ON' if value_json.get('status') not in [none, 'OK', ''] else
+  'OFF' }}`. Passthrough only: the text is verbatim from wmbusmeters (e.g. `elf2`
+  decodes the full ErrorFlags bitfield, `elf` only the TPL status); the sole literal
+  is the `OK` baseline. Both reuse the per-field availability template and the shared
+  `expire_after`, are rate-limited via `DISCOVERY_SENT_FIELD`, and are cleared
+  (including the `binary_sensor/` topic) by `clear_meter_discovery` on meter removal.
 - **MQTT→HA healthcheck**: the add-on detects publishing to a broker HA does not
   consume. HA presence is reported honestly — confirmed on the native broker
   (`core-mosquitto` / `mqtt_mode=ha`) or via a seen `online` birth message; the
@@ -257,6 +304,18 @@ Concretely:
   HA Core API (Template lookup by unique icon, robust to entity_id slugification)
   whether HA actually created it. Needs `homeassistant_api: true` (granted only
   when enabled).
+- **Discovery Doctor** (SETTINGS view): on-demand checklist for the "telegrams
+  reach the broker but no entities in HA" class of reports. The WebUI touches
+  `.discovery_doctor_request`; the bridge heartbeat ticker (which has the MQTT
+  credentials) runs `discovery_doctor_probe` (`09-discovery.sh`): a bounded
+  `mosquitto_sub` on `<prefix>/status` (retained HA birth proves HA listens on
+  this prefix on this broker) and on `<prefix>/sensor/wmbus_<id>/+/config` per
+  configured meter (retained configs arrive immediately on subscribe; count +
+  one sample payload). webui's POST `/api/discovery-doctor` waits ≤25 s for
+  the JSON result and merges static checks (mqtt connected, discovery
+  settings). "Force re-discovery" = the existing pipeline soft reload — the
+  in-memory `DISCOVERY_SENT_FIELD` cache resets, so configs republish with the
+  next telegrams.
 
 ---
 
@@ -296,11 +355,55 @@ repo) makes stable a copy of dev **minus the dev identity**:
 > **Lesson:** promote originally synced only `rootfs/Dockerfile/translations`, so
 > `config.yaml` and `docker/` **drifted** — that is how the `izarv2` enum and the
 > standalone-Docker entrypoint went stale on stable while dev was already fixed.
-> A dev fix that lives outside the synced set never reaches users.
+> A dev fix that lives outside the synced set never reaches users. Since then the
+> `standalone-boot` CI job (§12) boots `docker/entrypoint.sh` on every dev build,
+> so a broken standalone entrypoint blocks the version bump instead of drifting
+> silently.
 
 ---
 
-## 12. Conventions
+## 12. wmbusmeters build pin & decode smoke gate
+
+- **Pin:** the Dockerfile builds wmbusmeters from a fixed commit
+  (`ARG WMBUSMETERS_COMMIT`), not master HEAD. Rationale: upstream's codebase
+  restructuring (wmbusmeters/wmbusmeters#1940) broke master compilation
+  (2026-06-11) and any upstream breakage propagated straight into our CI.
+  The clone stays **full** (not `--depth 1`): the Makefile derives the binary's
+  version string via `git describe --tags`.
+- **Bumping the pin is a deliberate act**: change `WMBUSMETERS_COMMIT`, push, and
+  let the `decode-smoke` CI job validate the new decoder against the golden
+  fixtures before any version is published.
+- **`decode-smoke` (`.github/workflows/build.yaml`)**: after the arch images are
+  built, the job runs `tests/test_decode_smoke.sh` **inside the freshly built
+  amd64 image**. The `bump` job depends on it — a failed smoke-test means
+  `config.yaml` keeps the previous version and HA users never see the broken
+  image (which still lands in GHCR, unversioned).
+- **Fixtures** (`tests/fixtures/golden.tsv`): `<dir>/<id> TAB <driver> TAB <key>`;
+  key is `NOKEY`, a literal 32-hex key (**only for already-public keys**, e.g.
+  upstream driver test keys) or an env-var name (private keys via repo secrets —
+  never in git). `<dir>/<id>.hex` is the raw telegram, `<dir>/<id>.golden.json`
+  the expected decode (jq -S normalized, `timestamp`/`name` dropped). All
+  committed fixtures are public (upstream driver tests + the public replay
+  corpus). Meter ids are lowercased before the wmbusmeters call — id matching is
+  case-sensitive.
+- **`standalone-boot` (`.github/workflows/build.yaml`)**: boots the amd64 image
+  the way the documented Docker-standalone deployment does — default entrypoint
+  `/usr/bin/docker-entrypoint.sh` next to an anonymous Mosquitto reachable as
+  host `mosquitto` (the target of the entrypoint's generated default
+  `options.json`). Asserts from the container logs that the entrypoint generated
+  `/config/options.json`, that `bridge.sh` connected to the broker
+  (`MQTT broker ready`), and that the container is still running. Like
+  `decode-smoke`, the `bump` job depends on it, so a broken standalone boot
+  never becomes a published version. Exists because nobody tests this mode by
+  hand (§11 lesson).
+- **Regenerating goldens** (after an accepted decode change): build wmbusmeters
+  at the pinned commit, re-run the fixtures, commit the new `.golden.json`; or
+  temporarily set `GOLDEN_REQUIRE=0` in the workflow — missing goldens are then
+  printed by the job instead of failing it.
+
+---
+
+## 13. Conventions
 
 - **Commits:** Conventional Commits (`fix:`/`feat:`/`docs:`/`chore:`/`refactor:`/`test:`),
   no AI attribution footer. Public repo — write for external reviewers.

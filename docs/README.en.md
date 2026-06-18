@@ -50,6 +50,14 @@ flowchart LR
 > firmware (ESP32 + CC1101/SX1276/SX1262, publishes RAW HEX). The two projects are
 > independent — the add-on accepts hex from any source publishing on `raw_topic`.
 
+> 🌉 **As a whole, the ESP (RF receiver) and this add-on (decoder) form a
+> distributed _wM-Bus → Home Assistant gateway_** — the radio sits where the
+> signal is, while decoding (decryption, drivers, ~120 meter types) runs on HA.
+> Unlike monolithic wM-Bus gateways (radio + decoder in one box) it needs no
+> local USB dongle and scales by adding cheap ESP nodes.
+>
+> **Each half also runs standalone and is interchangeable:** the ESP feeds any MQTT backend (Node-RED, a custom script, your own decoder), and the add-on decodes hex from any source on `raw_topic` (this ESP, rtl-wmbus, another gateway, the replay tool) — they cooperate, but neither depends on the other.
+
 ---
 
 ## 2. Requirements
@@ -60,6 +68,10 @@ flowchart LR
 
 > ⚠️ Do not run the official `wmbusmeters` add-on in parallel — this project has
 > its own instance and they would duplicate each other.
+
+> 🧱 **Responsibility boundary.** This project ships two MQTT clients — the ESP firmware (radio → MQTT) and this add-on (MQTT → decode → HA); its scope ends at the MQTT topic. **The broker itself — authentication, ACLs, TLS, network exposure and any broker-to-broker bridging for remote/distributed setups (site A → internet → site B) — is the operator's responsibility.** Recommended: keep the broker on your LAN; for remote access use a tunnel/VPN or TLS broker bridging; do not expose port 1883 or the WebUI (8099) directly to the internet. Note: for AES-encrypted meters the payload stays encrypted by the meter end-to-end, independent of broker transport.
+
+> ⚠️ **New to this? Read before exposing anything.** Do **not** forward your broker's port (1883) or Home Assistant to the internet on your home router — an exposed broker can be read and abused by anyone. To reach your system from outside, use a ready-made secure option: **Home Assistant Cloud (Nabu Casa)**, or the **Tailscale** / **Cloudflare Tunnel** add-ons. Not sure? Keep everything on your home network — the add-on does not need internet access to work.
 
 ---
 
@@ -151,6 +163,16 @@ Hover the **ⓘ** next to the RECEPTION header for a legend. In short:
 - Non-AES candidates auto-decode — the **Value** column shows a live preview without
   configuring them.
 - **Add** stores the meter and reloads the pipeline.
+- **Compare** in the **Add** or **Driver…** modal decodes the last telegram with two
+  drivers without saving changes. Choose a driver in the **Driver** field, enter
+  the AES key if the meter is encrypted, then click **Compare**. The left column is
+  the saved driver or `wmbusmeters` auto-detection; the right column is the driver
+  you selected. Green rows are extra fields, amber rows are different values; more
+  fields do **not** automatically mean the driver is correct, so verify the values
+  against the meter display.
+- **Report…** for a candidate intentionally does not use the AES key and does not
+  show private readings. To see values before adding a meter, use **Add → Compare**
+  and enter the AES key in that modal.
 - **Remove selected** — tick the checkboxes and remove several at once (button above
   the table).
 
@@ -181,6 +203,12 @@ flowchart TD
 
 Until the first telegram arrives the dashboard shows a **"waiting for the first
 telegram"** panel. A full add-on restart is only an emergency fallback.
+
+**Unsupported meter?** If a candidate never decodes (unknown driver / "unknown
+format signature"), use the **Report…** button in its row: the add-on builds a
+ready-to-paste issue block for the upstream wmbusmeters project (raw telegram +
+`wmbusmeters --analyze` output). The telegram contains the meter's serial
+number; the AES key is never included.
 
 ---
 
@@ -224,6 +252,24 @@ From [`config.yaml`](../config.yaml).
 | `state_retain` | bool | `false` | Retained state |
 | `verify_ha_entities` | bool | `false` | (Opt-in) ask the HA Core API whether the entities were actually created. Enabling it grants read-only HA Core API access. |
 
+Every discovered entity carries an **availability template**: when a field is
+missing from the meter's latest telegram (some meters alternate between short
+and full frames), the entity shows `unavailable` instead of a stale or false
+value, and recovers automatically with the next telegram that contains the
+field. Independently, an auto-tuned `expire_after` (about 2× the meter's
+observed transmit interval, minimum 1 h) marks entities `unavailable` when the
+meter goes silent.
+
+Beyond the numeric measurement sensors, each meter that reports a `status`
+field also gets two **diagnostic** entities (in the device's *Diagnostics*
+section): a `sensor` with the raw status text and a `binary_sensor`
+(`device_class: problem`) that turns *on* whenever the status is anything other
+than `OK`. The text is passed through verbatim from wmbusmeters, so the exact
+flags depend on the driver — e.g. `elf2` decodes the full heat-meter error
+bitfield (`DIFFERENTIAL_TEMPERATURE_TOO_LOW`, `TEMPORARY_ERROR`, …) while the
+older `elf` driver reports only the generic TPL status. Choose `elf2` for the
+richer diagnostics.
+
 ### SEARCH mode
 
 | Field | Type | Default | Description |
@@ -264,6 +310,44 @@ Common drivers: water — `multical21`, `iperl`, `hydrodigit`, `hydrus`, `mkradi
 ---
 
 ## 10. Troubleshooting
+
+### "Telegrams reach the broker but no entities appear in HA"
+
+Run the **Discovery Doctor** (SETTINGS view): a one-click checklist that
+verifies the broker connection, whether MQTT Discovery is enabled and
+retained, whether Home Assistant actually listens on the configured
+`discovery_prefix` (via HA's retained birth message) and whether retained
+discovery configs exist on the broker for every configured meter — with a
+payload preview and a **Force re-discovery** button. No log digging or
+`mosquitto_sub` needed.
+
+### "I want to start over — remove all meters"
+
+In the SETTINGS view, **Reset add-on** removes ALL configured meters, clears
+their Home Assistant entities (it publishes empty retained discovery configs so
+the entities disappear) and wipes runtime state (candidates, the ignored list
+and statistics). The add-on returns to its post-install state. The action is
+irreversible and asks for confirmation first.
+
+### "I want to change options without leaving the WebUI"
+
+The SETTINGS view has an editable **Configuration** form with the same options as
+the Home Assistant Configuration tab, each with an explanation of what it does.
+It is generated from the add-on schema, so it always matches HA. Save writes the
+options via the Supervisor API; the MQTT password is write-only (leave blank to
+keep it). Core options take effect after an add-on restart (top bar).
+
+### "My meter encrypts its telegrams — what now?"
+
+Most utility meters encrypt their payload (the candidate shows an **AES req.**
+badge). Without the meter's individual 128-bit AES key (32 hex chars) decoding
+is impossible — this is not a bug. Where to get the key: your **building
+manager / housing association**, the **utility company** that bills the meter,
+or the **meter installer**. You can add the meter without the key and enter it
+later via the **Driver…** button. If the key is wrong or missing, wmbusmeters
+silently ignores the meter — the add-on detects this and shows a red **🔑 AES
+key invalid / AES key missing** status on the meter row; after fixing the key
+the pipeline reloads and decoding resumes with the next telegram.
 
 ### "I see no telegrams" (RAW count = 0)
 1. Is the receiver publishing to `wmbus/<anything>/telegram`? Test: `mosquitto_sub -h <broker> -t 'wmbus/#' -v`.

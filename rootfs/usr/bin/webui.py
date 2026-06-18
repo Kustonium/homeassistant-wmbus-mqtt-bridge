@@ -61,6 +61,10 @@ STATUS_DISCOVERY_DOCTOR_JSON = BASE / "status_discovery_doctor.json"
 FACTORY_RESET_REQUEST = BASE / ".factory_reset_request"
 WMBUSMETERS_BIN = "/usr/bin/wmbusmeters"
 OPTIONS_JSON = BASE / "options.json"
+# Add-on manifest, baked next to this script (Dockerfile: COPY config.yaml
+# /usr/bin/config.yaml). Source of truth for the options schema that drives the
+# editable Settings form — parsing it means the form never drifts from HA's own.
+CONFIG_YAML_PATH = Path(__file__).parent / "config.yaml"
 # Per-minute rate dashboard files written by bridge.sh
 STATUS_RATE_1M_JSON = BASE / "status_rate_1m.json"
 # 15-entry rolling history of telegrams/min (one row per finished minute).
@@ -1123,6 +1127,141 @@ def factory_reset() -> tuple[bool, str]:
     return True, msg
 
 
+def config_options_spec() -> list[dict]:
+    """Parse the scalar add-on options from config.yaml (schema + defaults) and
+    merge the current values from options.json. Drives the editable Settings
+    form so it can never drift from HA's own config schema. `meters` (a nested
+    list) is intentionally excluded — it has its own views. Secret fields
+    (password) never expose their value; only whether one is set."""
+    try:
+        text = CONFIG_YAML_PATH.read_text(encoding="utf-8")
+    except Exception:
+        return []
+
+    def _block(name: str) -> list[str]:
+        out, inside = [], False
+        for line in text.splitlines():
+            if re.match(rf"^{name}:\s*$", line):
+                inside = True
+                continue
+            if inside:
+                if re.match(r"^\S", line):  # next top-level key ends the block
+                    break
+                out.append(line)
+        return out
+
+    # defaults from the options: block (used only when options.json lacks a key)
+    defaults: dict[str, str] = {}
+    for line in _block("options"):
+        m = re.match(r"^  (\w+):\s*(\S.*)$", line)
+        if m and m.group(1) != "meters":
+            defaults[m.group(1)] = m.group(2).strip().strip('"')
+
+    cur = read_options()
+    cur = cur if isinstance(cur, dict) else {}
+
+    specs: list[dict] = []
+    for line in _block("schema"):
+        # `  key: type` — meters: has no inline type (nested list) so it is skipped
+        m = re.match(r"^  (\w+):\s*(\S.*)$", line)
+        if not m:
+            continue
+        key, raw_type = m.group(1), m.group(2).strip()
+        optional = raw_type.endswith("?")
+        t = raw_type[:-1] if optional else raw_type
+        spec: dict = {"key": key, "optional": optional, "secret": "password" in key}
+        if t == "bool":
+            spec["type"] = "bool"
+        elif t == "int":
+            spec["type"] = "int"
+        elif t == "float":
+            spec["type"] = "float"
+        elif t.startswith("list(") and t.endswith(")"):
+            spec["type"] = "enum"
+            spec["choices"] = t[5:-1].split("|")
+        else:
+            spec["type"] = "str"
+
+        if spec["secret"]:
+            spec["secret_set"] = bool(str(cur.get(key, "") or ""))
+            spec["value"] = ""
+        else:
+            spec["value"] = cur.get(key, defaults.get(key))
+        specs.append(spec)
+    return specs
+
+
+def save_config_options(values: dict) -> tuple[bool, str]:
+    """Validate edited scalar options against the schema and persist them to
+    options.json via the Supervisor API (same Supervisor-first path as the meter
+    edits). `meters` and any unknown keys are ignored; secret fields left blank
+    keep their current value. Core options only take effect after a restart —
+    the WebUI triggers that separately, exactly like the HA config tab."""
+    import urllib.request
+
+    options = read_json(OPTIONS_JSON)
+    if not isinstance(options, dict):
+        return False, "Cannot read options.json."
+
+    spec_by_key = {s["key"]: s for s in config_options_spec()}
+    for key, raw in values.items():
+        s = spec_by_key.get(key)
+        if s is None:  # unknown key or meters — never written from this form
+            continue
+        if s["secret"]:
+            if raw is None or str(raw) == "":
+                continue  # blank = keep current secret
+            options[key] = str(raw)
+            continue
+        t = s["type"]
+        if t == "bool":
+            options[key] = str(raw).strip().lower() in ("true", "1", "on", "yes")
+        elif t == "int":
+            try:
+                options[key] = int(str(raw).strip())
+            except ValueError:
+                return False, f"{key}: expected an integer."
+        elif t == "float":
+            try:
+                options[key] = float(str(raw).strip().replace(",", "."))
+            except ValueError:
+                return False, f"{key}: expected a number."
+        elif t == "enum":
+            if str(raw) not in s.get("choices", []):
+                return False, f"{key}: invalid value '{raw}'."
+            options[key] = str(raw)
+        else:
+            options[key] = str(raw)
+
+    token = os.environ.get("SUPERVISOR_TOKEN", "")
+    if token:
+        try:
+            payload = json.dumps({"options": options}, ensure_ascii=False).encode("utf-8")
+            req = urllib.request.Request(
+                "http://supervisor/addons/self/options",
+                data=payload,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status in (200, 201):
+                    write_json_atomic(OPTIONS_JSON, options)
+                    msg = "Options saved. Restart the add-on to apply."
+                    webui_add_event("ok", msg)
+                    return True, msg
+                body = resp.read().decode("utf-8", errors="replace")
+                return False, f"Supervisor API HTTP {resp.status}: {body[:200]}"
+        except Exception as exc:
+            webui_add_event("error", f"Supervisor API save-config failed: {exc}")
+            return False, f"Supervisor API failed: {exc}"
+
+    # Fallback: file-only write (plain Docker / no SUPERVISOR_TOKEN).
+    write_json_atomic(OPTIONS_JSON, options)
+    msg = "Options saved (file only — no SUPERVISOR_TOKEN). Restart to apply."
+    webui_add_event("warn", msg)
+    return True, msg
+
+
 def restart_addon_via_supervisor() -> tuple[bool, str]:
     """Restart the whole addon via HA Supervisor API.
 
@@ -1544,7 +1683,7 @@ def state(include_ignored: bool = False) -> dict:
             normalize_meter_id(c.get("id")) or str(c.get("id") or ""),
         ),
     )
-    return {"status": status, "options": options, "meters": meters, "pending_meters": pending_meters, "candidates": candidates, "events": events, "ignored": sorted(ignored), "search_candidates": search_candidates, "search_matches": search_matches, "search_status": search_status, "analysis": analysis}
+    return {"status": status, "options": options, "config_options": config_options_spec(), "meters": meters, "pending_meters": pending_meters, "candidates": candidates, "events": events, "ignored": sorted(ignored), "search_candidates": search_candidates, "search_matches": search_matches, "search_status": search_status, "analysis": analysis}
 
 
 def search_config_model(data: dict) -> dict:
@@ -2288,7 +2427,7 @@ class Handler(BaseHTTPRequestHandler):
             '/api/search-control', '/api/restart-bridge', '/api/reload-pipeline',
             '/api/preview-candidate', '/api/cancel-preview',
             '/api/ignore', '/api/unignore', '/api/factory-reset',
-            '/api/compare-driver',
+            '/api/compare-driver', '/api/save-config',
         )
         if any(path.endswith(suffix) for suffix in api_suffixes):
             return path
@@ -2332,6 +2471,13 @@ class Handler(BaseHTTPRequestHandler):
             key = (params.get('key') or [''])[0].strip()
             ok, payload = compare_meter_drivers(meter_id, driver, key)
             self._send_json(200 if ok else 400, payload)
+            return
+        if path.endswith('/api/save-config'):
+            # Flattened {key: [strval]} from _read_params; save_config_options
+            # coerces each by the schema type. meters/unknown keys are ignored.
+            values = {k: (v[0] if isinstance(v, list) and v else "") for k, v in params.items()}
+            ok, msg = save_config_options(values)
+            self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
             return
         if path.endswith('/api/discovery-doctor'):
             # Ask the bridge for a live broker probe and wait for the result.

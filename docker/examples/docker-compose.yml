@@ -16,8 +16,11 @@ services:
       dockerfile: Dockerfile
       target: addon
     container_name: wmbus
+    entrypoint: ["/usr/bin/docker-entrypoint.sh"]
     depends_on:
       - mosquitto
+    ports:
+      - "8099:8099"
     volumes:
       - ./config:/config
     restart: unless-stopped
