@@ -846,6 +846,22 @@
     // snapshot is then stale — surface it instead of showing the last good state
     // as live truth (honest witness, never a green lie).
     const bridgeStale = model.bridge_alive === false;
+    // Startup failure from run.sh (broker resolution FATAL): bridge.sh never
+    // started, so the generic "stale" banner alone leaves the user guessing.
+    // model.run_error carries a code (+ optional host detail) — render the
+    // specific, actionable message instead of the generic stale text.
+    const runError = model.run_error && model.run_error.code ? model.run_error : null;
+    const runErrorMsg = runError
+      ? (runError.code === "auth_required"
+          ? t("run_err_auth_required", "MQTT broker detected at {host}, but it rejects the login — fill in external_mqtt_username / external_mqtt_password in the add-on configuration (auto mode will use them).").replace("{host}", runError.detail || "?")
+          : runError.code === "no_broker"
+            ? t("run_err_no_broker", "No MQTT broker found: no HA MQTT service (Mosquitto), the probe of known broker add-ons found nothing, and external_mqtt_host is empty. Install the Mosquitto add-on or configure an external broker.")
+            : runError.code === "no_ha_service"
+              ? t("run_err_no_ha_service", "mqtt_mode=ha, but Home Assistant has no MQTT service — install/start the Mosquitto Broker add-on or change mqtt_mode.")
+              : runError.code === "external_host_missing"
+                ? t("run_err_external_host_missing", "mqtt_mode=external requires external_mqtt_host — fill in the broker address in the add-on configuration.")
+                : `${t("run_err_generic", "The bridge could not start (broker resolution failed) — check the add-on log.")} [${runError.code}]`)
+      : "";
     const runtime =
       meta.runtime === "home_assistant"
         ? t("webui_runtime_home_assistant", "Home Assistant")
@@ -884,7 +900,8 @@
             </div>
           </header>
           <div class="content">
-            ${bridgeStale ? `<div style="margin:0 0 12px;padding:10px 14px;border:1px solid #6b4a1e;background:#241a0c;color:#f3c84b;border-radius:6px;font-size:13px;">⚠ ${escapeHtml(t("bridge_stale_banner", "Stale data — the bridge is not updating (waiting for the broker or restarting)."))}</div>` : ""}
+            ${runError ? `<div style="margin:0 0 12px;padding:10px 14px;border:1px solid #7a2e2e;background:#2a0f0f;color:#f08c8c;border-radius:6px;font-size:13px;">⛔ <strong>${escapeHtml(t("run_err_title", "The bridge cannot start"))}:</strong> ${escapeHtml(runErrorMsg)}</div>` : ""}
+            ${bridgeStale && !runError ? `<div style="margin:0 0 12px;padding:10px 14px;border:1px solid #6b4a1e;background:#241a0c;color:#f3c84b;border-radius:6px;font-size:13px;">⚠ ${escapeHtml(t("bridge_stale_banner", "Stale data — the bridge is not updating (waiting for the broker or restarting)."))}</div>` : ""}
             ${state.restarting
               ? `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 20px;gap:16px;">
                    <div style="font-size:36px;">🔄</div>
@@ -3454,14 +3471,10 @@
 
     if (action === "restart") {
       if (!window.confirm(t("webui_restart_confirm", "Restart the Home Assistant add-on?"))) return;
-      // Docker standalone has no Supervisor API, so /api/restart-bridge can only
-      // return a 400 — nothing actually restarts. Surface a clear instruction
-      // instead of entering the "restarting" overlay and falsely reporting success.
-      const meta = (state.data || {}).meta || {};
-      if (meta.runtime === "docker") {
-        toast(t("restart_docker_manual", "Cannot restart from the WebUI in Docker mode — run 'docker restart <container>' on the host."), true);
-        return;
-      }
+      // Docker standalone: /api/restart-bridge SIGTERMs PID 1 (the entrypoint
+      // traps it and exits), so the same restarting overlay + recovery poll
+      // applies — the container comes back under a restart policy. Without
+      // one the poll times out and reports failure, which is the truth.
       // Send restart request. A 502/network error is expected — the add-on goes down.
       // Treat any response (or connection drop) as "restarting", then poll until back.
       try {

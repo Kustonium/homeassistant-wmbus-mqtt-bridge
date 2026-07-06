@@ -45,10 +45,45 @@ The HA base image uses **s6** as init. Two long-running services are declared:
 
 - **`run.sh`** — entrypoint: resolves MQTT mode (`auto`/`ha`/`external`), waits
   for the broker (bounded retry, not a FATAL loop), then `exec`s `bridge.sh`.
+  `auto` resolution order: **1)** `external_mqtt_host` when set (wins even when
+  HA's Mosquitto is up — a typed address is intent); **2)** an **instant**
+  Supervisor `mqtt` service check (registered only by the official Mosquitto
+  add-on); **3)** `scan_broker_addons` — a quick `probe_mqtt` scan of
+  well-known broker add-on hostnames (`core-mosquitto`, `a0d7b954-emqx`);
+  **4)** only when both found nothing: the full bounded `wait_for_ha_mqtt`
+  (~60 s — still needed to ride out a restarting Mosquitto), then one
+  re-scan. Scan-before-wait matters: the Supervisor services API cannot see
+  brokers that do not register the `mqtt` service (e.g. community EMQX), so
+  the old wait-first order burned a dead minute on every start of an
+  EMQX-only host (measured 65 s boot-to-bridge; now seconds). Each probe is
+  one bounded `mosquitto_sub -E` CONNECT+SUBSCRIBE, using
+  `external_mqtt_username/password` when set, anonymously otherwise. A CONNACK "not authorised" means the broker EXISTS: the FATAL
+  then names the detected host and the missing credential fields instead of a
+  generic "no MQTT service". Explicitly configured brokers (`external` and
+  auto-with-host) get the same probe as a non-fatal startup diagnostic
+  (address vs credentials) — behaviour is unchanged, `bridge.sh` still
+  retries. Every FATAL exit first writes `/data/status_run_error.txt`
+  (`code<TAB>detail`; codes: `auth_required`, `no_broker`, `no_ha_service`,
+  `external_host_missing`), cleared on successful resolution — `webui.py`
+  exposes it as `run_error` (only while the bridge heartbeat is dead) and
+  `app.js` renders it as a red actionable banner instead of the generic
+  stale-data one, so a user who never opens the add-on log still learns
+  exactly which config field is missing.
 - **`docker/entrypoint.sh`** — used **only** in standalone Docker (non-HA); it
   starts the WebGUI and the bridge directly. In HA, s6 does this, so the
   entrypoint is not on the path. (This file must track dev — it previously
-  drifted on stable; see §11.)
+  drifted on stable; see §11.) The entrypoint stays PID 1 (**no exec**) with a
+  TERM/INT trap that exits: the WebUI restart button in Docker mode SIGTERMs
+  PID 1 (delayed `os.kill` in `restart_addon_via_supervisor`), the container
+  exits and the Docker restart policy brings it back (compose example:
+  `restart: unless-stopped`; without a policy the button degrades to a stop).
+  Signalling bridge.sh directly would not work: its own TERM trap
+  (`stop_listen_instance`) cleans up but does not exit, and SIGKILL to PID 1
+  from inside the namespace is ignored by the kernel. On boot the entrypoint
+  also runs the same one-shot broker probe as run.sh's
+  `diagnose_configured_broker` (verified / rejected credentials / no
+  response) — bridge.sh's `wait_for_mqtt` swallows mosquitto's error output,
+  so this is the only place the log states WHY a broker shows offline.
 - **`webui.py`** is intentionally **read-only over the pipeline state**: it reads
   the `status_*` files written by `bridge.sh` and serves a model to `app.js`. It
   only *writes* `options.json` via the Supervisor API for the add/remove/search
@@ -373,6 +408,13 @@ repo) makes stable a copy of dev **minus the dev identity**:
 - **Bumping the pin is a deliberate act**: change `WMBUSMETERS_COMMIT`, push, and
   let the `decode-smoke` CI job validate the new decoder against the golden
   fixtures before any version is published.
+- **Monthly bump automation** (`.github/workflows/wmbusmeters-pin-bump.yml`): on
+  the 1st of each month the workflow compares the pin against upstream's latest
+  **release tag** (`X.Y.Z` — deliberately not master HEAD) and opens a bump PR
+  when it moved. Merging stays a human decision; validation happens on the push
+  to main after merge, via the same `decode-smoke` + `standalone-boot` gates as
+  a manual bump. No PR is opened when the pin is current or the bump branch for
+  that tag already exists.
 - **`decode-smoke` (`.github/workflows/build.yaml`)**: after the arch images are
   built, the job runs `tests/test_decode_smoke.sh` **inside the freshly built
   amd64 image**. The `bump` job depends on it — a failed smoke-test means

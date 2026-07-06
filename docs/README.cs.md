@@ -232,7 +232,7 @@ Z [`config.yaml`](../config.yaml).
 |---|---|---|---|
 | `raw_topic` | str | `wmbus/+/telegram` | Topic se surovými HEX rámci. `+` = wildcard (název ESP v diagnostice) |
 | `filter_hex_only` | bool | `true` | Ignoruj zprávy, které nevypadají jako HEX |
-| `mqtt_mode` | enum | `auto` | `auto` / `ha` (vynutit HA) / `external` (vždy externí) |
+| `mqtt_mode` | enum | `auto` | `auto` (pořadí: `external_mqtt_host`, je-li vyplněn → HA broker ze služby Supervisoru → sonda známých broker add-onů `core-mosquitto`/`a0d7b954-emqx`, s údaji `external_mqtt_username/password`, jsou-li zadány) / `ha` (vynutit HA) / `external` (vždy externí) |
 | `external_mqtt_host/port/username/password` | str/int | — | Externí broker (při `external`) |
 
 ### Discovery a výstup

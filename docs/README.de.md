@@ -242,7 +242,7 @@ Aus [`config.yaml`](../config.yaml).
 |---|---|---|---|
 | `raw_topic` | str | `wmbus/+/telegram` | Topic mit den rohen HEX-Frames. `+` = Wildcard (ESP-Name in der Diagnose) |
 | `filter_hex_only` | bool | `true` | Nachrichten ignorieren, die nicht wie HEX aussehen |
-| `mqtt_mode` | enum | `auto` | `auto` / `ha` (HA erzwingen) / `external` (immer extern) |
+| `mqtt_mode` | enum | `auto` | `auto` (Reihenfolge: `external_mqtt_host`, falls gesetzt → HA-Broker aus dem Supervisor-Dienst → Probe bekannter Broker-Add-ons `core-mosquitto`/`a0d7b954-emqx`, mit `external_mqtt_username/password`, falls angegeben) / `ha` (HA erzwingen) / `external` (immer extern) |
 | `external_mqtt_host/port/username/password` | str/int | — | Externer Broker (bei `external`) |
 
 ### Discovery und Ausgabe
