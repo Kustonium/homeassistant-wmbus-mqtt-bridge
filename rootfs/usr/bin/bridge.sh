@@ -121,6 +121,14 @@ STATUS_HEARTBEAT_FILE="${BASE}/status_heartbeat.txt"
 # Lets the WebUI label the MQTT tile "Mosquitto 2.x (native)" / "EMQX 5.x (other)".
 # Format: brand<TAB>version. Session-scoped (the broker can change between runs).
 STATUS_BROKER_INFO_FILE="${BASE}/status_broker_info.txt"
+# Broker-connection failure marker, written by wait_for_mqtt when the broker
+# refuses the connection WHILE THE BRIDGE IS RUNNING. Format: code<TAB>host:port
+# (codes: auth_rejected, unreachable). Cleared on the first successful publish
+# or received telegram. Rendered by the WebUI as an actionable banner — the
+# offline MQTT tile alone proved too quiet when a wrong password silently
+# blocked everything (observed live). Distinct from status_run_error.txt,
+# which covers run.sh failing BEFORE the bridge ever starts.
+STATUS_BROKER_ERROR_FILE="${BASE}/status_broker_error.txt"
 # HA entity verification (opt-in, see verify_ha_entities option): worker writes
 # one of verified | not_created | unavailable | pending here, after asking the
 # HA Core API whether the canary entity (sensor.wmbus_bridge_health) exists.
@@ -185,7 +193,7 @@ RAW_RATE_CUR_MIN_COUNT=0
 # shellcheck disable=SC2034
 RAW_RATE_PREV_MIN_COUNT=0
 
-touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_METER_KEY_PROBLEM_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}"
+touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_METER_KEY_PROBLEM_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" "${STATUS_BROKER_ERROR_FILE}"
 printf '0\n' > "${STATUS_OFFICIAL_METERS_COUNT_FILE}" 2>/dev/null || true
 # Remove any orphaned pending-reload marker left by a hard stop during deferred sleep.
 rm -rf "${BASE}/.reload_listen_pending" 2>/dev/null || true
@@ -379,6 +387,13 @@ start_esp_subscribers
       rm -f "${BASE}/status_"* "${BASE}/search_"* "${BASE}/seen_ids.txt" 2>/dev/null || true
       rm -f "${BASE}/preview/etc/wmbusmeters.d/meter-preview-"* \
             "${BASE}/listen/etc/wmbusmeters.d/meter-preview-"* 2>/dev/null || true
+      # Recreate the empty status files exactly like startup does — the wipe
+      # removed them under RUNNING writers, and not every writer tolerates a
+      # missing file (observed: _upsert_candidate_row's awk failed on the
+      # absent status_candidates.tsv and silently dropped every candidate
+      # until the next restart). All these vars are defined before this
+      # ticker subshell forks, so they are in scope here.
+      touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_METER_KEY_PROBLEM_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" "${STATUS_BROKER_ERROR_FILE}" 2>/dev/null || true
       # The wipe also removed the heartbeat we stamped at the top of this loop;
       # re-stamp now so the WebUI never sees a liveness gap before the next tick.
       printf '%s\n' "$(epoch_now)" > "${STATUS_HEARTBEAT_FILE}" 2>/dev/null || true

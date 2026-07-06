@@ -13,6 +13,11 @@ status_raw_seen() {
   # are alive even if no configured meter JSON has been decoded yet.
   # shellcheck disable=SC2034
   STATUS_MQTT_CONNECTED="true"
+  # Live traffic proves the credentials work — clear the broker-error marker
+  # (guarded by -s so this hot path normally does zero writes).
+  if [[ -s "${STATUS_BROKER_ERROR_FILE}" ]]; then
+    : > "${STATUS_BROKER_ERROR_FILE}" 2>/dev/null || true
+  fi
   # shellcheck disable=SC2034
   STATUS_WMBUSMETERS_RUNNING="true"
   status_store_raw_seen "$(iso_now)"

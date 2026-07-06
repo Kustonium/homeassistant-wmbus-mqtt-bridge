@@ -1,3 +1,9 @@
+## 1.5.41
+
+### Fixed
+- graceful broker auth-failure — reconnect backoff + runtime WebUI banner (989552a)
+- candidates silently dropped after factory reset (missing status_candidates.tsv) (93a5f7c)
+
 ## 1.5.40
 
 ### Added

@@ -68,7 +68,15 @@ The HA base image uses **s6** as init. Two long-running services are declared:
   exposes it as `run_error` (only while the bridge heartbeat is dead) and
   `app.js` renders it as a red actionable banner instead of the generic
   stale-data one, so a user who never opens the add-on log still learns
-  exactly which config field is missing.
+  exactly which config field is missing. The RUNTIME counterpart is
+  `/data/status_broker_error.txt` (`auth_rejected`/`unreachable` +
+  `host:port`), written by `wait_for_mqtt` while the bridge keeps running and
+  cleared on the first successful publish or received telegram — rendered as
+  its own banner regardless of the heartbeat. On `auth_rejected` every
+  reconnect loop also backs off (`_sub_reconnect_sleep`, exponential to a
+  120 s cap; `wait_for_mqtt` retries 5× slower): a wrong password once drove
+  ~200 connections/min against EMQX from the ~10 instant-retry subscriber
+  loops (observed live, throttled in the broker's own log).
 - **`docker/entrypoint.sh`** — used **only** in standalone Docker (non-HA); it
   starts the WebGUI and the bridge directly. In HA, s6 does this, so the
   entrypoint is not on the path. (This file must track dev — it previously

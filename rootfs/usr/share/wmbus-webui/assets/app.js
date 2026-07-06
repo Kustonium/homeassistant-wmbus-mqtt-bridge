@@ -862,6 +862,15 @@
                 ? t("run_err_external_host_missing", "mqtt_mode=external requires external_mqtt_host — fill in the broker address in the add-on configuration.")
                 : `${t("run_err_generic", "The bridge could not start (broker resolution failed) — check the add-on log.")} [${runError.code}]`)
       : "";
+    // Runtime broker failure: the bridge is ALIVE but the broker refuses the
+    // connection (wrong password / unreachable). Suppressed while runError is
+    // shown — a dead bridge is the more fundamental message.
+    const brokerError = !runError && model.broker_error && model.broker_error.code ? model.broker_error : null;
+    const brokerErrorMsg = brokerError
+      ? (brokerError.code === "auth_rejected"
+          ? t("broker_err_auth", "The MQTT broker at {host} rejects the login — check external_mqtt_username / external_mqtt_password in the configuration. The bridge keeps retrying.").replace("{host}", brokerError.detail || "?")
+          : t("broker_err_unreachable", "The MQTT broker at {host} is not responding — check the address, port and network. The bridge keeps retrying.").replace("{host}", brokerError.detail || "?"))
+      : "";
     const runtime =
       meta.runtime === "home_assistant"
         ? t("webui_runtime_home_assistant", "Home Assistant")
@@ -901,6 +910,9 @@
           </header>
           <div class="content">
             ${runError ? `<div style="margin:0 0 12px;padding:10px 14px;border:1px solid #7a2e2e;background:#2a0f0f;color:#f08c8c;border-radius:6px;font-size:13px;">⛔ <strong>${escapeHtml(t("run_err_title", "The bridge cannot start"))}:</strong> ${escapeHtml(runErrorMsg)}</div>` : ""}
+            ${brokerError ? (brokerError.code === "auth_rejected"
+              ? `<div style="margin:0 0 12px;padding:10px 14px;border:1px solid #7a2e2e;background:#2a0f0f;color:#f08c8c;border-radius:6px;font-size:13px;">⛔ <strong>${escapeHtml(t("broker_err_title", "Broker connection problem"))}:</strong> ${escapeHtml(brokerErrorMsg)}</div>`
+              : `<div style="margin:0 0 12px;padding:10px 14px;border:1px solid #6b4a1e;background:#241a0c;color:#f3c84b;border-radius:6px;font-size:13px;">⚠ <strong>${escapeHtml(t("broker_err_title", "Broker connection problem"))}:</strong> ${escapeHtml(brokerErrorMsg)}</div>`) : ""}
             ${bridgeStale && !runError ? `<div style="margin:0 0 12px;padding:10px 14px;border:1px solid #6b4a1e;background:#241a0c;color:#f3c84b;border-radius:6px;font-size:13px;">⚠ ${escapeHtml(t("bridge_stale_banner", "Stale data — the bridge is not updating (waiting for the broker or restarting)."))}</div>` : ""}
             ${state.restarting
               ? `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 20px;gap:16px;">
