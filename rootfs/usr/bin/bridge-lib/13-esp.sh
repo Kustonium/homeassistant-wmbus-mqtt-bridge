@@ -15,6 +15,7 @@ ESP_SUBSCRIBER_PIDS=""
 STATUS_ESP_DIAG_FILE="${BASE}/status_esp_diag.json"
 (
   while true; do
+    _sub_t0="$(epoch_now)"
     # -F '%t\t%p' = "topic<TAB>payload" so we can record which ESP device sent
     # the summary. The topic segment between wmbus/ and /diag/summary is the
     # ESP device name (e.g. "esphome-wmbus-tx-lilygo"). webui.py uses _topic
@@ -31,7 +32,7 @@ STATUS_ESP_DIAG_FILE="${BASE}/status_esp_diag.json"
         done < <(
           ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/diag/summary" -F '%t\t%p' -W 90 2>/dev/null
         )
-    sleep 5
+    _sub_reconnect_sleep "${_sub_t0}"
   done
 ) &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
@@ -49,6 +50,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 STATUS_ESP_HEALTH_FILE="${BASE}/status_esp_health.json"
 (
   while true; do
+    _sub_t0="$(epoch_now)"
     while IFS=$'\t' read -r _health_topic _health_line; do
           [[ -n "${_health_line}" ]] || continue
           # Device = topic segment between "wmbus/" and "/health".
@@ -73,7 +75,7 @@ STATUS_ESP_HEALTH_FILE="${BASE}/status_esp_health.json"
         done < <(
           ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/health" -F '%t\t%p' -W 90 2>/dev/null
         )
-    sleep 5
+    _sub_reconnect_sleep "${_sub_t0}"
   done
 ) &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
@@ -89,6 +91,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 STATUS_ESP_METERS_FILE="${BASE}/status_esp_meters.json"
 (
   while true; do
+    _sub_t0="$(epoch_now)"
     while IFS=$'\t' read -r _meters_topic _meters_line; do
           [[ -n "${_meters_line}" ]] || continue
           # Device = topic segment between "wmbus/" and "/meters".
@@ -110,7 +113,7 @@ STATUS_ESP_METERS_FILE="${BASE}/status_esp_meters.json"
         done < <(
           ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/meters" -F '%t\t%p' -W 90 2>/dev/null
         )
-    sleep 5
+    _sub_reconnect_sleep "${_sub_t0}"
   done
 ) &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
@@ -125,6 +128,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 STATUS_ESP_METER_SNAPSHOT_FILE="${BASE}/status_esp_meter_snapshot.json"
 (
   while true; do
+    _sub_t0="$(epoch_now)"
     while IFS=$'\t' read -r _snap_topic _snap_line; do
           [[ -n "${_snap_line}" ]] || continue
           # Device = topic segment between "wmbus/" and "/diag/meter_snapshot".
@@ -145,7 +149,7 @@ STATUS_ESP_METER_SNAPSHOT_FILE="${BASE}/status_esp_meter_snapshot.json"
         done < <(
           ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/diag/meter_snapshot" -F '%t\t%p' -W 90 2>/dev/null
         )
-    sleep 5
+    _sub_reconnect_sleep "${_sub_t0}"
   done
 ) &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
@@ -160,6 +164,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 STATUS_ESP_METER_WINDOW_FILE="${BASE}/status_esp_meter_window.json"
 (
   while true; do
+    _sub_t0="$(epoch_now)"
     while IFS=$'\t' read -r _mw_topic _mw_line; do
           [[ -n "${_mw_line}" ]] || continue
           # Device = topic segment between "wmbus/" and "/diag/meter/...".
@@ -184,7 +189,7 @@ STATUS_ESP_METER_WINDOW_FILE="${BASE}/status_esp_meter_window.json"
         done < <(
           ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/diag/meter/+/+/window/+" -F '%t\t%p' -W 90 2>/dev/null
         )
-    sleep 5
+    _sub_reconnect_sleep "${_sub_t0}"
   done
 ) &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
@@ -215,6 +220,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
   if [[ "${_RT_DEV_POS}" -ge 0 ]]; then
     log "ESP-device tracker: device name at topic segment ${_RT_DEV_POS} of '${RAW_TOPIC}'"
     while true; do
+      _sub_t0="$(epoch_now)"
       # Read via process substitution, not a pipe: with set -euo pipefail a
       # mosquitto_sub timeout/disconnect would otherwise kill this tracker.
       while IFS= read -r _tg_topic; do
@@ -242,7 +248,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
       done < <(
         ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%t' -W 180 2>/dev/null
       )
-      sleep 5
+      _sub_reconnect_sleep "${_sub_t0}"
     done
   else
     log "ESP-device tracker: RAW_TOPIC '${RAW_TOPIC}' has no '+' wildcard — per-device tracking disabled."
@@ -261,6 +267,7 @@ touch "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
 (
   _n=0
   while true; do
+    _sub_t0="$(epoch_now)"
     while IFS=$'\t' read -r _etopic _epayload; do
       [[ -n "${_etopic}" ]] || continue
       [[ -n "${_epayload}" ]] || continue
@@ -302,7 +309,7 @@ touch "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
         -t "wmbus/+/diag" -t "wmbus/+/diag/#" \
         -F '%t\t%p' -W 180 2>/dev/null
     )
-    sleep 5
+    _sub_reconnect_sleep "${_sub_t0}"
   done
 ) &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
@@ -319,6 +326,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
   _ha_birth_topic="${DISCOVERY_PREFIX:-homeassistant}/status"
   log "HA-presence: watching birth topic '${_ha_birth_topic}' for MQTT->HA healthcheck"
   while true; do
+    _sub_t0="$(epoch_now)"
     while IFS= read -r _ha_payload; do
       [[ -n "${_ha_payload}" ]] || continue
       _ha_state="$(printf '%s' "${_ha_payload}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
@@ -330,7 +338,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
     done < <(
       ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "${_ha_birth_topic}" -F '%p' -W 180 2>/dev/null
     )
-    sleep 5
+    _sub_reconnect_sleep "${_sub_t0}"
   done
 ) &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
@@ -345,6 +353,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
   _bk_version=""
   _bk_clients=""
   while true; do
+    _sub_t0="$(epoch_now)"
     while IFS=$'\t' read -r _bk_topic _bk_payload; do
       [[ -n "${_bk_payload}" ]] || continue
       case "${_bk_topic}" in
@@ -380,7 +389,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
         -t '$SYS/brokers/+/clients/count' \
         -F '%t\t%p' -W 180 2>/dev/null
     )
-    sleep 5
+    _sub_reconnect_sleep "${_sub_t0}"
   done
 ) &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"

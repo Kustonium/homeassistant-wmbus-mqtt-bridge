@@ -233,6 +233,7 @@ start_listen_instance() {
     # meter-preview files and no reload flag. If the pipeline exits naturally,
     # restart it after a short pause.
     while true; do
+      _sub_t0="$(epoch_now)"
       # Enforce the invariant on every start, including upgrades from versions
       # that polluted LISTEN_METER_DIR with meter-preview-* files.
       rm -f "${LISTEN_METER_DIR}/meter-"* 2>/dev/null || true
@@ -255,7 +256,10 @@ start_listen_instance() {
       log_debug "[DIAG] LISTEN supervisor: pure-listen pipeline started (pid=${pipeline_pid})"
       wait "${pipeline_pid}" 2>/dev/null || true
       log_verbose "[DIAG] LISTEN supervisor: pure-listen pipeline stopped, restarting"
-      sleep 1
+      # Base delay 1 s keeps healthy restarts snappy; _sub_reconnect_sleep backs
+      # off exponentially when the pipeline dies instantly (e.g. rejected
+      # credentials), instead of reconnecting 60×/min forever.
+      _sub_reconnect_sleep "${_sub_t0}" 1
     done
   ) &
   LISTEN_PID=$!

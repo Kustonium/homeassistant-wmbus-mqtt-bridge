@@ -134,6 +134,12 @@ STATUS_HEARTBEAT_FILE = BASE / "status_heartbeat.txt"
 # WebUI as a specific, actionable banner (codes: auth_required, no_broker,
 # no_ha_service, external_host_missing).
 STATUS_RUN_ERROR_FILE = BASE / "status_run_error.txt"
+# Runtime broker-connection failure marker written by wait_for_mqtt while the
+# bridge KEEPS RUNNING (codes: auth_rejected, unreachable; detail host:port).
+# Cleared on the first successful publish or received telegram. Rendered as a
+# banner even though the heartbeat is alive — a wrong password otherwise
+# manifests only as a quiet offline MQTT tile.
+STATUS_BROKER_ERROR_FILE = BASE / "status_broker_error.txt"
 # LISTEN-only config dir — separate from /data/etc which holds the user's
 # permanent meters. This directory must stay empty so the secondary wmbusmeters
 # process remains a true always-on discovery listener.
@@ -1990,6 +1996,22 @@ def status_model(data: dict) -> dict:
         except OSError:
             run_error = None
 
+    # Runtime broker failure (bridge alive, broker refusing) — no bridge_alive
+    # gate on purpose: this marker exists precisely because the bridge keeps
+    # running while the broker rejects it. bridge.sh clears the file on the
+    # first successful publish or received telegram.
+    broker_error = None
+    try:
+        _be_raw = STATUS_BROKER_ERROR_FILE.read_text(encoding="utf-8").strip()
+        if _be_raw:
+            _be_parts = _be_raw.split("\t")
+            broker_error = {
+                "code": _be_parts[0].strip(),
+                "detail": _be_parts[1].strip() if len(_be_parts) > 1 else "",
+            }
+    except OSError:
+        broker_error = None
+
     return {
         "status": status,
         "cfg": cfg,
@@ -2029,6 +2051,7 @@ def status_model(data: dict) -> dict:
         "pending_restart": pending_restart,
         "bridge_alive": bridge_alive,
         "run_error": run_error,
+        "broker_error": broker_error,
         "wmbusmeters_runtime": wmbusmeters_runtime,
         "wmbusmeters_build_version": wmbusmeters_build_version,
         "wmbusmeters_build_commit": wmbusmeters_build_commit,

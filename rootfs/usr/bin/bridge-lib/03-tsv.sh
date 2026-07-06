@@ -36,6 +36,13 @@ _upsert_candidate_row() {
   local _file="${STATUS_CANDIDATES_FILE}"
   (
     flock -x 9
+    # Self-heal: a factory reset (or any external cleanup) removes the TSV
+    # while the bridge keeps running — unlike _tsv_upsert above, this awk
+    # reads the file directly and would fail on a missing one, silently
+    # dropping EVERY candidate until the next add-on restart (observed live:
+    # "awk: /data/status_candidates.tsv: No such file or directory" looping
+    # in the log while the WebUI showed zero candidates).
+    [[ -f "${_file}" ]] || : > "${_file}"
     local _tmp
     _tmp="$(mktemp "${_file}.tmp.XXXXXX")" || return 1
     if ! awk -F $'\t' -v OFS=$'\t' \
