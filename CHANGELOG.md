@@ -1,3 +1,17 @@
+## 1.5.40
+
+### Added
+- one-shot broker probe at Docker entrypoint startup (diagnose offline reason) (b53a5f5)
+- working WebUI restart button in Docker standalone (SIGTERM to PID 1) (b497cca)
+- surface run.sh broker-resolution failures as an actionable WebUI banner (e31ba43)
+- real broker detection in mqtt_mode=auto (probe known broker add-ons) (528b415)
+
+### Changed
+- probe broker add-ons before the 60 s Supervisor-service wait in auto (28485c0)
+
+### Fixed
+- align default raw_topic to wmbus/+/telegram in Docker standalone (4f2d5c8)
+
 ## 1.5.39
 
 ### Added

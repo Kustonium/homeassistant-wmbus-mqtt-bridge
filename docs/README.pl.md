@@ -240,7 +240,7 @@ Z [`config.yaml`](../config.yaml).
 |---|---|---|---|
 | `raw_topic` | str | `wmbus/+/telegram` | Topic z surowymi HEX-ami. `+` = wildcard (nazwa ESP w diagnostyce) |
 | `filter_hex_only` | bool | `true` | Ignoruj wiadomości niewyglądające jak HEX |
-| `mqtt_mode` | enum | `auto` | `auto` / `ha` (wymuś HA) / `external` (zawsze zewnętrzny) |
+| `mqtt_mode` | enum | `auto` | `auto` (kolejność: `external_mqtt_host` jeśli wpisany → broker HA z usługi Supervisora → sonda znanych brokerów-add-onów `core-mosquitto`/`a0d7b954-emqx`, z danymi `external_mqtt_username/password` jeśli podane) / `ha` (wymuś HA) / `external` (zawsze zewnętrzny) |
 | `external_mqtt_host/port/username/password` | str/int | — | Broker zewnętrzny (gdy `external`) |
 
 ### Discovery i wyjście

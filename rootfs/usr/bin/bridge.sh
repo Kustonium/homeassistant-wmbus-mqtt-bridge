@@ -218,7 +218,7 @@ printf '%s\n' "$(epoch_now)" > "${STATUS_BRIDGE_START_FILE}" 2>/dev/null || true
 # ------------------------------------------------------------
 # Config (ENV overrides JSON)
 # ------------------------------------------------------------
-RAW_TOPIC="${RAW_TOPIC:-$(json_get '.raw_topic' 'wmbus_bridge/+/telegram')}"
+RAW_TOPIC="${RAW_TOPIC:-$(json_get '.raw_topic' 'wmbus/+/telegram')}"
 LOGLEVEL="${LOGLEVEL:-$(json_get '.loglevel' 'normal')}"
 FILTER_HEX_ONLY="${FILTER_HEX_ONLY:-$(json_get_bool '.filter_hex_only' 'true')}"
 DEBUG_EVERY_N="${DEBUG_EVERY_N:-$(json_get_int '.debug_every_n' '0')}"

@@ -238,7 +238,7 @@ From [`config.yaml`](../config.yaml).
 |---|---|---|---|
 | `raw_topic` | str | `wmbus/+/telegram` | Topic with the raw HEX frames. `+` = wildcard (ESP name in diagnostics) |
 | `filter_hex_only` | bool | `true` | Ignore messages that do not look like HEX |
-| `mqtt_mode` | enum | `auto` | `auto` / `ha` (force HA) / `external` (always external) |
+| `mqtt_mode` | enum | `auto` | `auto` (order: `external_mqtt_host` when set → HA broker from the Supervisor service → probe of known broker add-ons `core-mosquitto`/`a0d7b954-emqx`, using `external_mqtt_username/password` when provided) / `ha` (force HA) / `external` (always external) |
 | `external_mqtt_host/port/username/password` | str/int | — | External broker (when `external`) |
 
 ### Discovery and output

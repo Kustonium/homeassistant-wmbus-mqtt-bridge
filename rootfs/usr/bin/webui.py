@@ -128,6 +128,12 @@ STATUS_WMBUSMETERS_VERSION_FILE = BASE / "status_wmbusmeters_version.txt"
 # telegram flow. A stale heartbeat means the bridge is down or run.sh is still
 # waiting for the broker — the rest of the snapshot is then stale, not live.
 STATUS_HEARTBEAT_FILE = BASE / "status_heartbeat.txt"
+# Startup-failure marker written by run.sh before a FATAL exit (broker could
+# not be resolved, so bridge.sh never started). Format: code<TAB>detail.
+# run.sh clears it on every successful broker resolution. Rendered by the
+# WebUI as a specific, actionable banner (codes: auth_required, no_broker,
+# no_ha_service, external_host_missing).
+STATUS_RUN_ERROR_FILE = BASE / "status_run_error.txt"
 # LISTEN-only config dir — separate from /data/etc which holds the user's
 # permanent meters. This directory must stay empty so the secondary wmbusmeters
 # process remains a true always-on discovery listener.
@@ -1274,7 +1280,27 @@ def restart_addon_via_supervisor() -> tuple[bool, str]:
     import urllib.request
     token = os.environ.get("SUPERVISOR_TOKEN", "")
     if not token:
-        return False, "SUPERVISOR_TOKEN not available — add 'hassio_api: true' to config.yaml."
+        # Docker standalone: no Supervisor. PID 1 is docker-entrypoint.sh,
+        # which traps SIGTERM and exits — the container stops and comes back
+        # under a restart policy (docker/examples compose: unless-stopped).
+        # Without a restart policy this degrades to a container stop, which
+        # the README documents. The kill is delayed so this HTTP response
+        # still reaches the browser before the WebUI dies with the container.
+        import signal
+        import threading
+
+        def _kill_pid1() -> None:
+            try:
+                os.kill(1, signal.SIGTERM)
+            except OSError:
+                pass
+
+        msg = ("Container restart requested (SIGTERM to PID 1) — it comes back "
+               "only under a Docker restart policy (compose example: "
+               "restart: unless-stopped).")
+        webui_add_event("ok", msg)
+        threading.Timer(1.0, _kill_pid1).start()
+        return True, msg
     try:
         req = urllib.request.Request(
             "http://supervisor/addons/self/restart",
@@ -1947,6 +1973,23 @@ def status_model(data: dict) -> dict:
     except Exception:
         bridge_alive = False
 
+    # Startup failure from run.sh (broker resolution FATAL — bridge.sh never
+    # started). Only meaningful while the bridge is NOT alive: once bridge.sh
+    # runs, the marker is stale by definition (run.sh clears it on success,
+    # but guard anyway so a leftover file cannot shadow a live bridge).
+    run_error = None
+    if not bridge_alive:
+        try:
+            _re_raw = STATUS_RUN_ERROR_FILE.read_text(encoding="utf-8").strip()
+            if _re_raw:
+                _re_parts = _re_raw.split("\t")
+                run_error = {
+                    "code": _re_parts[0].strip(),
+                    "detail": _re_parts[1].strip() if len(_re_parts) > 1 else "",
+                }
+        except OSError:
+            run_error = None
+
     return {
         "status": status,
         "cfg": cfg,
@@ -1985,6 +2028,7 @@ def status_model(data: dict) -> dict:
         "rate_history_15m": rate_history,
         "pending_restart": pending_restart,
         "bridge_alive": bridge_alive,
+        "run_error": run_error,
         "wmbusmeters_runtime": wmbusmeters_runtime,
         "wmbusmeters_build_version": wmbusmeters_build_version,
         "wmbusmeters_build_commit": wmbusmeters_build_commit,

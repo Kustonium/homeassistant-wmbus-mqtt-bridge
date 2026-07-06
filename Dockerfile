@@ -32,6 +32,8 @@ WORKDIR /src
 # A full clone (not --depth 1) is required: the Makefile derives the version
 # string via `git describe --tags`. The Alpine build itself is the final gate in
 # CI's build + boot-test jobs (local verification above is Ubuntu/WSL).
+# A monthly cron (.github/workflows/wmbusmeters-pin-bump.yml) opens a bump PR
+# whenever upstream publishes a new release tag; merging it re-runs these gates.
 ARG WMBUSMETERS_COMMIT=ac4f295369a48ef51cb835e6920b62cbee743bd6
 RUN git clone https://github.com/wmbusmeters/wmbusmeters.git . \
   && git checkout --detach "${WMBUSMETERS_COMMIT}" \
