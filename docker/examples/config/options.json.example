@@ -1,0 +1,28 @@
+{
+  "raw_topic": "wmbus/+/telegram",
+  "loglevel": "normal",
+  "filter_hex_only": true,
+  "debug_every_n": 0,
+
+  "search_mode": false,
+  "search_expected_value_m3": 0,
+  "search_tolerance_m3": 0.05,
+  "search_delta_mode": false,
+  "search_min_delta_m3": 0.001,
+  "search_topic": "wmbus/search/candidates",
+
+  "discovery_enabled": true,
+  "discovery_prefix": "homeassistant",
+  "discovery_retain": true,
+
+  "state_prefix": "wmbusmeters",
+  "state_retain": false,
+
+  "mqtt_mode": "external",
+  "external_mqtt_host": "mosquitto",
+  "external_mqtt_port": 1883,
+  "external_mqtt_username": "",
+  "external_mqtt_password": "",
+
+  "meters": []
+}
