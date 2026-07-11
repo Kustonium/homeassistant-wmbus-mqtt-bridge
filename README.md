@@ -3,7 +3,7 @@
 [![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FKustonium%2Fhomeassistant-wmbus-mqtt-bridge)
 <a href="https://buymeacoffee.com/Kustonium"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="41"></a>
 
-**Dokumentacja do wersji / Documentation for version:** 1.5.41.
+**Dokumentacja do wersji / Documentation for version:** 1.5.42.
 
 **Szybka nawigacja / Quick navigation:**
 [🇵🇱 PL (poniżej)](#-opis-pl) · [🇬🇧 EN (below)](#-description-en)
@@ -194,9 +194,13 @@ git clone https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge.git
 mkdir -p /home/wmbus-test
 cp -a homeassistant-wmbus-mqtt-bridge/docker/examples/* /home/wmbus-test/
 cd /home/wmbus-test
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose logs -f wmbus
 ```
+
+Obraz `wmbus` jest wieloarchitekturowy (amd64 + aarch64) — `pull` sam ściąga
+wariant pasujący do hosta, bez lokalnej kompilacji.
 
 Jeśli widzisz `No meters configured -> LISTEN MODE` — kontener działa i czeka na telegramy.
 
@@ -460,9 +464,13 @@ git clone https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge.git
 mkdir -p /home/wmbus-test
 cp -a homeassistant-wmbus-mqtt-bridge/docker/examples/* /home/wmbus-test/
 cd /home/wmbus-test
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose logs -f wmbus
 ```
+
+The `wmbus` image is multi-arch (amd64 + aarch64) — `pull` fetches the variant
+matching your host automatically, no local build toolchain needed.
 
 If you see `No meters configured -> LISTEN MODE` — the container is running and waiting for telegrams.
 
