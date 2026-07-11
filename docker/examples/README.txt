@@ -11,9 +11,14 @@ Standalone Docker example — the decoder plus a local Mosquitto broker.
    (If you skip this step, the container generates a default options.json on
    first start — same content — which you then edit.)
 
-2. Start (from repo root):
+2. Pull and start (from repo root):
 
-     docker compose -f docker/examples/docker-compose.yml up -d --build
+     docker compose -f docker/examples/docker-compose.yml pull
+     docker compose -f docker/examples/docker-compose.yml up -d
+
+   The wmbus image is a multi-arch tag (amd64 + aarch64) published from the
+   dev branch, so `pull` fetches the right one for your host automatically —
+   no local build toolchain needed.
 
 3. Open the WebUI at http://<host>:8099 — the "Received / Search" view lists
    every meter heard (LISTEN mode). Add meters from there, or edit the

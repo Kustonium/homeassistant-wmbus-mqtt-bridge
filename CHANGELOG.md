@@ -1,3 +1,8 @@
+## 1.5.42
+
+### Added
+- publish multi-arch manifest for standalone Docker image (d8851ce)
+
 ## 1.5.41
 
 ### Fixed

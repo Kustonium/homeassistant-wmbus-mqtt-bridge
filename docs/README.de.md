@@ -103,9 +103,13 @@ git clone https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge.git
 mkdir -p /home/wmbus
 cp -a homeassistant-wmbus-mqtt-bridge/docker/examples/* /home/wmbus/
 cd /home/wmbus
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose logs -f wmbus
 ```
+
+Das `wmbus`-Image ist multi-arch (amd64 + aarch64) — `pull` lädt automatisch
+die passende Variante für deinen Host, kein lokales Build-Toolchain nötig.
 
 Konfiguration in `./config/options.json` (Feldreferenz in [§8](#8-konfigurationsoptionen)):
 
