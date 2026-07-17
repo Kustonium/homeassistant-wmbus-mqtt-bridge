@@ -154,6 +154,20 @@ jobs:
           # docs/ tracks dev EXCEPT the dev-internal session handoff (not user docs).
           rm -f docs/CLAUDE_HANDOFF.md
 
+          # Strip dev-identity blocks from the synced README. The dev README
+          # carries a "DEV / maintainer only" banner between DEV-ONLY markers;
+          # copied verbatim it would tell stable users that stable itself is a
+          # test channel. Same policy as the config.yaml identity rewrite:
+          # stable is "a copy of dev minus the dev identity".
+          if [[ -f README.md ]] && grep -q 'DEV-ONLY-START' README.md; then
+            sed -i '/<!-- DEV-ONLY-START/,/<!-- DEV-ONLY-END -->/d' README.md
+            echo "stripped DEV-ONLY block(s) from README.md"
+          fi
+          if grep -q 'DEV-ONLY-START' README.md 2>/dev/null; then
+            echo "ERROR: unbalanced DEV-ONLY markers left in README.md after strip"
+            exit 1
+          fi
+
           find rootfs -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
           for f in rootfs/usr/bin/run.sh rootfs/usr/bin/bridge.sh rootfs/usr/bin/webui.py; do
