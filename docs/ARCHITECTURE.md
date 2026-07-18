@@ -1,471 +1,487 @@
-# Architecture & Internals
+# Architecture
 
-Developer / maintainer reference for the **wMBus MQTT Bridge** Home Assistant
-add-on. This documents *how it works* — the runtime topology, the bridge
-scripts, the on-disk state files, the soft-reload mechanism, the dashboard data
-model, the ESP diagnostics contract, and the dev→stable release flow.
+Technical description of **wMBus MQTT Bridge** for maintainers, contributors,
+and upstream `wmbusmeters` developers who want to understand what this project
+adds around `wmbusmeters`.
 
-This is **not** user onboarding (install / add a meter / troubleshoot) — that
-lives in `README.md` / `docs/README.*.md`. Everything here is derived from the
-actual code under `rootfs/`, `config.yaml`, `docker/` and `.github/`.
+This is not an installation guide. User documentation lives in
+[`README.en.md`](README.en.md) and the other language guides. Build, test, and
+release mechanics live in [`DEVELOPMENT.md`](DEVELOPMENT.md).
 
----
+## 1. System at a glance
 
-## 1. What the add-on is
+The project moves wM-Bus decoding away from the radio receiver and onto the
+Home Assistant host. An ESP receiver captures radio frames and publishes their
+RAW hexadecimal representation to MQTT. The bridge passes those frames to an
+unmodified, pinned `wmbusmeters` binary through `stdin:hex`, then turns the JSON
+output into MQTT state, Home Assistant Discovery, and diagnostic state for the
+WebUI.
 
-A thin, robust bridge that turns **RAW wM-Bus telegrams** (hex, published over
-MQTT by one or more ESP receivers running the companion ESPHome firmware) into
-**decoded meter readings** and **Home Assistant MQTT Discovery** entities, plus
-a read-only diagnostic dashboard (Ingress).
-
-The add-on does **not** talk to radio hardware itself. The ESP nodes do the RF
-work and publish hex frames to `wmbus/<device>/telegram`; the add-on feeds those
-frames into [`wmbusmeters`](https://github.com/wmbusmeters/wmbusmeters) over
-`stdin:hex` and republishes the decoded JSON + HA discovery.
-
-```
-   wM-Bus meters ))) ┌─────────┐  MQTT   ┌──────────────────────────────┐   MQTT   ┌────┐
-                     │  ESP(s) │ ──────► │  add-on                      │ ───────► │ HA │
-                     │ SX127x/ │ wmbus/  │  wmbusmeters (stdin:hex)     │ state +  │    │
-                     │ SX126x/ │ +/tele  │  + HA discovery + dashboard  │ discovery└────┘
-                     │ CC1101  │ gram     └──────────────────────────────┘
-                     └─────────┘
+```mermaid
+flowchart LR
+    M["wM-Bus meters"] -->|radio telegram| E["ESP receiver"]
+    E -->|"RAW HEX: wmbus/device/telegram"| B["MQTT broker"]
+    B -->|RAW HEX| W["wmbusmeters stdin:hex"]
+    W -->|decoded JSON| R["bridge runtime"]
+    R -->|state + Discovery| B
+    B --> H["Home Assistant"]
+    R --> S["runtime state files"]
+    S --> U["WebUI"]
 ```
 
----
+### Responsibility boundary
 
-## 2. Process model (s6)
-
-The HA base image uses **s6** as init. Two long-running services are declared:
-
-| Service (`rootfs/etc/services.d/…/run`) | Starts |
-|---|---|
-| `wmbus_mqtt_bridge` | `run.sh` → core `bridge.sh` |
-| `wmbus_webui`       | `webui.py` (read-only dashboard on port `8099`, Ingress) |
-
-- **`run.sh`** — entrypoint: resolves MQTT mode (`auto`/`ha`/`external`), waits
-  for the broker (bounded retry, not a FATAL loop), then `exec`s `bridge.sh`.
-  `auto` resolution order: **1)** `external_mqtt_host` when set (wins even when
-  HA's Mosquitto is up — a typed address is intent); **2)** an **instant**
-  Supervisor `mqtt` service check (registered only by the official Mosquitto
-  add-on); **3)** `scan_broker_addons` — a quick `probe_mqtt` scan of
-  well-known broker add-on hostnames (`core-mosquitto`, `a0d7b954-emqx`);
-  **4)** only when both found nothing: the full bounded `wait_for_ha_mqtt`
-  (~60 s — still needed to ride out a restarting Mosquitto), then one
-  re-scan. Scan-before-wait matters: the Supervisor services API cannot see
-  brokers that do not register the `mqtt` service (e.g. community EMQX), so
-  the old wait-first order burned a dead minute on every start of an
-  EMQX-only host (measured 65 s boot-to-bridge; now seconds). Each probe is
-  one bounded `mosquitto_sub -E` CONNECT+SUBSCRIBE, using
-  `external_mqtt_username/password` when set, anonymously otherwise. A CONNACK "not authorised" means the broker EXISTS: the FATAL
-  then names the detected host and the missing credential fields instead of a
-  generic "no MQTT service". Explicitly configured brokers (`external` and
-  auto-with-host) get the same probe as a non-fatal startup diagnostic
-  (address vs credentials) — behaviour is unchanged, `bridge.sh` still
-  retries. Every FATAL exit first writes `/data/status_run_error.txt`
-  (`code<TAB>detail`; codes: `auth_required`, `no_broker`, `no_ha_service`,
-  `external_host_missing`), cleared on successful resolution — `webui.py`
-  exposes it as `run_error` (only while the bridge heartbeat is dead) and
-  `app.js` renders it as a red actionable banner instead of the generic
-  stale-data one, so a user who never opens the add-on log still learns
-  exactly which config field is missing. The RUNTIME counterpart is
-  `/data/status_broker_error.txt` (`auth_rejected`/`unreachable` +
-  `host:port`), written by `wait_for_mqtt` while the bridge keeps running and
-  cleared on the first successful publish or received telegram — rendered as
-  its own banner regardless of the heartbeat. On `auth_rejected` every
-  reconnect loop also backs off (`_sub_reconnect_sleep`, exponential to a
-  120 s cap; `wait_for_mqtt` retries 5× slower): a wrong password once drove
-  ~200 connections/min against EMQX from the ~10 instant-retry subscriber
-  loops (observed live, throttled in the broker's own log).
-- **`docker/entrypoint.sh`** — used **only** in standalone Docker (non-HA); it
-  starts the WebGUI and the bridge directly. In HA, s6 does this, so the
-  entrypoint is not on the path. (This file must track dev — it previously
-  drifted on stable; see §11.) The entrypoint stays PID 1 (**no exec**) with a
-  TERM/INT trap that exits: the WebUI restart button in Docker mode SIGTERMs
-  PID 1 (delayed `os.kill` in `restart_addon_via_supervisor`), the container
-  exits and the Docker restart policy brings it back (compose example:
-  `restart: unless-stopped`; without a policy the button degrades to a stop).
-  Signalling bridge.sh directly would not work: its own TERM trap
-  (`stop_listen_instance`) cleans up but does not exit, and SIGKILL to PID 1
-  from inside the namespace is ignored by the kernel. On boot the entrypoint
-  also runs the same one-shot broker probe as run.sh's
-  `diagnose_configured_broker` (verified / rejected credentials / no
-  response) — bridge.sh's `wait_for_mqtt` swallows mosquitto's error output,
-  so this is the only place the log states WHY a broker shows offline.
-- **`webui.py`** is intentionally **read-only over the pipeline state**: it reads
-  the `status_*` files written by `bridge.sh` and serves a model to `app.js`. It
-  only *writes* `options.json` via the Supervisor API for the add/remove/search
-  actions (see §10).
-
----
-
-## 3. The bridge: `bridge.sh` + `bridge-lib/*.sh`
-
-`bridge.sh` runs under `set -euo pipefail` and sources a numbered library set
-(load order matters — later libs use earlier helpers):
-
-| Lib | Responsibility |
-|---|---|
-| `00-logging.sh` | `log` / `warn`, event log (`status_add_event`) |
-| `01-utils.sh`   | `epoch_now`, `iso_now`, JSON helpers, misc |
-| `02-config.sh`  | read add-on options from `OPTIONS_JSON` (`json_get*`) |
-| `03-tsv.sh`     | `_tsv_upsert` — **atomic** TSV row upsert via `flock` + `mktemp` + `mv` |
-| `04-status.sh`  | event log, `status_record_seen` / `status_seen_stats`, raw counters, `write_status_json` |
-| `05-raw.sh`     | RAW frame handling, `normalize_meter_id`, Diehl/SAP IZAR special case |
-| `06-candidates.sh` | candidate (discovered-but-unconfigured) tracking + preview |
-| `07-meters.sh`  | build `wmbusmeters.d/*` from configured meters, per-meter stats |
-| `08/09-discovery*.sh` | HA MQTT Discovery payloads + publish/expire |
-| `10-search.sh`  | SEARCH mode (find a meter by expected m³ value) |
-| `11-listen.sh`  | the **parallel LISTEN** wmbusmeters instance (start/stop, `LISTEN_PID`) |
-| `12-pipeline.sh`| pipeline orchestration helpers |
-| `13-esp.sh`     | ESP background subscribers (telegram tracker + diag topics) |
-
-`bridge.sh` defines all `STATUS_*` paths (under `BASE`, default `/data`), starts
-the heartbeat (`HEARTBEAT_PID`) and ESP subscribers, then enters the
-`restart_on_exit` loop around `run_once()`.
-
-### 3.1 Two wmbusmeters instances (DECODE + parallel LISTEN)
-
-This is the single most important runtime fact:
-
-- **DECODE instance** — `wmbusmeters` configured with the user's meters
-  (`wmbusmeters.d/meter-*`). Decodes configured meters → publishes state +
-  discovery. Records reception under `kind=meter`.
-- **Parallel LISTEN instance** (`11-listen.sh`) — a *second*, zero-meter
-  `wmbusmeters` permanently in pure listen mode. It keeps **candidate discovery**
-  and **per-candidate preview** alive even when meters are configured (otherwise
-  discovery would stall once the DECODE instance has meters). Records reception
-  under `kind=candidate`. Runs as `LISTEN_PID`, **survives soft reloads**.
-
-Both instances receive the same telegrams; a single physical transmission is
-therefore logged twice (~1 s apart) — see §6.3 for how stats de-duplicate it.
-
----
-
-## 4. Soft reload (the robustness core — do not regress)
-
-Adding/removing a meter (or toggling search) must apply **without restarting the
-add-on**. The mechanism:
-
-1. The WebUI writes `options.json` and touches `${BASE}/.reload_pipeline`.
-2. `run_once()` (and a watcher inside it) sees `.reload_pipeline`, tears down the
-   **decode** pipeline, and returns cleanly (rc=0).
-3. The `restart_on_exit` loop in `bridge.sh` (`RESTART_ON_EXIT`, default true)
-   re-reads `options.json`, rebuilds `wmbusmeters.d/*`, and respawns `run_once`
-   after ~2 s (`"Pipeline exited cleanly (rc=0), reloading in 2s..."`).
-
-### 4.1 PID exclusions (critical)
-
-When `run_once` tears down, its watcher kills child PIDs **except** the
-long-lived workers that must survive a reload:
-
-```
-exclude: BASHPID (self), LISTEN_PID, HEARTBEAT_PID, ESP_SUBSCRIBER_PIDS
-```
-
-(see `bridge.sh` ~lines 483–498). **Any new long-lived background worker MUST
-append its PID to `ESP_SUBSCRIBER_PIDS`** (or be similarly excluded), or a soft
-reload will silently kill it.
-
-### 4.2 LISTEN reload debounce
-
-The parallel LISTEN instance is reloaded separately and **debounced** via
-`.reload_listen` / `.reload_listen_req` and an atomic pending marker
-(`.reload_listen_pending`, created with `mkdir`). Orphaned pending markers are
-cleaned at startup (`bridge.sh:165/382`). This coalesces rapid discovery-driven
-reloads into one trailing reload (stops "discovery churn").
-
----
-
-## 5. On-disk state (`/data/status_*`)
-
-`bridge.sh` is the single writer of the pipeline state; `webui.py` is a reader.
-All TSV writes go through `_tsv_upsert` (`flock` + `mktemp` + atomic `mv`);
-counter/JSON files use atomic `mv` too. Files **truncated at startup** (`: >`)
-hold "this run only" data; the rest persist in `/data`.
-
-| File | Shape | Holds |
+| Component | Owns | Does not own |
 |---|---|---|
-| `status.json` | JSON | top-level pipeline status (mqtt connected, counts, discovery, last events) |
-| `status_meters.tsv` | TSV | configured meters: id, name, driver, media, value, last_seen, seen_count, avg_interval_s, seen_15m, seen_60m, value_parts |
-| `status_candidates.tsv` | TSV | discovered-but-unconfigured meters (same stats shape) |
-| `status_seen.tsv` | TSV | `id <TAB> kind <TAB> epoch` per received telegram (tail-capped 5000); source for 15m/60m/interval |
-| `status_events.tsv` | TSV | rolling event log (tail 40) |
-| `status_raw_count.txt` / `status_last_raw_seen.txt` | text | RAW telegram counter + last-seen (file-backed; subshell-safe) |
-| `status_recent_raw.tsv` | TSV | recent RAW hex (tail 200), for candidate RAW lookup |
-| `status_candidate_analysis.tsv` / `_raw.tsv` / `_values.tsv` / `_preview_state.tsv` | TSV | candidate encryption analysis, RAW, decoded preview values, preview state machine |
-| `status_meter_last_json.tsv` | TSV | `id <TAB> ts <TAB> json` — last full decoded JSON per configured meter (written by `status_meter_seen`); feeds the WebUI "published fields" expander (rendered only in the action-enabled meter tables — METERS/RECEIVING — where the toggle button lives; never in the read-only PANEL dashboard) |
-| `.discovery_doctor_request` / `status_discovery_doctor.json` | flag / JSON | Discovery Doctor: webui touches the flag, the heartbeat ticker runs `discovery_doctor_probe` (broker probe via `mosquitto_sub`) and writes the result |
-| `.factory_reset_request` | flag | Factory reset (Settings → "Reset add-on"): webui empties `options.json` (`meters=[]`) and writes the removed ids here (one per line). The heartbeat ticker consumes the flag, runs `clear_meter_discovery` per id (empty retained config → entities vanish from HA), wipes runtime state (`status_*`/`search_*`/`seen_ids.txt` + preview meter files) and soft-reloads the pipeline (`.reload_pipeline`), returning the add-on to its post-install state. `options.json`, the wmbusmeters binary and the `etc/listen/preview` config dirs are left intact |
-| `status_meter_key_problem.tsv` | TSV | `id <TAB> reason <TAB> ts` — AES key problem (`key_missing` / `key_invalid`) detected by `status_detect_key_problem` from wmbusmeters warnings (which then permanently ignores the meter until reload); cleared by the next decoded JSON |
-| `status_ha_presence.txt` / `status_broker_info.txt` / `status_ha_verification.txt` | text | MQTT→HA healthcheck signals (see [memory: mqtt-ha-healthcheck]) |
-| `status_heartbeat.txt` | text | liveness ticker (WebUI STALE threshold) — must survive soft reload |
-| `status_esp_telegram_devices.tsv` | TSV | per-ESP device tracker: name, last_telegram_epoch, topic, count (**truncated at startup**) |
-| `status_esp_health.json` / `status_esp_meters.json` | JSON map | per-ESP `/health` pulse and `/meters` flags (keyed by device) |
-| `status_esp_meter_snapshot.json` / `status_esp_meter_window.json` | JSON map | per-ESP per-meter reception windows (diag, opt-in) |
-| `status_wmbusmeters_version.txt`, `status_official_meters_count.txt`, `status_rate_history.tsv`, `status_bridge_start.txt`, `status_discovery_published.flag` | misc | version, configured-count, rate sparkline, start time, discovery-published flag |
+| ESP receiver | RF reception, RAW HEX publication, optional reception diagnostics | meter drivers, AES keys, decoded values |
+| MQTT broker | transport between receivers, bridge, and Home Assistant | interpretation of telegrams |
+| `wmbusmeters` | frame parsing, decryption, driver selection, built-in and XMQ drivers, decoded field names and values | MQTT orchestration, Home Assistant entities, WebUI state |
+| Bridge runtime | broker selection, `wmbusmeters` processes and config files, candidate workflow, state publication, Discovery, lifecycle | vendor-specific decode logic already owned by `wmbusmeters` |
+| WebUI | configuration, comparison tools, and visibility into bridge state | automatic decisions about which driver or value is correct |
+| Home Assistant | storing add-on options and creating entities from MQTT Discovery | wM-Bus decoding |
 
-The WebUI driver comparison endpoint is deliberately read-only. For a configured
-meter it resolves the latest RAW frame from `status_recent_raw.tsv`; for an
-unconfigured candidate it can use `status_candidate_raw.tsv`. It then runs short
-`wmbusmeters --format=json` forced-driver decodes (`stdin:hex`) with the saved or
-typed AES key and shows the decoded fields side by side. The result is advisory:
-`wmbusmeters` auto detection and "more fields" are hints, not proof that the
-driver is correct.
+The most important rule is that **`wmbusmeters` remains the decoder**. This
+project does not replace its built-in drivers, reinterpret manufacturer data,
+or maintain a parallel decoder. A field shown by the bridge came from
+`wmbusmeters`; if upstream emits no field, the bridge does not invent one.
 
-The Settings view also exposes an **editable options form**. Its fields are not
-hand-coded: `config_options_spec()` parses the `schema:`/`options:` blocks from
-the baked `config.yaml`, so the form can never drift from HA's own config schema
-(add an option to `config.yaml` and it appears automatically). `POST
-/api/save-config` validates each value against its schema type and persists via
-the Supervisor API (`save_config_options`), exactly like the meter edits. Secret
-fields (`external_mqtt_password`) are write-only: the value is never sent to the
-browser and a blank input keeps the current one. As with the HA config tab, core
-options take effect only after an add-on restart.
+## 2. What this project adds around wmbusmeters
 
-`options.json` (the add-on config) is **owned by Supervisor**, not the bridge.
-Supervisor rewrites it from its DB on every start; the bridge only reads it (see
-§10 for why a file-only write does not survive a restart).
+The upstream program can already receive and decode wM-Bus telegrams. This
+project supplies the surrounding application needed for a receiver fleet and
+Home Assistant:
 
----
+- MQTT RAW HEX input instead of a radio dongle attached to the decoder host;
+- generation of `wmbusmeters.conf` and per-meter files from add-on options;
+- server-side AES-key storage and delivery to `wmbusmeters`;
+- continuous decoding for configured meters and continuous discovery of
+  unconfigured meters;
+- MQTT state and Home Assistant Discovery publication;
+- a WebUI for LISTEN, ADD, client-side value filtering, driver comparison,
+  diagnostics, and settings; the legacy SEARCH backend remains available but
+  hidden from normal navigation;
+- persistent operational state, reception statistics, error classification,
+  soft reload, and restart handling;
+- optional diagnostics from one or more ESP receivers.
 
-## 6. Reception counting (`status_seen.tsv`)
+This split keeps the ESP firmware independent of meter models. Adding a driver
+or changing a key does not require reflashing a receiver. Decoder upgrades are
+container upgrades and can be tested centrally against recorded telegrams.
 
-### 6.1 Recording
-`status_record_seen(id, kind)` appends `id<TAB>kind<TAB>epoch`, de-duping
-same-kind writes within 2 s, then tail-caps the file to 5000 lines.
+### Why decode centrally
 
-### 6.2 Stats
-`status_seen_stats(id)` computes `count / avg_interval_s / seen_15m / seen_60m`
-from the rows for that id. Windows: `seen_15m` = telegrams in the last 900 s,
-`seen_60m` = last 3600 s.
+The alternative is to compile the decoder and meter drivers into every ESP.
+That can be appropriate for a standalone receiver, but it couples radio
+firmware to a large and changing decoder. This project makes a different
+trade-off:
 
-### 6.3 Cross-kind continuity (do not regress)
-Stats are counted **across both kinds** (`meter` + `candidate`) for an id, with a
-**~2 s cross-kind de-dup** (the DECODE and LISTEN instances each log the same
-physical transmission a second apart). This keeps a meter's counters **continuous
-when it is promoted candidate→meter** (the `kind` switches) without double
-counting. The stream is processed in append (time) order; a `>= 0` guard
-tolerates rare cross-process interleave.
+| Concern | Decoder on every ESP | This architecture |
+|---|---|---|
+| New or changed driver | rebuild and reflash receiver firmware | rebuild the central image; receivers stay unchanged |
+| ESPHome/toolchain change | can break the embedded decoder build | cannot change server-side decode behavior |
+| Keys and meter configuration | distributed across receiver nodes | stored once on the server |
+| Flash/RAM usage | grows with decoder and driver set | receiver footprint stays independent of supported meters |
+| Troubleshooting | RF reception and decoding fail inside one device | RAW reception, decoding, MQTT state, and HA Discovery are separately observable |
 
----
+The cost is an always-on host and MQTT broker, plus one transport hop before
+decoding. For a Home Assistant installation those services normally already
+exist, so central ownership is the more maintainable boundary.
 
-## 7. ESP integration
+## 3. Contract with upstream wmbusmeters
 
-### 7.1 Liveness (always-on)
-The **telegram device tracker** (`13-esp.sh`) subscribes to `RAW_TOPIC`
-(`wmbus/+/telegram`) and records each distinct ESP device + last-seen + count to
-`status_esp_telegram_devices.tsv`. This is the **source of truth for "which ESPs
-are alive right now"** — telegrams arrive live (not retained), so dead ESPs age
-out. Works even with ESP diagnostics fully off.
+### 3.1 Binary and driver catalog
 
-### 7.2 Always-on pulse + flags (firmware, independent of `diagnostic_mode`)
-Every 60 s the firmware publishes, regardless of diag level:
-- `wmbus/<dev>/health` → `{uptime_s, rx_total, sec_since_last_rx, rssi, chip, listen_mode}` (sentinel `sec_since_last_rx=-1` = nothing heard yet; `rssi=1` = no valid sample)
-- `wmbus/<dev>/meters` → `{target, highlight[]}` (meters the ESP is flagged for)
+The image builds `wmbusmeters` from the fixed `WMBUSMETERS_COMMIT` in the
+[`Dockerfile`](../Dockerfile). A fixed commit makes the runtime reproducible and
+lets CI compare known telegrams before the add-on version advances.
 
-### 7.3 Opt-in diagnostics (`diagnostic_mode: low|normal|debug|dev`)
-- `wmbus/<dev>/diag/summary` (every 60 s) and `…/summary_15min` / `…/summary_60min`
-- `…/diag/meter_snapshot` — batch of per-highlight-meter reception (every 15 min)
-- `…/diag/meter/<id>/<mode>/window/<trigger>` — per-meter reception window; triggers `count` (every N telegrams), `time`, `summary_15min`, `summary_60min`
+The WebUI driver catalog is generated at image build time from the decoder
+itself:
 
-The add-on subscribes to all of these via per-device background subscribers in
-`13-esp.sh`, writing keyed-per-device JSON maps.
+1. run `wmbusmeters --listdrivers`;
+2. fall back to the legacy `--listmeters` option for older pins;
+3. merge that output with the XMQ drivers found under `drivers/src/*.xmq`;
+4. write `/usr/share/wmbus-webui/assets/drivers.json`.
 
-> **`set -euo pipefail` gotcha (recurring):** a read-modify-write subscriber that
-> does `var="$(cat "$FILE" 2>/dev/null)"` aborts the subshell when the file does
-> not exist yet (the failed `cat` propagates non-zero under `set -e`), so the file
-> is never created. **Every such `cat` must end with `|| true`.**
+This deliberately preserves both built-in C++ drivers and XMQ drivers. The
+Docker build fails if the built-in `izar` driver is absent from the generated
+catalog, guarding against a silent option-name regression that would otherwise
+hide upstream drivers from the WebUI.
 
----
+### 3.2 Runtime invocation
 
-## 8. Dashboard data model (`webui.py` + `app.js`) — honest-witness
+Both long-running decoder paths receive the same MQTT payload. With
+`filter_hex_only=true`, the bridge removes whitespace and an optional `0x`
+prefix, then accepts only non-empty, even-length hexadecimal data. With the
+filter disabled, the payload is passed through unchanged:
 
-`webui.py` builds a JSON model from the `status_*` files; `app.js` is a small SPA
-that patches the DOM with **morphdom**. The governing principle is
-**honest-witness** (see [memory: honest-witness-principle]): *the dashboard
-reports facts and never paints green over absent data.*
+```text
+MQTT payload -> optional cleanup/HEX validation -> wmbusmeters stdin:hex
+```
 
-Concretely:
-- Missing/stale signals degrade to **neutral**, never a green "all good".
-- A liveness **heartbeat** distinguishes "bridge idle" from "bridge down" → STALE
-  badge + grey tiles when the snapshot is stale.
-- **Reception is the truth signal; RSSI was removed** — field testing showed RSSI
-  is not comparable across boards (FEM/antenna dependent). Per-meter quality =
-  **reception %** from the opt-in diag windows.
-- **Per-meter status is rhythm-adaptive**: derived from the meter's own observed
-  `avg_interval_s` (fallback 300 s, floor 8 s) — online ≤3×, overdue ≤12×, beyond
-  that **neutral "quiet", never a red alarm** (a meter is passive; prolonged
-  silence is ambiguous — night/away/battery). This also removes night/weekend
-  false alarms without hardcoding quiet hours.
-- **Per-ESP reception** (`📡 ESP` flag + `📶 <esp> N% · count`) shown in the
-  reception column; the discriminating sensitivity signal is **coverage** (which
-  meters a board hears at all), not the raw count (cumulative-since-boot, not
-  comparable) nor the % (saturates ~100 % for any heard meter).
-- morphdom `onBeforeElUpdated` skips **only focused INPUT/TEXTAREA/SELECT** (not
-  buttons) — skipping any focused element froze clicked pipeline tiles.
+The bridge creates native `wmbusmeters.d/meter-*` files. A configured file
+contains the friendly name, lowercase meter ID, optional 32-character AES key,
+and optional driver. Omitting the driver means upstream auto-detection.
 
-`i18n.py` holds 5 languages (en/pl/de/cs/sk); `app.js` calls `t(key, fallback)`.
+Decoded output is consumed as line-oriented JSON. Non-JSON diagnostic lines are
+also inspected for known operational failures, such as a missing or invalid AES
+key causing upstream to permanently ignore a meter until the decoder process is
+reloaded.
 
----
+### 3.3 Driver selection is advisory to the user
 
-## 9. HA Discovery & MQTT→HA healthcheck
+Auto-detection belongs to `wmbusmeters`, but auto-detection is not proof that a
+driver is semantically correct for every meter variant. Likewise, a driver that
+decodes more fields is not automatically the correct driver.
 
-- Decoded meters are published as HA MQTT Discovery entities (prefix configurable,
-  retained). `discovery_published` is file-flagged (`status_discovery_published.flag`)
-  so the frequent raw-counter subshell can't clobber it.
-- Discovery is emitted before the matching state payload. With the default
-  `state_retain=false`, this keeps the retained config on the broker before the
-  non-retained state payload for the same telegram is sent.
-- **Per-field availability** (`09-discovery.sh`, `emit_discovery_from_json`): every
-  entity's config carries an availability template on its own state topic —
-  `{{ 'online' if value_json.get('<key>') is not none else 'offline' }}`. A field
-  missing from the latest (partial) telegram turns only that entity `unavailable`
-  instead of leaving a stale/false value (local analog of upstream issue #1922).
-  `value_template` uses the warning-free `value_json.get(...) | default(none)`.
-  No `availability_mode` is needed — this is the only availability source.
-- **`expire_after` self-tunes**: 2× the meter's observed average telegram interval
-  (from `status_seen_stats`), floor 3600 s, rounded to whole minutes; the rounded
-  value is part of the discovery cache key, so a changed interval republishes the
-  config. The in-memory cache is empty on restart, so existing installs pick up
-  config changes automatically.
-- **Status diagnostic entities** (`09-discovery.sh`, `emit_discovery_from_json`): the
-  string `status` field never matches the numeric field filter, so it is surfaced
-  explicitly when present — a `sensor` (`entity_category: diagnostic`) with the raw
-  text and a `binary_sensor` (`device_class: problem`, `entity_category: diagnostic`)
-  whose template is `{{ 'ON' if value_json.get('status') not in [none, 'OK', ''] else
-  'OFF' }}`. Passthrough only: the text is verbatim from wmbusmeters (e.g. `elf2`
-  decodes the full ErrorFlags bitfield, `elf` only the TPL status); the sole literal
-  is the `OK` baseline. Both reuse the per-field availability template and the shared
-  `expire_after`, are rate-limited via `DISCOVERY_SENT_FIELD`, and are cleared
-  (including the `binary_sensor/` topic) by `clear_meter_discovery` on meter removal.
-- **MQTT→HA healthcheck**: the add-on detects publishing to a broker HA does not
-  consume. HA presence is reported honestly — confirmed on the native broker
-  (`core-mosquitto` / `mqtt_mode=ha`) or via a seen `online` birth message; the
-  MQTT tile shows broker identity from `$SYS`.
-- **`verify_ha_entities`** (opt-in): publishes a hidden canary sensor and asks the
-  HA Core API (Template lookup by unique icon, robust to entity_id slugification)
-  whether HA actually created it. Needs `homeassistant_api: true` (granted only
-  when enabled).
-- **Discovery Doctor** (SETTINGS view): on-demand checklist for the "telegrams
-  reach the broker but no entities in HA" class of reports. The WebUI touches
-  `.discovery_doctor_request`; the bridge heartbeat ticker (which has the MQTT
-  credentials) runs `discovery_doctor_probe` (`09-discovery.sh`): a bounded
-  `mosquitto_sub` on `<prefix>/status` (retained HA birth proves HA listens on
-  this prefix on this broker) and on `<prefix>/sensor/wmbus_<id>/+/config` per
-  configured meter (retained configs arrive immediately on subscribe; count +
-  one sample payload). webui's POST `/api/discovery-doctor` waits ≤25 s for
-  the JSON result and merges static checks (mqtt connected, discovery
-  settings). "Force re-discovery" = the existing pipeline soft reload — the
-  in-memory `DISCOVERY_SENT_FIELD` cache resets, so configs republish with the
-  next telegrams.
+The WebUI therefore offers **Compare drivers**, not automatic switching. It:
 
----
+1. looks for a keyed frame in `status_candidate_raw.tsv`, then falls back to a
+   matching recent frame in `status_recent_raw.tsv`;
+2. obtains the upstream `Auto driver` name when available;
+3. decodes the same frame with the saved/auto baseline and the user-selected
+   driver;
+4. displays field names and real values side by side.
 
-## 10. Options persistence (why a meter can "vanish")
+The calls are short-lived `wmbusmeters --format=json stdin:hex` processes and do
+not alter the live pipeline. The result remains a human verification aid:
+plausible values must be checked against the physical meter or vendor
+documentation.
 
-The WebUI add/remove/search actions persist by **POST `http://supervisor/addons/self/options`**
-(Supervisor then writes `options.json` and it survives restarts). A direct write
-to `/data/options.json` does **not** persist — Supervisor overwrites it from its
-DB on the next start.
+### 3.4 Where decoder problems belong
 
-`urllib.urlopen` **raises `HTTPError` on a 4xx**, so a Supervisor schema rejection
-must be caught explicitly and its **body read and surfaced** (otherwise the cause
-is invisible and the add silently falls back to a file-only write that vanishes on
-restart). The schema field `meters[].type` is a **free string** (`str`), never a
-driver enum: an enum goes stale every time wmbusmeters adds a driver (e.g.
-`izarv2`), and Supervisor then 400s valid meters. wmbusmeters validates the driver
-at decode time.
+When the same RAW telegram, driver, meter ID, and key produce a wrong or missing
+field in the pinned `wmbusmeters` binary, the decoder is the relevant boundary.
+The WebUI can generate an issue-report block containing the RAW frame and
+`--analyze` output. When a configured meter with the same ID has a 32-character
+key, that key is supplied to the analyzer. AES keys are never included in the
+generated report, although decrypted analysis can naturally expose meter
+readings.
 
----
+Bridge-side issues are different: dropped MQTT frames, stale process state,
+incorrect config generation, missing Discovery messages, or UI presentation
+belong in this repository.
 
-## 11. dev → stable promote
+## 4. Life of a telegram
 
-Two repos: **dev** (`…-dev`, this repo) and **stable** (`homeassistant-wmbus-mqtt-bridge`).
-`.github/workflows/promote.yaml` (manual `workflow_dispatch`, in the **stable**
-repo) makes stable a copy of dev **minus the dev identity**:
+Every payload accepted by the configured input filter is delivered to two
+independent `wmbusmeters` paths.
+They solve different problems and intentionally see the same physical frame.
 
-- **Synced from dev verbatim:** `rootfs/`, `Dockerfile`, `docker/`, `translations/`,
-  `wmbusmeters-mqtt-stdin`, `README.md`, `THIRD_PARTY_NOTICES.md`, `docs/` (minus
-  `docs/CLAUDE_HANDOFF.md`), and `config.yaml` (adopted wholesale, then identity
-  restored).
-- **Never synced (stable-specific / infra):** `.github/` (the workflow lives
-  there — copying dev would delete it), `repository.yaml` (name/url), the
-  `config.yaml` identity fields (name/slug/image/panel_title/description), `LICENSE`.
-- **CHANGELOG** is auto-consolidated: the cycle's per-build `## X.Y.Z-dev.NN`
-  sections are merged into one `## X.Y.Z`, de-duped, marker stripped.
+### 4.1 Configured meter path: DECODE
 
-> **Lesson:** promote originally synced only `rootfs/Dockerfile/translations`, so
-> `config.yaml` and `docker/` **drifted** — that is how the `izarv2` enum and the
-> standalone-Docker entrypoint went stale on stable while dev was already fixed.
-> A dev fix that lives outside the synced set never reaches users. Since then the
-> `standalone-boot` CI job (§12) boots `docker/entrypoint.sh` on every dev build,
-> so a broken standalone entrypoint blocks the version bump instead of drifting
-> silently.
+1. `mosquitto_sub` subscribes to `raw_topic` (default
+   `wmbus/+/telegram`) and emits payload only.
+2. The bridge applies the configured input filter and feeds accepted payloads
+   to the main `wmbusmeters` instance.
+3. That instance loads the user's generated meter files and emits JSON only for
+   matching, decodable meters.
+4. The bridge records the last JSON and reception statistics.
+5. Home Assistant Discovery is published before the matching state message.
+6. The full decoder JSON is published to
+   `<state_prefix>/<meter_id>/state`.
 
----
+The bridge selects one cumulative numeric field for its compact meter table,
+but does not remove fields from the MQTT state payload. The WebUI's published
+fields view reads the last complete decoder JSON.
 
-## 12. wmbusmeters build pin & decode smoke gate
+### 4.2 Unconfigured meter path: LISTEN and preview
 
-- **Pin:** the Dockerfile builds wmbusmeters from a fixed commit
-  (`ARG WMBUSMETERS_COMMIT`), not master HEAD. Rationale: upstream's codebase
-  restructuring (wmbusmeters/wmbusmeters#1940) broke master compilation
-  (2026-06-11) and any upstream breakage propagated straight into our CI.
-  The clone stays **full** (not `--depth 1`): the Makefile derives the binary's
-  version string via `git describe --tags`.
-- **Bumping the pin is a deliberate act**: change `WMBUSMETERS_COMMIT`, push, and
-  let the `decode-smoke` CI job validate the new decoder against the golden
-  fixtures before any version is published.
-- **Monthly bump automation** (`.github/workflows/wmbusmeters-pin-bump.yml`): on
-  the 1st of each month the workflow compares the pin against upstream's latest
-  **release tag** (`X.Y.Z` — deliberately not master HEAD) and opens a bump PR
-  when it moved. Merging stays a human decision; validation happens on the push
-  to main after merge, via the same `decode-smoke` + `standalone-boot` gates as
-  a manual bump. No PR is opened when the pin is current or the bump branch for
-  that tag already exists.
-- **`decode-smoke` (`.github/workflows/build.yaml`)**: after the arch images are
-  built, the job runs `tests/test_decode_smoke.sh` **inside the freshly built
-  amd64 image**. The `bump` job depends on it — a failed smoke-test means
-  `config.yaml` keeps the previous version and HA users never see the broken
-  image (which still lands in GHCR, unversioned).
-- **Fixtures** (`tests/fixtures/golden.tsv`): `<dir>/<id> TAB <driver> TAB <key>`;
-  key is `NOKEY`, a literal 32-hex key (**only for already-public keys**, e.g.
-  upstream driver test keys) or an env-var name (private keys via repo secrets —
-  never in git). `<dir>/<id>.hex` is the raw telegram, `<dir>/<id>.golden.json`
-  the expected decode (jq -S normalized, `timestamp`/`name` dropped). All
-  committed fixtures are public (upstream driver tests + the public replay
-  corpus). Meter ids are lowercased before the wmbusmeters call — id matching is
-  case-sensitive.
-- **`standalone-boot` (`.github/workflows/build.yaml`)**: boots the amd64 image
-  the way the documented Docker-standalone deployment does — default entrypoint
-  `/usr/bin/docker-entrypoint.sh` next to an anonymous Mosquitto reachable as
-  host `mosquitto` (the target of the entrypoint's generated default
-  `options.json`). Asserts from the container logs that the entrypoint generated
-  `/config/options.json`, that `bridge.sh` connected to the broker
-  (`MQTT broker ready`), and that the container is still running. Like
-  `decode-smoke`, the `bump` job depends on it, so a broken standalone boot
-  never becomes a published version. Exists because nobody tests this mode by
-  hand (§11 lesson).
-- **Regenerating goldens** (after an accepted decode change): build wmbusmeters
-  at the pinned commit, re-run the fixtures, commit the new `.golden.json`; or
-  temporarily set `GOLDEN_REQUIRE=0` in the workflow — missing goldens are then
-  printed by the job instead of failing it.
+A second, always-on `wmbusmeters` instance runs with an empty meter directory.
+It exists only to observe traffic and report candidate IDs, media, manufacturer,
+encryption hints, and the upstream suggested driver. It continues running even
+when configured meters exist.
 
----
+When a candidate needs a value preview, the bridge creates a preview meter file
+and runs a bounded, one-shot decoder for a matching RAW frame. Preview decoders
+are rate-limited and concurrency-limited; the always-on LISTEN instance remains
+pure listen and is not polluted with preview meter files.
 
-## 13. Conventions
+Candidate preview states are explicit:
 
-- **Commits:** Conventional Commits (`fix:`/`feat:`/`docs:`/`chore:`/`refactor:`/`test:`),
-  no AI attribution footer. Public repo — write for external reviewers.
-- **CHANGELOG:** per-build `## X.Y.Z-dev.NN` sections during a dev cycle
-  (prepend-only, immutable); promote consolidates them into `## X.Y.Z`.
-- **Version source of truth:** `config.yaml` `version:` — never trust a remembered
-  version; the CI `bump` job derives `X.Y.Z-dev.<run_number>`.
-- **Validation before push (bash):** `bash -n` + `shellcheck` on the touched
-  scripts, `git diff --check`. Python: `ast.parse`/`py_compile`.
+- `pending`;
+- `decoded_value`;
+- `decoded_without_numeric_value`;
+- `no_decode_result`.
 
----
+A candidate becomes a configured meter only after the user saves it. No
+candidate or SEARCH temporary meter is allowed to publish Home Assistant
+Discovery.
 
-*This file is a living internals reference. When the runtime behaviour changes
-(new state file, new ESP topic, reload semantics, promote scope), update the
-relevant section here rather than burying internals in the user README.*
+### 4.3 Counting the duplicated observation once
+
+DECODE and LISTEN each observe the same transmission, normally about one second
+apart. `status_seen.tsv` records both kinds, while statistics apply an
+approximately two-second cross-kind de-duplication. Counts therefore stay
+continuous when an ID moves from candidate to configured meter without doubling
+every physical telegram.
+
+## 5. Runtime topology
+
+### 5.1 Home Assistant add-on
+
+The Home Assistant image uses s6 with two services:
+
+| Service | Process |
+|---|---|
+| `wmbus_mqtt_bridge` | `/usr/bin/run.sh` -> `/usr/bin/bridge.sh` |
+| `wmbus_webui` | `/usr/bin/webui.py` on port 8099 through Ingress |
+
+`run.sh` resolves `mqtt_mode`:
+
+- `ha`: require the Supervisor MQTT service;
+- `external`: use the configured host and credentials;
+- `auto`: prefer an explicitly configured external host, otherwise check the
+  Supervisor service and known broker add-on hostnames.
+
+Broker probes distinguish unreachable hosts from rejected credentials. Startup
+failures are written to `status_run_error.txt`; failures after the bridge has
+started are written to `status_broker_error.txt`. Subscriber reconnect loops
+back off so invalid credentials do not hammer the broker.
+
+### 5.2 Standalone Docker
+
+`docker/entrypoint.sh` creates a default `/config/options.json` when needed,
+exports external MQTT settings, starts the WebUI and bridge, and remains PID 1.
+Its TERM/INT handler stops the container. The WebUI restart action therefore
+depends on a Docker restart policy; without one it acts as a stop.
+
+### 5.3 Core process layout
+
+`bridge.sh` sources numbered modules in dependency order:
+
+| Module | Responsibility |
+|---|---|
+| `00-logging.sh` | log and event helpers |
+| `01-utils.sh` | time, JSON, and general helpers |
+| `02-config.sh` | option parsing |
+| `03-tsv.sh` | shared locked atomic keyed-TSV upsert helper |
+| `04-status.sh` | status, counters, and reception history |
+| `05-raw.sh` | RAW validation and meter-ID normalization |
+| `06-candidates.sh` | candidates and one-shot previews |
+| `07-meters.sh` | configured meter files and decoded meter state |
+| `08-discovery-helpers.sh` | Discovery field classification helpers |
+| `09-discovery.sh` | Home Assistant Discovery and verification |
+| `10-search.sh` | SEARCH mode |
+| `11-listen.sh` | parallel pure-LISTEN process |
+| `12-pipeline.sh` | MQTT publication and pipeline helpers |
+| `13-esp.sh` | ESP, broker, and Home Assistant background subscribers |
+
+The main script also owns a heartbeat ticker and the restart loop around the
+DECODE pipeline. Background subscribers and LISTEN are long-lived workers, not
+children that should be replaced on every meter change.
+
+## 6. Configuration and lifecycle
+
+### 6.1 Configuration ownership
+
+`config.yaml` defines the add-on schema. In Home Assistant, Supervisor owns the
+persistent options database and rewrites `/data/options.json` from it. WebUI
+changes are therefore posted to `http://supervisor/addons/self/options`; a local
+file write alone would disappear on restart. The meter driver field is a free
+string because the valid driver set belongs to the pinned `wmbusmeters` build
+and changes over time.
+
+In standalone Docker there is no Supervisor, so the WebUI writes
+`/config/options.json` directly. The Settings form is generated from the baked
+`config.yaml` schema for scalar options instead of maintaining a second
+hand-written option list; meters are managed by the separate add/edit/remove
+flow. Secret fields are write-only in the browser; leaving one blank preserves
+the current value.
+
+### 6.2 Soft reload
+
+Adding, editing, or removing a meter does not require a full add-on restart:
+
+1. the WebUI persists options and touches `.reload_pipeline`;
+2. the watcher stops only the DECODE pipeline;
+3. the restart loop rereads options and regenerates meter files;
+4. a new DECODE process starts after a short delay.
+
+LISTEN, the heartbeat, and ESP/background subscribers survive this operation.
+The watcher explicitly excludes their PIDs. Any new long-lived worker must be
+added to the same exclusion model or it will silently disappear after a soft
+reload.
+
+A separate `.reload_listen` path remains debounced through request and pending
+markers. Rapid requests collapse into one trailing LISTEN restart.
+
+### 6.3 Full restart and factory reset
+
+Core option changes require a full add-on/container restart. In Home Assistant,
+the WebUI asks Supervisor to restart the add-on. In Docker it signals PID 1 and
+relies on the container restart policy.
+
+Factory reset first persists `meters=[]`, then asks the bridge ticker to clear
+retained Discovery for removed IDs, wipe runtime/search state and preview files,
+and soft-reload the empty meter configuration. The decoder binary and base
+configuration directories remain intact.
+
+## 7. MQTT and Home Assistant contract
+
+| Purpose | Topic |
+|---|---|
+| Receiver input | `raw_topic`, default `wmbus/+/telegram` |
+| Decoded state | `<state_prefix>/<meter_id>/state` |
+| Numeric Discovery | `<discovery_prefix>/sensor/wmbus_<id>/<field>/config` |
+| Status text | `<discovery_prefix>/sensor/wmbus_<id>/status/config` |
+| Status problem | `<discovery_prefix>/binary_sensor/wmbus_<id>/status_problem/config` |
+| Search results | `search_topic`, default `wmbus/search/candidates` |
+
+The state payload is the decoded JSON from `wmbusmeters`. Metadata fields are
+kept as attributes, while numeric fields receive Discovery sensors. The decoder
+string field `status`, when present, receives a diagnostic text sensor and a
+problem binary sensor.
+
+Discovery behavior is designed around partial telegrams:
+
+- configuration is published before state;
+- each field's availability template checks whether that key exists in the
+  latest state JSON;
+- `expire_after` follows the observed transmit interval, with a one-hour floor;
+- retained configs are removed when a meter is deleted or factory reset;
+- the in-memory Discovery cache is reset by a pipeline restart, so the next
+  telegram republishes configuration.
+
+The bridge also checks whether it is merely publishing to MQTT or Home
+Assistant is actually consuming the same broker and Discovery prefix. Signals
+include HA's MQTT birth message, broker identity from `$SYS`, an optional canary
+entity verified through the HA Core API, and the on-demand Discovery Doctor.
+Absence of evidence is shown as unknown, not as a false success.
+
+## 8. WebUI and state boundary
+
+`webui.py` serves a small JSON API and static SPA. It does not attach to shell
+process stdout. Instead, the bridge writes compact files under `/data` (or
+`/config` in Docker) and the WebUI reads the current file-backed state. There is
+no cross-file snapshot transaction.
+
+The split has two effects:
+
+- a quiet meter does not block the UI;
+- the UI can distinguish an idle bridge from a dead bridge using
+  `status_heartbeat.txt`.
+
+The WebUI is read-only with respect to decoded pipeline state, but it has a
+small control plane: persist options, create reload/reset request flags, request
+Discovery Doctor, and invoke bounded diagnostic decodes such as driver
+comparison. It never edits generated `wmbusmeters.d` files directly.
+
+The dashboard follows an honest-witness rule: missing or stale inputs become
+neutral/unknown, not green. Meter freshness adapts to each meter's observed
+transmit interval. Long silence becomes "quiet" because a passive meter cannot
+prove whether silence means failure. Reception windows, rather than RSSI, are
+used for ESP coverage comparisons because RSSI is not comparable across radio
+boards and antennas.
+
+## 9. ESP integration
+
+The only required receiver contract is a RAW topic whose payload is one
+hexadecimal telegram. With the default topic, the `+` segment identifies the ESP
+device. A background subscriber records last reception and count per device, so
+basic receiver visibility works even when firmware diagnostics are disabled.
+
+The companion firmware can additionally publish:
+
+| Topic | Frequency / condition | Purpose |
+|---|---|---|
+| `wmbus/<dev>/health` | every 60 s | uptime, radio receive count, time since last frame, chip/mode |
+| `wmbus/<dev>/meters` | every 60 s | target/highlight meter flags |
+| `wmbus/<dev>/diag/summary` | diagnostic mode | short receive/drop summary |
+| `wmbus/<dev>/diag/summary_15min` and `_60min` | diagnostic mode | longer windows |
+| `wmbus/<dev>/diag/meter_snapshot` | diagnostic mode with highlighted meters | batched per-meter reception |
+| `wmbus/<dev>/diag/meter/<id>/<mode>/window/<trigger>` | diagnostic mode | frequent per-meter reception window |
+
+The bridge stores diagnostics as maps keyed by device, allowing multiple ESPs
+to be compared without one overwriting another. These topics enrich the RAW
+path; they are never required for decoding.
+
+## 10. Design trade-offs and security
+
+Server-side decoding intentionally chooses these costs:
+
+- the host and MQTT broker must be available for readings to be decoded;
+- RAW encrypted or plaintext telegrams transit the broker;
+- an extra MQTT hop adds small latency;
+- the central process must handle the aggregate frame rate of all receivers.
+
+In exchange, the receiver firmware remains small and model-independent, meter
+changes require no reflash, and AES keys stay on the server. A compromised ESP
+does not reveal configured keys. MQTT credentials, AES keys, and Supervisor
+tokens must still be protected as host secrets; generated issue reports never
+include AES keys, but decrypted analysis can contain meter readings.
+
+## 11. Development and release
+
+Build topology, CI gates, versioning, and the boundary between the dev and stable
+repositories are documented in [`DEVELOPMENT.md`](DEVELOPMENT.md). They are
+intentionally separate from the runtime architecture so a reader can understand
+the integration without first learning this repository's publication process.
+
+## 12. wmbusmeters builds
+
+The pinned decoder upgrade procedure, golden fixtures, driver-catalog contract,
+and monthly upstream release check are documented in
+[`DEVELOPMENT.md`](DEVELOPMENT.md#upgrading-wmbusmeters).
+
+## Appendix A: runtime state reference
+
+The table below is an implementation reference, not the recommended entry point
+for understanding the system.
+
+| File | Purpose |
+|---|---|
+| `status.json` | top-level pipeline status |
+| `status_meters.tsv` | configured meters, selected display value, reception statistics |
+| `status_candidates.tsv` | discovered but unconfigured meters and statistics |
+| `status_seen.tsv` | append-ordered `id`, kind, and epoch reception history |
+| `status_events.tsv` | rolling bridge/WebUI event log |
+| `status_raw_count.txt`, `status_last_raw_seen.txt` | global RAW count and last frame time |
+| `status_recent_raw.tsv` | rolling recent RAW frames used by previews/comparison |
+| `status_candidate_analysis.tsv` | candidate encryption/type analysis |
+| `status_candidate_raw.tsv` | last RAW frame keyed by candidate ID |
+| `status_candidate_values.tsv` | selected preview value per candidate |
+| `status_candidate_preview_state.tsv` | candidate preview state machine |
+| `status_meter_last_json.tsv` | last full decoded JSON per configured meter |
+| `status_meter_key_problem.tsv` | `key_missing` or `key_invalid` detected from decoder output |
+| `status_heartbeat.txt` | bridge liveness independent of telegram traffic |
+| `status_run_error.txt` | add-on wrapper startup failure classification |
+| `status_broker_error.txt` | runtime broker failure classification |
+| `status_ha_presence.txt` | latest observed HA MQTT birth state |
+| `status_broker_info.txt` | broker brand/version from `$SYS` |
+| `status_ha_verification.txt` | optional canary verification result |
+| `status_discovery_doctor.json` | latest on-demand Discovery Doctor result |
+| `status_discovery_published.flag` | session-wide Discovery publication flag |
+| `status_wmbusmeters_version.txt` | runtime/build decoder version and commit |
+| `status_official_meters_count.txt` | file-backed configured meter count |
+| `status_rate_1m.json`, `status_rate_history.tsv` | receive rate and rolling history |
+| `status_bridge_start.txt` | bridge start epoch |
+| `status_esp_telegram_devices.tsv` | per-ESP RAW reception tracker |
+| `status_esp_health.json`, `status_esp_meters.json` | per-ESP health and meter flags |
+| `status_esp_diag.json` | latest ESP diagnostic summary |
+| `status_esp_meter_snapshot.json`, `status_esp_meter_window.json` | per-ESP, per-meter reception windows |
+| `search_candidates.tsv`, `search_matches.tsv`, `search_status.json` | SEARCH workflow state |
+| `.reload_pipeline`, `.reload_listen*` | pipeline/LISTEN lifecycle requests |
+| `.discovery_doctor_request`, `.factory_reset_request` | asynchronous WebUI-to-bridge requests |
+
+Keyed updates performed through `_tsv_upsert` use a lock, temporary file, and
+atomic rename. Other state files use their own append, tail, direct-write, or
+temporary-rename patterns; there is no global transaction across files. Several
+writers run in subshells, so counters and cross-process flags that must remain
+authoritative are file-backed rather than shell-variable-only.
+
+## Appendix B: invariants worth preserving
+
+- `wmbusmeters`, not the bridge, owns decode semantics and upstream drivers.
+- The build-generated WebUI catalog must include built-in and XMQ drivers.
+- LISTEN stays a zero-meter, always-on process; previews are one-shot decoders.
+- Candidate and SEARCH data must never create Home Assistant entities.
+- Soft reload replaces DECODE without killing LISTEN, heartbeat, or background
+  subscribers.
+- Reception continuity spans candidate and configured-meter phases while one
+  physical frame is counted once.
+- Discovery configuration is published before its non-retained state.
+- A missing field in a partial telegram must not leave an apparently current HA
+  value.
+- In Home Assistant, persistent option changes go through Supervisor.
+- Missing diagnostic evidence is unknown, not healthy.

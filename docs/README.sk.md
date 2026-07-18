@@ -16,7 +16,7 @@
 4. [Rýchly štart — Docker standalone](#4-rýchly-štart--docker-standalone)
 5. [WebUI — čo vidíš](#5-webui--čo-vidíš)
 6. [Typický postup: od prázdna k funkčnému meraču](#6-typický-postup-od-prázdna-k-funkčnému-meraču)
-7. [Režim SEARCH — keď je počuť priveľa cudzích meračov](#7-režim-search--keď-je-počuť-priveľa-cudzích-meračov)
+7. [Filtrovanie podľa hodnoty — keď je počuť priveľa cudzích meračov](#7-filtrovanie-podľa-hodnoty--keď-je-počuť-priveľa-cudzích-meračov)
 8. [Možnosti konfigurácie](#8-možnosti-konfigurácie)
 9. [Jazyk rozhrania](#9-jazyk-rozhrania)
 10. [Riešenie problémov](#10-riešenie-problémov)
@@ -52,7 +52,8 @@ flowchart LR
 
 > 🌉 **Ako celok tvoria ESP (RF prijímač) a tento add-on (dekodér)
 > distribuovaný _wM-Bus → Home Assistant gateway_** — rádio je tam, kde je
-> signál, a dekódovanie (dešifrovanie, drivery, ~120 typov meračov) beží na HA.
+> signál, a dekódovanie (dešifrovanie a sada ovládačov z pripnutého zostavenia
+> `wmbusmeters`) beží na HA.
 > Na rozdiel od monolitických wM-Bus gateway (rádio + dekodér v jednej krabičke)
 > nepotrebuje lokálny USB dongle a škáluje pridávaním lacných ESP uzlov.
 >
@@ -128,8 +129,10 @@ Konfigurácia v `./config/options.json` (referencia polí v [§8](#8-možnosti-k
 Po úprave: `docker compose restart wmbus`. WebUI: vystav port `8099` v
 `docker-compose.yml` a otvor `http://<host-ip>:8099/`.
 
-> 💡 V Dockeri globálne tlačidlo reštartu nič neurobí (žiadny Supervisor) — použi
-> `docker restart <container>`.
+> 💡 V Dockeri globálne tlačidlo **Reštart** funguje, ak má kontajner nastavenú
+> politiku reštartu (ukážkový súbor Compose používa
+> `restart: unless-stopped`). Bez nej tlačidlo kontajner zastaví; znova ho
+> spustite pomocou `docker start <container>`.
 
 ---
 
@@ -141,7 +144,7 @@ Dostupné v **5 jazykoch** (EN/PL/DE/CS/SK) — prepínač vpravo hore.
 |---|---|
 | **PANEL** | Dashboard: pipeline ESP→MQTT→wmbusmeters→HA (klikateľné dlaždice) + štatistiky. |
 | **MERAČE** | Tvoje nakonfigurované merače: hodnota, posledný telegram, **PRÍJEM**. |
-| **PRÍJEM / HĽADANIE** | Detegovaní kandidáti + nakonfigurované „v éteri"; tu pridáš/odoberieš merače. |
+| **PRÍJEM / HĽADANIE** | Detegovaní kandidáti + nakonfigurované „v éteri"; tu pridáš/odoberieš merače a filtruješ zobrazené hodnoty. |
 | **LOGY / ESP LOGY** | Runtime udalosti a diagnostika ESP prijímačov. |
 | **NASTAVENIA / O PROJEKTE** | Aktívna konfigurácia, info. |
 
@@ -172,9 +175,9 @@ Nájdi kurzorom na **ⓘ** pri hlavičke PRÍJEM — máš legendu. Stručne:
   alebo auto-detekcia `wmbusmeters`, pravý stĺpec je tebou vybraný driver. Zelené
   riadky sú ďalšie polia, žlté riadky iné hodnoty; viac polí **neznamená**
   automaticky správne — over hodnoty na displeji merača.
-- **Hlásenie…** pre kandidáta zámerne nepoužíva AES kľúč a nezobrazuje súkromné
-  odpočty. Ak chceš vidieť hodnoty pred pridaním merača, použi **Pridať →
-  Porovnať** a zadaj AES kľúč v tomto modale.
+- **Hlásenie…** môže pri rovnakom ID použiť uložený 32-znakový AES kľúč, aby
+  `wmbusmeters --analyze` ukázal užitočný výstup. Samotný kľúč sa do hlásenia
+  nikdy neprikladá, ale dešifrovaná analýza môže obsahovať odpočty merača.
 - **Odstrániť vybrané** — zaškrtni checkboxy a odober viac naraz (tlačidlo nad tabuľkou).
 
 ---
@@ -199,7 +202,8 @@ flowchart TD
 3. Uloženie ide do `options.json` a DECODE pipeline sa prenačíta **bez plného reštartu
    kontajnera**.
 4. Po **ďalšom telegrame** tohto merača (od desiatok sekúnd po pár minút, podľa merača)
-   sa objaví ako **Online** na MERAČE a HA Discovery vytvorí entity ako `sensor.<id>_total_m3`.
+   sa objaví ako **Online** na MERAČE a HA Discovery odošle konfigurácie senzorov.
+   Konečné `entity_id` prideľuje Home Assistant.
 
 Kým príde prvý telegram, dashboard ukazuje panel **„čaká na prvý telegram"**. Plný
 reštart add-onu je len núdzová záloha.
@@ -208,21 +212,29 @@ reštart add-onu je len núdzová záloha.
 „unknown format signature"), použite tlačidlo **Hlásenie…** v jeho riadku:
 add-on zostaví hotový blok hlásenia pre upstream projekt wmbusmeters (surový
 telegram + výstup `wmbusmeters --analyze`). Telegram obsahuje sériové číslo
-merača; AES kľúč nie je nikdy priložený.
+merača. Uložený AES kľúč môže byť použitý na analýzu rovnakého ID, ale samotný
+kľúč sa nikdy neprikladá. Dešifrovaný výstup môže obsahovať odpočty merača.
 
 ---
 
-## 7. Režim SEARCH — keď je počuť priveľa cudzích meračov
+## 7. Filtrovanie podľa hodnoty — keď je počuť priveľa cudzích meračov
 
-V bytovom dome prijímač zachytí desiatky cudzích meračov. SEARCH nájde ten tvoj
-**porovnaním stavu m³ z tvojho fyzického displeja** s dekódmi všetkých kandidátov.
+Aktuálny postup vo WebUI používa panel **Filtrovať podľa hodnoty** v zobrazení
+PRÍJEM / HĽADANIE:
 
-1. Otvor `#search`, zadaj **aktuálny stav** z displeja (napr. `23.93`) a **toleranciu**
-   (predvolene `0.05` = 50 l; v dome nezvyšuj).
-2. Zapni SEARCH. Add-on dekóduje kandidátov všetkými ovládačmi a hľadá zhodu
-   `total_m3 ≈ stav ± tolerancia`.
-3. Pri zhode log ukáže `SEARCH MATCH: id=… driver=…` — pridaj ten merač z PRÍJEM.
-4. **Vypni `search_mode`** po dokončení (dočasné SEARCH merače nevytvárajú HA entity).
+1. Odpíš aktuálnu číselnú hodnotu z fyzického displeja merača.
+2. Zadaj ju do filtra; predvolená tolerancia je `0.05`.
+3. WebUI skryje riadky, ktorých už zobrazené číselné hodnoty sú mimo tolerancie.
+
+Filter pracuje iba na hodnotách, ktoré už WebUI prijalo pre nakonfigurované
+merače a kandidátov. Nespúšťa ďalšie dekódovanie, neskúša všetky ovládače a
+nemení konfiguráciu.
+
+Starší backend SEARCH ostáva dostupný pre pokročilú konfiguráciu, ale jeho
+záložka je v navigácii skrytá. Po zapnutí `search_mode` režim LISTEN ukladá iba
+výslovne nešifrované vodné kandidáty a jeden ovládač navrhnutý LISTEN. Až ďalší
+reštart načíta tieto dočasné merače; porovnávajú sa číselné polia, ktorých názov
+obsahuje `m3` alebo `total_volume`. Dočasné merače SEARCH sú vynechané z HA Discovery.
 
 ---
 
@@ -237,7 +249,7 @@ Z [`config.yaml`](../config.yaml).
 | `raw_topic` | str | `wmbus/+/telegram` | Topic so surovými HEX rámcami. `+` = wildcard (názov ESP v diagnostike) |
 | `filter_hex_only` | bool | `true` | Ignoruj správy, ktoré nevyzerajú ako HEX |
 | `mqtt_mode` | enum | `auto` | `auto` (poradie: `external_mqtt_host`, ak je vyplnený → HA broker zo služby Supervisora → sonda známych broker add-onov `core-mosquitto`/`a0d7b954-emqx`, s údajmi `external_mqtt_username/password`, ak sú zadané) / `ha` (vynútiť HA) / `external` (vždy externý) |
-| `external_mqtt_host/port/username/password` | str/int | — | Externý broker (pri `external`) |
+| `external_mqtt_host/port/username/password` | str/int | `""` / `1883` / `""` / `""` | Externý broker (pri `external`) |
 
 ### Discovery a výstup
 
@@ -248,7 +260,7 @@ Z [`config.yaml`](../config.yaml).
 | `discovery_retain` | bool | `true` | Discovery ako retained |
 | `state_prefix` | str | `wmbusmeters` | Prefix topicu s hodnotami |
 | `state_retain` | bool | `false` | Retained stav |
-| `verify_ha_entities` | bool | `false` | (Opt-in) opýtaj sa HA Core API, či entity skutočne vznikli. Zapnutie udelí read-only prístup k HA Core API. |
+| `verify_ha_entities` | bool | `false` | V režime HA add-onu použije deklarovaný read-only prístup add-onu k HA Core API na overenie testovacej entity. Docker nemá token Supervisora, takže tam overenie nie je dostupné. |
 
 Každá entita z Discovery má **availability template**: ak v poslednom telegrame
 merača chýba dané pole (niektoré merače striedajú krátke a plné rámce), entita
@@ -261,20 +273,17 @@ Okrem číselných meracích senzorov každý merač, ktorý hlási pole `status
 dostane aj dve **diagnostické** entity (v sekcii *Diagnostika* zariadenia):
 `sensor` so surovým textom stavu a `binary_sensor` (`device_class: problem`),
 ktorý sa zapne vždy, keď je stav iný než `OK`. Text sa preberá doslovne z
-wmbusmeters, takže konkrétne príznaky závisia od ovládača — napr. `elf2`
-dekóduje celé bitové pole chýb merača tepla (`DIFFERENTIAL_TEMPERATURE_TOO_LOW`,
-`TEMPORARY_ERROR`, …), zatiaľ čo starší ovládač `elf` hlási len všeobecný TPL
-stav. Pre bohatšiu diagnostiku zvoľte `elf2`.
+wmbusmeters, takže jeho presný obsah závisí od vybraného ovládača upstreamu.
 
-### Režim SEARCH
+### Starší režim SEARCH
 
 | Pole | Typ | Predvolené | Popis |
 |---|---|---|---|
-| `search_mode` | bool | `false` | Zapína SEARCH ([§7](#7-režim-search--keď-je-počuť-priveľa-cudzích-meračov)) |
+| `search_mode` | bool | `false` | Zapína skrytý starší backend SEARCH opísaný v [§7](#7-filtrovanie-podľa-hodnoty--keď-je-počuť-priveľa-cudzích-meračov) |
 | `search_expected_value_m3` | float | `0` | Očakávaný stav m³ |
 | `search_tolerance_m3` | float | `0.05` | Tolerancia porovnania — v dome nezvyšuj |
 | `search_delta_mode` / `search_min_delta_m3` | bool/float | `false` / `0.001` | (Experimentálne) porovnanie delty |
-| `search_topic` | str | `wmbus/search/candidates` | Topic výsledkov SEARCH |
+| `search_topic` | str | `wmbus/search/candidates` | Topic výsledkov SEARCH publikovaný bez retain |
 
 ### Debug
 
@@ -289,14 +298,15 @@ stav. Pre bohatšiu diagnostiku zvoľte `elf2`.
 
 | Pole | Typ | Povinné | Popis |
 |---|---|---|---|
-| `id` | str | áno | Tvoj štítok (názov senzora HA) |
+| `id` | str | áno | Tvoj štítok merača, použitý v názvoch MQTT Discovery a generovanej konfigurácii |
 | `meter_id` | str | áno | Sériové číslo merača (HEX, z LISTEN) |
 | `type` | str | áno | **Názov ovládača wmbusmeters** (napr. `hydrodigit`, `amiplus`, `izarv2`) **alebo `auto`/`other`**. Voľný reťazec — wmbusmeters overí ovládač pri dekódovaní (zámerne nie enum, aby nové ovládače neboli odmietané). |
 | `type_other` | str? | pri `type=other` | Vlastný názov ovládača |
 | `key` | str? | pri šifrovaní | 32-znakový AES kľúč (HEX) |
 
-Bežné ovládače: voda — `multical21`, `iperl`, `hydrodigit`, `hydrus`, `mkradio3`,
-`izarv2`; teplo — `kamheat`, `hydrocalm3`, `vario451`; elektrina — `amiplus`.
+Zoznam ovládačov vo WebUI sa generuje z pripnutého zostavenia `wmbusmeters` a
+jeho XMQ zdrojov. Používajte tento katalóg namiesto ručne udržiavaného zoznamu
+v návode.
 
 ---
 
@@ -312,11 +322,12 @@ hlavička `Accept-Language` → predvolene `en`. Prepínač vpravo hore.
 ### „Telegramy dorazia na broker, ale v HA nie sú entity"
 
 Spusti **Discovery Doctor** (pohľad NASTAVENIA): checklist jedným kliknutím
-overí pripojenie k brokeru, či je MQTT Discovery zapnuté a retained, či Home
-Assistant skutočne počúva nakonfigurovaný `discovery_prefix` (cez retained
-birth message HA) a či na brokeri existujú retained discovery configy pre
-každý nakonfigurovaný merač — s náhľadom payloadu a tlačidlom **Vynútiť
-re-discovery**. Bez hrabania v logoch a `mosquitto_sub`.
+ukáže aktuálny stav MQTT bridge, či je Discovery zapnuté a retained, a koľko
+retained konfigurácií senzorov existuje pre každý nakonfigurovaný merač,
+vrátane ukážky payloadu. Prijatá birth správa HA potvrdzuje, že HA používa daný
+broker a prefix; jej neprítomnosť nič nedokazuje, pretože správa často nie je
+retained. Voliteľné overenie testovacej entity cez HA Core API je silnejšia
+kontrola. Dialóg obsahuje aj tlačidlo **Vynútiť re-discovery**.
 
 ### „Chcem začať odznova — odstrániť všetky merače"
 
@@ -326,31 +337,42 @@ retained discovery configy, takže entity zmiznú) a vyčistí behový stav
 (kandidáti, zoznam ignorovaných, štatistiky). Doplnok sa vráti do stavu po
 inštalácii. Akcia je nezvratná a najprv vyžaduje potvrdenie.
 
+### „Chcem zmeniť možnosti bez opustenia WebUI"
+
+V zobrazení NASTAVENIA je upraviteľný formulár **Konfigurácia** pre skalárne
+možnosti zo schémy add-onu, s popisom každej z nich. Merače sa spravujú osobitne
+v PRÍJEM / HĽADANIE. Uloženie v režime HA add-onu zapisuje možnosti cez
+Supervisor API, v samostatnom Dockeri priamo do
+`/config/options.json`. MQTT heslo je iba na zápis (prázdne pole zachová
+súčasnú hodnotu). Základné možnosti sa prejavia po úplnom reštarte
+add-onu/kontajnera.
+
 ### „Môj merač šifruje telegramy — čo teraz?"
 
-Väčšina fakturačných meračov šifruje payload (kandidát má odznak **AES req.**).
-Bez individuálneho 128-bitového AES kľúča (32 hex znakov) je dekódovanie
-nemožné — nie je to chyba. Kde kľúč získať: **správca budovy / družstvo**,
+Keď LISTEN výslovne ohlási šifrovanie, kandidát má odznak **AES req.**. Bez
+individuálneho 128-bitového AES kľúča (32 hex znakov) jeho payload nemožno
+dekódovať. Kde kľúč získať: **správca budovy / družstvo**,
 **dodávateľ média**, ktorý merač fakturuje, alebo **inštalatér merača**. Merač
-môžeš pridať bez kľúča a doplniť ho neskôr tlačidlom **Driver…**. Ak je kľúč
-chybný alebo chýba, wmbusmeters merač ticho ignoruje — add-on to deteguje a
-pri merači ukáže červený status **🔑 AES kľúč neplatný / chýba AES kľúč**; po
-oprave kľúča sa pipeline prenačíta a dekódovanie sa obnoví s ďalším telegramom.
+môžeš pridať bez kľúča a doplniť ho neskôr tlačidlom **Driver…**. Keď
+`wmbusmeters` vypíše rozpoznané varovanie o chýbajúcom alebo neplatnom kľúči,
+bridge ho zaznamená a na riadku merača ukáže zodpovedajúci červený stav. Po
+oprave kľúča sa pipeline prenačíta a čaká na ďalší telegram.
 
 ### „Nevidím žiadne telegramy" (RAW count = 0)
 1. Publikuje prijímač na `wmbus/<čokoľvek>/telegram`? Test: `mosquitto_sub -h <broker> -t 'wmbus/#' -v`.
-2. Je bridge pripojený a subscribed? Log: `mqtt: connected` + `subscribed to wmbus/+/telegram`.
-3. Nezahadzuje to `filter_hex_only`? Nastav `loglevel: verbose` a hľadaj `dropped (not HEX)` — ak ESP posiela base64/JSON, zmeň formát.
+2. Skontroluj skutočné štartovacie riadky: `MQTT: <host>:<port> topic=<raw_topic>` a `MQTT broker ready`.
+3. Pri `filter_hex_only: true` sa ne-HEX alebo nepárne payloady ticho zahodia ešte pred RAW počítadlom. Ak ESP posiela base64/JSON, zmeň formát odosielateľa alebo filter vedome vypni.
 4. Je broker dosiahnuteľný? Skontroluj chyby pripojenia (`mqtt_mode`).
 
 ### „Pridal som merač, ale neobjavuje sa v MERAČE"
 Objaví sa až **po ďalšom telegrame** pre toto ID (desiatky sekúnd až pár minút).
 Ak nie — skontroluj `meter_id`, ovládač, AES kľúč a logy.
 
-### „Merač po aktualizácii add-onu zmizne" (napr. Diehl/Izar `izarv2`)
-Opravené v **1.5.33**. Predtým zoznam povolených ovládačov neobsahoval novšie (napr.
-`izarv2`), takže Supervisor odmietol uloženie a merač sa pri reštarte stratil.
-**Aktualizuj add-on na ≥1.5.33**, merač odober a pridaj znova — zostane.
+### „Vo formulári merača chýba ovládač"
+Aktuálna schéma ukladá `type` ako voľný reťazec; nemá pevný enum povolených
+ovládačov. Katalóg WebUI sa generuje zo vstavaných a XMQ ovládačov pripnutého
+zostavenia `wmbusmeters` a zostavenie obrazu zlyhá, ak chýba vstavaný ovládač
+`izar`. Skontroluj aktívne možnosti a vyber ovládač z tohto katalógu znova.
 
 ### „Stav ukazuje «ticho», nie červené «offline»"
 Tak je to zámerne (honest-witness): merač je pasívny, dlhšie ticho je teda
@@ -359,15 +381,11 @@ Prah vychádza z **rytmu** každého merača, nie z pevných 15/60 min.
 
 ### „Hodnota len rastie, nie je okamžitá"
 Hlavná zobrazená hodnota je **stav merača** (`total_m3`,
-`total_energy_consumption_kwh`). Vodomery, ktoré dávajú len `total_m3` (napr.
-`hydrodigit`, `itron`, `apator162`), nemajú pole okamžitého prietoku — aktuálnu/periodickú
-spotrebu spočítaj v HA pomocníkom **Utility Meter** (denný/mesačný, prežije reštarty)
+`total_energy_consumption_kwh`). Ak JSON dekodéra obsahuje `total_m3`, ale nie
+pole okamžitého prietoku, bridge žiadne nevytvára. Aktuálnu/periodickú spotrebu
+spočítaj v HA pomocníkom **Utility Meter** (denný/mesačný, prežije reštarty)
 alebo **Derivative** (m³/h). `total_m3` je publikované ako `device_class: water` +
 `state_class: total_increasing`, takže ide aj do štatistík vody/Energie HA.
-
-### „HA neukazuje aktualizáciu add-onu"
-HA deteguje novú verziu len keď sa zmení `version:` v `config.yaml`. Vynútenie:
-Settings → System → ⋮ → Reload alebo `ha supervisor restart`.
 
 ### „Mám šifrovaný merač — kde vziať AES kľúč?"
 Od dodávateľa meračov (správca budovy / dodávateľ vody/tepla), z nálepky alebo
@@ -381,9 +399,27 @@ potvrdiť zápis do `options.json`. V núdzi `docker restart <container>`.
 
 ## 11. Ako to funguje pod kapotou
 
-Architektúra, model procesov, runtime súbory v `/data`, soft-reload, kontrakt ESP
-diagnostiky, model dashboardu a tok vydaní dev→stable — všetko v
-**[`ARCHITECTURE.md`](ARCHITECTURE.md)** (referencia pre maintainerov/prispievateľov).
+**Prečo sa dekóduje na serveri, a nie na ESP?** Projekty, ktoré vstavajú
+dekodér do firmvéru ESP, narážajú stále na tie isté triedy problémov: každý
+nový model merača znamená aktualizáciu firmvéru, každé vydanie
+ESPHome/toolchainu môže rozbiť build vstavaného dekodéra a celá flotila
+zariadení nakoniec ostane pripnutá na starej verzii ESPHome len preto, aby sa
+jedna komponenta ďalej kompilovala. Tu ESP žiadny dekodér nenesie, takže:
+
+- pridanie alebo zmena merača je úprava vo WebUI — **nikdy reflash**;
+- aktualizácie ESPHome nemôžu rozbiť dekódovanie — na čipe nie je dekodér,
+  ktorý by sa mohol rozbiť;
+- AES kľúče ostávajú na serveri — ESP nikdy nevidí kľúčový materiál;
+- firmvér je pre všetkých rovnaký a nerastie s počtom meračov.
+
+Poctivá cena: potrebujete stále bežiaci hostiteľ a MQTT broker — čo inštalácia
+Home Assistant už aj tak má. Úplné zdôvodnenie vrátane tabuľky tried zlyhaní je v
+[`ARCHITECTURE.md`](ARCHITECTURE.md#why-decode-centrally).
+
+Hranica integrácie s `wmbusmeters`, tok telegramu, model procesov, runtime
+súbory, soft-reload, kontrakt ESP a stav dashboardu sú v
+**[`ARCHITECTURE.md`](ARCHITECTURE.md)**. Build, CI, aktualizácie dekodéra a hranica
+medzi repozitármi dev a stable sú v **[`DEVELOPMENT.md`](DEVELOPMENT.md)**.
 
 ---
 
@@ -397,7 +433,7 @@ distribuovaný pod GPL-3.0.
 - **wmbusmeters-ha-addon** — https://github.com/wmbusmeters/wmbusmeters-ha-addon (GPL-3.0)
 
 Fork vyvíjaný **Kustonium**: MQTT vstup namiesto lokálneho donglu, WebUI v 5 jazykoch,
-workflow LISTEN → ADD → SEARCH z UI.
+LISTEN/ADD, filtrovanie hodnôt a porovnanie ovládačov.
 
 ---
 

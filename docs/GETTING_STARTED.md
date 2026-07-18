@@ -9,11 +9,13 @@ are kept up to date and cover install → add a meter → dashboard → troubles
 - 🇨🇿 [Česky](README.cs.md)
 - 🇸🇰 [Slovenčina](README.sk.md)
 
-For internals (architecture, runtime files, soft-reload, ESP diagnostics) see
-[`ARCHITECTURE.md`](ARCHITECTURE.md).
+For internals (the `wmbusmeters` integration boundary, runtime files,
+soft-reload, and ESP diagnostics) see [`ARCHITECTURE.md`](ARCHITECTURE.md).
+Build, test, and release mechanics are in [`DEVELOPMENT.md`](DEVELOPMENT.md).
 
 ---
 
 > 🇵🇱 Treść „pierwsze kroki" jest teraz w przewodnikach użytkownika powyżej
 > (instalacja → dodanie licznika → panel → rozwiązywanie problemów). Wnętrze:
-> [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> [`ARCHITECTURE.md`](ARCHITECTURE.md). Budowanie i wydania:
+> [`DEVELOPMENT.md`](DEVELOPMENT.md).

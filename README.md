@@ -3,7 +3,6 @@
 [![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FKustonium%2Fhomeassistant-wmbus-mqtt-bridge)
 <a href="https://buymeacoffee.com/Kustonium"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="41"></a>
 
-**Dokumentacja do wersji / Documentation for version:** 1.5.42.
 
 **Szybka nawigacja / Quick navigation:**
 [🇵🇱 PL (poniżej)](#-opis-pl) · [🇬🇧 EN (below)](#-description-en)
@@ -25,7 +24,7 @@ Celem projektu jest dekodowanie telegramów Wireless M-Bus (C1 / T1 / S1) w Home
 
 Add-on konsumuje surowe ramki wMBus w formacie HEX z MQTT i jest typowo używany razem z firmware [`esphome-wmbus-bridge-rawonly`](https://github.com/Kustonium/esphome-wmbus-bridge-rawonly) działającym na ESP32 z układem radiowym **CC1101, SX1276 lub SX1262**. Oba projekty tworzą pipeline (ESP odbiera radio → MQTT raw hex → ten add-on dekoduje → HA), ale są **niezależne**: add-on przyjmuje hex z dowolnego źródła publikującego na skonfigurowany `raw_topic`.
 
-> 🌉 **Całościowo: ESP (odbiornik radiowy) + ten add-on (dekoder) tworzą rozproszony _gateway wM-Bus → Home Assistant_.** Radio stoi tam, gdzie jest zasięg, a dekodowanie (deszyfracja, drivery, ~120 typów liczników) działa na HA. W odróżnieniu od **monolitycznych bramek wM-Bus** (radio + dekoder w jednym pudełku) ta architektura nie wymaga lokalnego dongla USB i skaluje się przez dostawianie tanich węzłów ESP. Każdą połowę można też używać samodzielnie: ESP karmi dowolny backend MQTT, a add-on dekoduje hex z dowolnego źródła (rtl-wmbus, inny gateway, narzędzie replay) — współpracują, ale żadna nie zależy od drugiej.
+> 🌉 **Całościowo: ESP (odbiornik radiowy) + ten add-on (dekoder) tworzą rozproszony _gateway wM-Bus → Home Assistant_.** Radio stoi tam, gdzie jest zasięg, a dekodowanie (deszyfracja i zestaw driverów z przypiętego buildu `wmbusmeters`) działa na HA. W odróżnieniu od **monolitycznych bramek wM-Bus** (radio + dekoder w jednym pudełku) ta architektura nie wymaga lokalnego dongla USB i skaluje się przez dostawianie tanich węzłów ESP. Każdą połowę można też używać samodzielnie: ESP karmi dowolny backend MQTT, a add-on dekoduje hex z dowolnego źródła (rtl-wmbus, inny gateway, narzędzie replay) — współpracują, ale żadna nie zależy od drugiej.
 
 > 🧱 **Granica odpowiedzialności:** projekt dostarcza dwóch klientów MQTT (ESP i add-on); jego zakres kończy się na temacie MQTT. Sam broker — uwierzytelnianie, ACL, TLS, ekspozycja i mostek broker-broker dla instalacji rozproszonych (A → internet → B) — należy do operatora. Trzymaj broker w LAN; do dostępu zdalnego użyj tunelu/VPN lub mostka brokera z TLS. ⚠️ Początkujący: **nie** przekierowuj portu brokera (1883) ani HA do internetu na routerze — do dostępu z zewnątrz użyj gotowca: **Nabu Casa**, **Tailscale** lub **Cloudflare Tunnel**. Niepewny? Zostaw wszystko w LAN.
 
@@ -58,10 +57,10 @@ ESP32 / Gateway / Bridge
 - **Wejście STDIN dla wmbusmeters** — telegramy przekazywane przez `stdin:hex`, czego oryginalny add-on nie obsługuje.
 - **Pełne dekodowanie przez wmbusmeters** — projekt nie zastępuje wmbusmeters, lecz wykorzystuje go w całości.
 - **MQTT + Home Assistant Discovery** — dane publikowane w MQTT i automatycznie rejestrowane w HA.
-- **Encje diagnostyczne statusu** — gdy licznik raportuje pole `status`, powstaje sensor z tekstem statusu oraz `binary_sensor` (`device_class: problem`) włączający się przy każdym stanie innym niż `OK` (np. `elf2` daje pełne flagi błędów, `elf` tylko status TPL).
+- **Encje diagnostyczne statusu** — gdy licznik raportuje pole `status`, powstaje sensor z tekstem przekazanym przez wybrany driver `wmbusmeters` oraz `binary_sensor` (`device_class: problem`) włączający się przy każdym stanie innym niż `OK`.
 - **Tryb LISTEN (nasłuch)** — gdy lista `meters` jest pusta, add-on wypisuje w logach wszystkie słyszane liczniki wraz z sugerowanym driverem.
-- **Tryb SEARCH** — gdy nasłuch słyszy wiele cudzych liczników, dopasowuje właściwy po odczycie m³ z fizycznego licznika.
-- **Interaktywny panel WebUI** — zarządzanie przez przeglądarkę (panel boczny w HA / port `8099` w Dockerze): lista wykrytych kandydatów, dodawanie licznika przez modal, podgląd na żywo wartości słuchanych liczników bez dodawania ich na stałe, tryb SEARCH, logi ESP. Interfejs w 5 językach: 🇬🇧 EN · 🇵🇱 PL · 🇩🇪 DE · 🇨🇿 CS · 🇸🇰 SK.
+- **Filtrowanie po wartości** — gdy nasłuch słyszy wiele cudzych liczników, WebUI filtruje już wyświetlone wartości według odczytu z fizycznego licznika i tolerancji.
+- **Interaktywny panel WebUI** — zarządzanie przez przeglądarkę (panel boczny w HA / port `8099` w Dockerze): lista wykrytych kandydatów, dodawanie licznika przez modal, podgląd wartości bez trwałego dodawania, filtrowanie wartości, porównanie driverów i logi ESP. Interfejs w 5 językach: 🇬🇧 EN · 🇵🇱 PL · 🇩🇪 DE · 🇨🇿 CS · 🇸🇰 SK.
 
 ### Wymagania (WAŻNE)
 
@@ -88,10 +87,10 @@ Widoki:
 
 - **Panel** — stan pipeline'u (MQTT, telegramy RAW, dekoder, HA Discovery), statystyki odbioru (w tym tempo telegramy/min na żywo) oraz wykryte płytki ESP.
 - **Liczniki** — skonfigurowane liczniki z bieżącą wartością i statystykami odbioru (15m / 60m).
-- **Odbierane / Szukaj** — kandydaci z trybu LISTEN (ID, driver, medium, szyfrowanie, odbiór). Każdy bez wymaganego klucza AES ma przycisk **Dodaj licznik** i jest **dekodowany automatycznie** przez równoległą instancję LISTEN — bieżąca wartość pojawia się w kolumnie **Wartość** po następnym zdekodowanym telegramie, bez dodawania licznika i bez klikania podglądu. Kandydaci wymagający AES nie pokazują wartości, dopóki nie podasz klucza. Stąd uruchamia się również tryb SEARCH.
+- **Odbierane / Szukaj** — kandydaci z trybu LISTEN (ID, driver, medium, szyfrowanie, odbiór). Kandydaci bez wymaganego klucza AES są dekodowani przez jednorazowe procesy podglądu, a bieżąca wartość pojawia się w kolumnie **Wartość** bez trwałego dodawania licznika. Kandydaci wymagający AES są pomijani do czasu podania klucza. Pasek **Filtruj po wartości** zawęża już wyświetlone dane bez uruchamiania dodatkowych driverów.
 - **Logi** — skrócony strumień zdarzeń runtime (pełne logi w zakładce **Log** dodatku HA).
 - **Logi ESP** — diagnostyka z odbiorników ESP (zdarzenia, RSSI, boot, sugestie) oraz wykrycie wielu płytek na podstawie napływających telegramów `wmbus/+/telegram`.
-- **Ustawienia** — aktywna konfiguracja runtime i snapshot `options.json`; globalny restart dodatku jest w górnym pasku WebUI. Wszystkie opcje add-onu można tu **edytować** (te same co w zakładce Konfiguracja HA), z opisem „po co są" przy każdej; opcje rdzenne wchodzą w życie po restarcie.
+- **Ustawienia** — aktywna konfiguracja runtime i snapshot `options.json`; globalny restart dodatku jest w górnym pasku WebUI. Opcje skalarne ze schematu add-onu można tu **edytować**, a lista liczników jest zarządzana w widoku **Odbierane / Szukaj**; opcje rdzenne wchodzą w życie po restarcie.
 - **O projekcie** — krótki opis architektury.
 
 **Porównanie driverów:** w modalu **Dodaj licznik** lub **Driver…** wybierz driver z listy, wpisz klucz AES jeśli licznik jest szyfrowany i kliknij **Porównaj**. Lewa kolumna pokazuje driver zapisany albo auto-detekcję `wmbusmeters`, prawa kolumna pokazuje driver wybrany w polu **Sterownik**. Zielone wiersze to pola dostępne tylko dla wybranego drivera, żółte to różne wartości; więcej pól nie gwarantuje poprawnego drivera — porównaj wartości z wyświetlaczem licznika.
@@ -128,23 +127,29 @@ W konfiguracji dodatku wypełnij sekcję **meters**:
 
 | Pole | Opis | Przykład |
 |------|------|---------|
-| `id` | Twoja własna nazwa sensora w HA | `woda_zimna_lazienka` |
+| `id` | Twoja etykieta licznika używana w nazwach Discovery i generowanej konfiguracji | `woda_zimna_lazienka` |
 | `meter_id` | 8-cyfrowy numer z trybu LISTEN | `41553221` |
 | `type` | Driver z trybu LISTEN | `mkradio3` |
 | `key` | Klucz szyfrowania (jeśli licznik szyfruje) | `00112233...` lub puste |
 
 Jeśli licznik nie szyfruje telegramów, pole `key` pozostaw puste.
 
-#### Opcjonalnie — tryb SEARCH (dopasowanie po stanie licznika)
+#### Filtrowanie wartości i starszy tryb SEARCH
 
-Tryb `search_mode` pomaga znaleźć właściwy licznik w budynku, gdy w trybie LISTEN pojawia się dużo obcych urządzeń.
+Podstawowy sposób identyfikacji licznika to pasek **Filtruj po wartości** w widoku
+**Odbierane / Szukaj**. Podaj stan z fizycznego wyświetlacza i tolerancję;
+WebUI ukryje wiersze, których już wyświetlone wartości są poza zakresem. Filtr
+nie uruchamia dodatkowego dekodowania, nie próbuje wszystkich driverów i nie
+zmienia konfiguracji.
 
-Działa dwuetapowo:
+Starszy backend `search_mode` pozostaje dostępny w konfiguracji zaawansowanej,
+ale jego widok jest ukryty w nawigacji. Działa dwuetapowo:
 
-1. Przy pustej liście `meters` add-on zbiera kandydatów z logów LISTEN i zapisuje ich w:
-   `/data/search_candidates.tsv`
-2. Po restarcie add-on tworzy tymczasowe liczniki `search_<meter_id>`, dekoduje ich JSON-y i porównuje wartości `total_m3` z podanym odczytem.
-3. Gdy znajdzie pasujący licznik, wypisuje tylko czytelny wynik `SEARCH MATCH` oraz gotową konfigurację `SEARCH SUGGESTED CONFIG`.
+1. Przy pustej liście `meters` LISTEN zapisuje w `/data/search_candidates.tsv`
+   wyłącznie jawnie nieszyfrowane wodomierze i jeden sugerowany driver.
+2. Po kolejnym restarcie add-on tworzy tymczasowe liczniki `search_<meter_id>` i
+   porównuje pola liczbowe zawierające w nazwie `m3` lub `total_volume` z podanym odczytem.
+3. Przy zgodności wypisuje `SEARCH MATCH` oraz `SEARCH SUGGESTED CONFIG`.
 
 Przykład wyniku:
 
@@ -165,7 +170,7 @@ Zalecana konfiguracja:
 Ważne zasady:
 
 - SEARCH służy tylko do identyfikacji licznika — po znalezieniu ID wyłącz `search_mode`.
-- Tymczasowe liczniki `search_*` nie powinny tworzyć encji Home Assistant.
+- Tymczasowe liczniki `search_*` są wyłączone z Home Assistant Discovery.
 - Po znalezieniu licznika skopiuj `SEARCH SUGGESTED CONFIG` do sekcji `meters`.
 - Po zakończeniu szukania usuń `/data/search_candidates.tsv`, jeśli chcesz zacząć kolejne wyszukiwanie od czystej listy.
 - Dla wodomierzy w bloku ustawiaj wąską tolerancję, np. `0.05`, bo wiele cudzych liczników może mieć podobny stan.
@@ -174,9 +179,9 @@ Ważne zasady:
 
 ### Aktualne / okresowe zużycie z `total_m3`
 
-Część wodomierzy (driver **apator162, hydrodigit, dme_07, itron, lse_07_17, qwater, qwaterv2, unismart**) wystawia **tylko `total_m3`** — narastający stan licznika, bez pola chwilowego przepływu (telegram po prostu go nie zawiera). To **nie jest błąd** — „aktualne zużycie" uzyskujesz z `total_m3` natywnie w Home Assistant:
+Jeśli JSON dekodera zawiera **tylko `total_m3`** i nie zawiera pola chwilowego przepływu, bridge takiego pola nie tworzy. Aktualne lub okresowe zużycie uzyskasz z `total_m3` natywnie w Home Assistant:
 
-- **Utility Meter** (Ustawienia → Urządzenia i usługi → Pomocnicy → *Licznik zużycia*): wskaż encję `sensor.<id>_total_m3` i ustaw cykl (dobowy/miesięczny) → HA liczy zużycie w okresie. Stan **przeżywa restarty i aktualizacje** addonu.
+- **Utility Meter** (Ustawienia → Urządzenia i usługi → Pomocnicy → *Licznik zużycia*): wskaż encję utworzoną dla pola `total_m3` i ustaw cykl (dobowy/miesięczny) → HA liczy zużycie w okresie. Stan **przeżywa restarty i aktualizacje** addonu.
 - **Derivative** (pomocnik *Pochodna*): chwilowy przepływ (np. m³/h) z przyrostu `total_m3` — rozdzielczość ograniczona interwałem telegramów licznika.
 
 `total_m3` jest publikowane z `device_class: water` i `state_class: total_increasing`, więc wchodzi też do statystyk wody / panelu Energii HA.
@@ -214,7 +219,7 @@ Pliki pod `./config/etc/` są **generowane automatycznie** przy każdym starcie 
 
 | Pole | Opis |
 |------|------|
-| `id` | Twoja własna etykieta (część tematu MQTT i nazwa sensora w HA) |
+| `id` | Twoja własna etykieta używana w nazwach Discovery i generowanej konfiguracji |
 | `meter_id` | 8-cyfrowy numer seryjny licznika (z trybu LISTEN) |
 | `type` | Driver wmbusmeters (z trybu LISTEN), lub `auto` |
 | `type_other` | Niestandardowy driver — wypełnij tylko gdy `type` = `other` |
@@ -232,8 +237,8 @@ Przykład `options.json`:
   "discovery_enabled": true,
   "state_prefix": "wmbusmeters",
   "search_mode": false,
-  "search_expected_value_m3": "0",
-  "search_tolerance_m3": "0.05",
+  "search_expected_value_m3": 0,
+  "search_tolerance_m3": 0.05,
   "mqtt_mode": "external",
   "external_mqtt_host": "192.168.1.10",
   "external_mqtt_port": 1883,
@@ -307,7 +312,7 @@ The purpose of this add-on is to decode Wireless M-Bus (C1 / T1 / S1) telegrams 
 
 This add-on consumes raw wMBus hex frames from MQTT and is typically paired with the companion firmware [`esphome-wmbus-bridge-rawonly`](https://github.com/Kustonium/esphome-wmbus-bridge-rawonly) running on an ESP32 with a **CC1101, SX1276 or SX1262** radio. The two projects work as a pipeline (ESP receives radio → MQTT raw hex → this add-on parses → HA), but each is **independent**: this add-on accepts hex from any source publishing to the configured `raw_topic`.
 
-> 🌉 **As a whole: the ESP (RF receiver) + this add-on (decoder) form a distributed _wM-Bus → Home Assistant gateway_.** The radio sits where the signal is, while decoding (decryption, drivers, ~120 meter types) runs on HA. Unlike **monolithic wM-Bus gateways** (radio + decoder in one box), this architecture needs no local USB dongle and scales by adding cheap ESP nodes. Each half also works standalone: the ESP feeds any MQTT backend, and the add-on decodes hex from any source (rtl-wmbus, another gateway, the replay tool) — they cooperate, but neither depends on the other.
+> 🌉 **As a whole: the ESP (RF receiver) + this add-on (decoder) form a distributed _wM-Bus → Home Assistant gateway_.** The radio sits where the signal is, while decoding (decryption and the driver set from the pinned `wmbusmeters` build) runs on HA. Unlike **monolithic wM-Bus gateways** (radio + decoder in one box), this architecture needs no local USB dongle and scales by adding cheap ESP nodes. Each half also works standalone: the ESP feeds any MQTT backend, and the add-on decodes hex from any source (rtl-wmbus, another gateway, the replay tool) — they cooperate, but neither depends on the other.
 
 > 🧱 **Responsibility boundary:** the project ships two MQTT clients (ESP + add-on); its scope ends at the MQTT topic. The broker itself — authentication, ACLs, TLS, exposure and broker-to-broker bridging for distributed setups (A → internet → B) — is the operator's. Keep the broker on your LAN; for remote access use a tunnel/VPN or TLS broker bridging. ⚠️ Beginners: do **not** forward the broker port (1883) or HA to the internet on your router — for outside access use a ready-made option: **Nabu Casa**, **Tailscale** or **Cloudflare Tunnel**. Unsure? Keep everything on the LAN.
 
@@ -333,10 +338,10 @@ ESP32 / Gateway / Bridge
 - STDIN support for wmbusmeters (`stdin:hex`)
 - Full decoding handled by upstream wmbusmeters
 - MQTT output with Home Assistant Discovery
-- Status diagnostic entities: when a meter reports a `status` field, a text sensor plus a `binary_sensor` (`device_class: problem`) that turns on for any non-`OK` state (e.g. `elf2` exposes the full error flags, `elf` only the TPL status)
+- Status diagnostic entities: when a meter reports a `status` field, a text sensor with the value supplied by the selected `wmbusmeters` driver plus a `binary_sensor` (`device_class: problem`) that turns on for any non-`OK` state
 - LISTEN mode: when `meters` list is empty, logs all detected meter IDs and suggested drivers
-- SEARCH mode: matches the right meter by its m³ reading when LISTEN hears many neighbours' meters
-- Interactive WebUI: browser management panel (HA side panel / port `8099` in Docker) — detected candidates, modal-based meter add, live preview of listened meters' values without adding them permanently, SEARCH mode, ESP logs. Available in 5 languages: 🇬🇧 EN · 🇵🇱 PL · 🇩🇪 DE · 🇨🇿 CS · 🇸🇰 SK.
+- Value filtering: when LISTEN hears many neighbours' meters, the WebUI filters already displayed values by the physical meter reading and tolerance
+- Interactive WebUI: browser management panel (HA side panel / port `8099` in Docker) — detected candidates, modal-based meter add, value preview without permanent configuration, value filtering, driver comparison and ESP logs. Available in 5 languages: 🇬🇧 EN · 🇵🇱 PL · 🇩🇪 DE · 🇨🇿 CS · 🇸🇰 SK.
 
 ### Broker modes (`mqtt_mode`)
 
@@ -360,10 +365,10 @@ Views:
 
 - **Dashboard** — pipeline status (MQTT, RAW telegrams, decoder, HA Discovery), reception statistics (including a live telegrams-per-minute rate) and detected ESP boards.
 - **Meters** — configured meters with their current value and reception stats (15m / 60m).
-- **Received / Search** — LISTEN-mode candidates (ID, driver, media, encryption, reception). Each one without a required AES key has an **Add meter** button and is **decoded automatically** by the parallel LISTEN instance — its current value appears in the **Value** column after the next decoded telegram, with no meter added and no preview click. AES-required candidates show no value until you provide a key. SEARCH mode is also started here.
+- **Received / Search** — LISTEN-mode candidates (ID, driver, media, encryption, reception). Candidates without a required AES key are decoded by one-shot preview processes, and their current value appears in the **Value** column without permanent configuration. Candidates requiring AES are skipped until a key is provided. The **Filter by value** bar narrows already displayed data without running extra drivers.
 - **Logs** — a short runtime event stream (full logs are in the add-on **Log** tab).
 - **ESP Logs** — diagnostics from ESP receivers (events, RSSI, boot, suggestions) and multi-board detection based on incoming `wmbus/+/telegram` telegrams.
-- **Settings** — active runtime configuration and `options.json` snapshot; the global add-on restart button is in the WebUI top bar. All add-on options can be **edited** here (the same options as the HA Configuration tab), each with an explanation of what it does; core options take effect after a restart.
+- **Settings** — active runtime configuration and `options.json` snapshot; the global add-on restart button is in the WebUI top bar. Scalar options from the add-on schema can be **edited** here, while meters are managed in **Received / Search**; core options take effect after a restart.
 - **About** — a short architecture description.
 
 **Driver comparison:** in the **Add meter** or **Driver…** modal, choose a driver, enter the AES key if the meter is encrypted, then click **Compare**. The left column shows the saved driver or `wmbusmeters` auto-detection; the right column shows the driver selected in the **Driver** field. Green rows are fields available only with the selected driver, amber rows are different values; more fields do not prove the driver is correct — compare the values with the meter display.
@@ -398,23 +403,30 @@ Fill in the **meters** section in the add-on configuration:
 
 | Field | Description | Example |
 |-------|-------------|---------|
-| `id` | Your own sensor name in HA | `cold_water_bathroom` |
+| `id` | Your meter label used in Discovery names and generated configuration | `cold_water_bathroom` |
 | `meter_id` | 8-digit number from LISTEN mode | `41553221` |
 | `type` | Driver from LISTEN mode | `mkradio3` |
 | `key` | Encryption key (if meter encrypts) | `00112233...` or leave empty |
 
 If the meter does not encrypt telegrams, leave `key` empty.
 
-#### Optional — SEARCH mode (matching by meter reading)
+#### Value filtering and the legacy SEARCH mode
 
-`search_mode` helps identify the correct meter in buildings where LISTEN mode sees many nearby devices.
+The primary identification workflow is the **Filter by value** bar in
+**Received / Search**. Enter the reading from the physical display and a
+tolerance; the WebUI hides rows whose already displayed values are outside that
+range. The filter performs no extra decoding, tries no additional drivers and
+does not change configuration.
 
-It works in two stages:
+The legacy `search_mode` backend remains available in advanced configuration,
+but its view is hidden from navigation. It works in two stages:
 
-1. With an empty `meters` list, the add-on collects LISTEN candidates and stores them in:
-   `/data/search_candidates.tsv`
-2. After restart, the add-on creates temporary `search_<meter_id>` meters, decodes their JSON output and compares `total_m3` with the expected physical reading.
-3. When a match is found, it prints a readable `SEARCH MATCH` line and a ready-to-copy `SEARCH SUGGESTED CONFIG`.
+1. With an empty `meters` list, LISTEN stores only explicitly unencrypted water
+   candidates and one suggested driver in `/data/search_candidates.tsv`.
+2. On the following restart, the add-on creates temporary `search_<meter_id>`
+   meters and compares numeric fields whose names contain `m3` or `total_volume`
+   with the expected reading.
+3. On a match it prints `SEARCH MATCH` and `SEARCH SUGGESTED CONFIG`.
 
 Example output:
 
@@ -435,7 +447,7 @@ Recommended settings:
 Important rules:
 
 - SEARCH is only for meter identification — disable `search_mode` after finding the ID.
-- Temporary `search_*` meters should not create Home Assistant entities.
+- Temporary `search_*` meters are excluded from Home Assistant Discovery.
 - Copy `SEARCH SUGGESTED CONFIG` into the `meters` section after finding the match.
 - Remove `/data/search_candidates.tsv` after searching if you want the next search to start from a clean candidate list.
 - Use a narrow tolerance for water meters in apartment blocks, for example `0.05`, because many nearby meters may have similar readings.
@@ -444,9 +456,11 @@ Important rules:
 
 ### Current / period consumption from `total_m3`
 
-Some water meters (drivers **apator162, hydrodigit, dme_07, itron, lse_07_17, qwater, qwaterv2, unismart**) expose **only `total_m3`** — the cumulative meter reading, with no instantaneous flow field (the telegram simply doesn't carry one). This is **not a bug** — derive "current consumption" from `total_m3` natively in Home Assistant:
+If the decoder JSON exposes **only `total_m3`** and no instantaneous-flow field,
+the bridge does not synthesize one. Derive current or period consumption from
+`total_m3` natively in Home Assistant:
 
-- **Utility Meter** (Settings → Devices & services → Helpers → *Utility meter*): point it at `sensor.<id>_total_m3` and pick a cycle (daily/monthly) → HA computes period consumption. Its state **survives add-on restarts and updates**.
+- **Utility Meter** (Settings → Devices & services → Helpers → *Utility meter*): point it at the entity created for the `total_m3` field and pick a cycle (daily/monthly) → HA computes period consumption. Its state **survives add-on restarts and updates**.
 - **Derivative** helper: instantaneous flow (e.g. m³/h) from the `total_m3` increase — resolution limited by the meter's telegram interval.
 
 `total_m3` is published with `device_class: water` and `state_class: total_increasing`, so it also feeds HA water / Energy statistics.
@@ -484,7 +498,7 @@ Files under `./config/etc/` are **auto-generated on startup** — do not edit th
 
 | Field | Description |
 |-------|-------------|
-| `id` | Your label (used in MQTT topic and HA sensor name) |
+| `id` | Your label used in Discovery names and generated configuration |
 | `meter_id` | 8-digit serial number (from LISTEN mode) |
 | `type` | wmbusmeters driver (from LISTEN mode), or `auto` |
 | `type_other` | Custom driver name — only when `type` is `other` |
@@ -502,8 +516,8 @@ Example `options.json`:
   "discovery_enabled": true,
   "state_prefix": "wmbusmeters",
   "search_mode": false,
-  "search_expected_value_m3": "0",
-  "search_tolerance_m3": "0.05",
+  "search_expected_value_m3": 0,
+  "search_tolerance_m3": 0.05,
   "mqtt_mode": "external",
   "external_mqtt_host": "192.168.1.10",
   "external_mqtt_port": 1883,

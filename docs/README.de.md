@@ -17,7 +17,7 @@
 4. [Schnellstart — Docker standalone](#4-schnellstart--docker-standalone)
 5. [Die WebUI — was du siehst](#5-die-webui--was-du-siehst)
 6. [Typischer Ablauf: von leer zu einem laufenden Zähler](#6-typischer-ablauf-von-leer-zu-einem-laufenden-zähler)
-7. [SEARCH-Modus — wenn zu viele fremde Zähler zu hören sind](#7-search-modus--wenn-zu-viele-fremde-zähler-zu-hören-sind)
+7. [Nach Wert filtern — wenn zu viele fremde Zähler zu hören sind](#7-nach-wert-filtern--wenn-zu-viele-fremde-zähler-zu-hören-sind)
 8. [Konfigurationsoptionen](#8-konfigurationsoptionen)
 9. [Sprache der Oberfläche](#9-sprache-der-oberfläche)
 10. [Fehlerbehebung](#10-fehlerbehebung)
@@ -53,8 +53,8 @@ flowchart LR
 
 > 🌉 **Als Ganzes bilden der ESP (RF-Empfänger) und dieses Add-on (Decoder)
 > ein verteiltes _wM-Bus → Home-Assistant-Gateway_** — das Funkmodul steht dort,
-> wo Empfang ist, das Dekodieren (Entschlüsselung, Treiber, ~120 Zählertypen)
-> läuft auf HA. Anders als monolithische wM-Bus-Gateways (Funk + Decoder in
+> wo Empfang ist, das Dekodieren (Entschlüsselung und der Treibersatz des
+> gepinnten `wmbusmeters`-Builds) auf HA läuft. Anders als monolithische wM-Bus-Gateways (Funk + Decoder in
 > einer Box) braucht es keinen lokalen USB-Dongle und skaliert durch das
 > Hinzufügen günstiger ESP-Knoten.
 >
@@ -130,8 +130,10 @@ Konfiguration in `./config/options.json` (Feldreferenz in [§8](#8-konfiguration
 Nach dem Bearbeiten: `docker compose restart wmbus`. WebUI: Port `8099` in
 `docker-compose.yml` freigeben und `http://<host-ip>:8099/` öffnen.
 
-> 💡 In Docker tut der globale Neustart-Button nichts (kein Supervisor) — nutze
-> `docker restart <container>`.
+> 💡 In Docker funktioniert der globale **Neustart**-Button, wenn für den
+> Container eine Neustart-Richtlinie gesetzt ist (die Beispiel-Compose-Datei
+> nutzt `restart: unless-stopped`). Ohne diese Richtlinie stoppt der Button den
+> Container; starte ihn mit `docker start <container>` erneut.
 
 ---
 
@@ -143,7 +145,7 @@ Verfügbar in **5 Sprachen** (EN/PL/DE/CS/SK) — Umschalter oben rechts.
 |---|---|
 | **PANEL** | Dashboard: die Pipeline ESP→MQTT→wmbusmeters→HA (klickbare Kacheln) + Statistik. |
 | **ZÄHLER** | Deine konfigurierten Zähler: Wert, letztes Telegramm, **EMPFANG**. |
-| **EMPFANG / SUCHE** | Erkannte Kandidaten + konfigurierte „on air"; hier Zähler hinzufügen/entfernen. |
+| **EMPFANG / SUCHE** | Erkannte Kandidaten + konfigurierte „on air"; hier Zähler hinzufügen/entfernen und angezeigte Werte filtern. |
 | **LOGS / ESP-LOGS** | Runtime-Ereignisse und ESP-Empfänger-Diagnose. |
 | **EINSTELLUNGEN / ÜBER** | Aktive Konfiguration, Info. |
 
@@ -177,9 +179,11 @@ Fahre mit der Maus über das **ⓘ** neben der EMPFANG-Überschrift für eine Le
   Auto-Erkennung von `wmbusmeters`, rechts der ausgewählte Treiber. Grüne Zeilen
   sind zusätzliche Felder, gelbe Zeilen andere Werte; mehr Felder bedeuten **nicht**
   automatisch richtig — prüfe die Werte am Zählerdisplay.
-- **Melden…** für einen Kandidaten verwendet absichtlich keinen AES-Schlüssel und
-  zeigt keine privaten Zählerstände. Werte vor dem Hinzufügen siehst du über
-  **Hinzufügen → Vergleichen** mit AES-Schlüssel in diesem Modal.
+- **Melden…** verwendet einen gespeicherten 32-stelligen AES-Schlüssel für
+  dieselbe Zähler-ID, falls vorhanden. Dadurch kann `wmbusmeters --analyze`
+  entschlüsselte Details anzeigen. Der Schlüssel selbst wird nie aufgenommen,
+  Zählerstände können aber enthalten sein — prüfe den Bericht vor dem
+  öffentlichen Posten.
 - **Ausgewählte entfernen** — Checkboxen markieren und mehrere auf einmal entfernen
   (Button über der Tabelle).
 
@@ -204,9 +208,10 @@ flowchart TD
 2. **Hinzufügen** eines Kandidaten (ohne AES — sofort; AES — den 32-Zeichen-HEX-Schlüssel eingeben).
 3. Das Speichern landet in `options.json` und die DECODE-Pipeline lädt **ohne
    vollständigen Container-Neustart** neu.
-4. Nach dem **nächsten Telegramm** dieses Zählers (von einigen Sekunden bis wenige
-   Minuten, je nach Zähler) erscheint er als **Online** auf ZÄHLER, und HA Discovery
-   erstellt Entitäten wie `sensor.<id>_total_m3`.
+4. Nach dem **nächsten Telegramm** dieses Zählers erscheint er als **Online** auf
+   ZÄHLER. HA Discovery erstellt Entitäten für die von `wmbusmeters` gelieferten
+   numerischen Felder, zum Beispiel `total_m3`. Die endgültige HA-`entity_id`
+   vergibt Home Assistant; die Bridge legt sie nicht fest.
 
 Bis das erste Telegramm eintrifft, zeigt das Dashboard ein Panel **„wartet auf das
 erste Telegramm"**. Ein voller Add-on-Neustart ist nur ein Notfall-Fallback.
@@ -216,23 +221,31 @@ Treiber / „unknown format signature"), nutzen Sie den Button **Meldung…** in
 seiner Zeile: das Add-on erstellt einen fertigen Issue-Block für das
 wmbusmeters-Upstream-Projekt (Roh-Telegramm + `wmbusmeters --analyze`-Ausgabe).
 Das Telegramm enthält die Seriennummer des Zählers; der AES-Schlüssel wird nie
-beigefügt.
+beigefügt. Wird ein gespeicherter Schlüssel für die Analyse verwendet, kann die
+entschlüsselte Ausgabe Zählerstände enthalten.
 
 ---
 
-## 7. SEARCH-Modus — wenn zu viele fremde Zähler zu hören sind
+## 7. Nach Wert filtern — wenn zu viele fremde Zähler zu hören sind
 
-In einem Mehrfamilienhaus empfängt der Empfänger Dutzende fremder Zähler. SEARCH
-findet deinen, indem es **den m³-Stand auf deiner physischen Anzeige** mit den
-Dekodierungen aller Kandidaten vergleicht.
+Der aktuelle WebUI-Ablauf ist die Leiste **Nach Wert filtern** unter EMPFANG / SUCHE:
 
-1. Öffne `#search`, gib den **aktuellen Stand** von der Anzeige ein (z. B. `23.93`)
-   und eine **Toleranz** (Default `0.05` = 50 l; im Block nicht erhöhen).
-2. Aktiviere SEARCH. Das Add-on dekodiert Kandidaten mit jedem Treiber und sucht
-   eine Übereinstimmung `total_m3 ≈ Stand ± Toleranz`.
-3. Bei einem Treffer zeigt das Log `SEARCH MATCH: id=… driver=…` — füge diesen Zähler
-   aus EMPFANG hinzu.
-4. **Schalte `search_mode` aus**, wenn fertig (temporäre SEARCH-Zähler erzeugen keine HA-Entitäten).
+1. Warte, bis konfigurierte Zähler oder Kandidaten einen numerischen Wert in der
+   Spalte **Wert** anzeigen.
+2. Gib den Stand vom physischen Display und eine Toleranz ein (Standard `0.05`).
+3. Der Browser lässt Zeilen innerhalb der Toleranz sichtbar und blendet Zeilen
+   mit abweichendem oder fehlendem Wert aus.
+
+Der Filter vergleicht nur bereits in der WebUI angezeigte Werte. Er startet keine
+weiteren Decoder, probiert keine anderen Treiber und ändert keine Konfiguration.
+Für zwei Treiber auf demselben Frame dient separat **Vergleichen**.
+
+Das ältere `search_mode`-Backend bleibt für fortgeschrittene Nutzung über die
+versteckte Route `#search` erhalten. LISTEN speichert dabei nur als unverschlüsselte
+Wasserzähler gemeldete Kandidaten mit ihrem einen vorgeschlagenen Treiber. Erst
+ein weiterer Neustart lädt sie als temporäre Zähler und prüft numerische Felder,
+deren Name `m3` oder `total_volume` enthält. Es werden **nicht** alle Treiber
+probiert. Temporäre SEARCH-Zähler sind von HA Discovery ausgeschlossen.
 
 ---
 
@@ -247,7 +260,7 @@ Aus [`config.yaml`](../config.yaml).
 | `raw_topic` | str | `wmbus/+/telegram` | Topic mit den rohen HEX-Frames. `+` = Wildcard (ESP-Name in der Diagnose) |
 | `filter_hex_only` | bool | `true` | Nachrichten ignorieren, die nicht wie HEX aussehen |
 | `mqtt_mode` | enum | `auto` | `auto` (Reihenfolge: `external_mqtt_host`, falls gesetzt → HA-Broker aus dem Supervisor-Dienst → Probe bekannter Broker-Add-ons `core-mosquitto`/`a0d7b954-emqx`, mit `external_mqtt_username/password`, falls angegeben) / `ha` (HA erzwingen) / `external` (immer extern) |
-| `external_mqtt_host/port/username/password` | str/int | — | Externer Broker (bei `external`) |
+| `external_mqtt_host/port/username/password` | str/int | `""` / `1883` / `""` / `""` | Externer Broker (bei `external`) |
 
 ### Discovery und Ausgabe
 
@@ -258,7 +271,7 @@ Aus [`config.yaml`](../config.yaml).
 | `discovery_retain` | bool | `true` | Discovery als retained |
 | `state_prefix` | str | `wmbusmeters` | Präfix des Wert-Topics |
 | `state_retain` | bool | `false` | Retained State |
-| `verify_ha_entities` | bool | `false` | (Opt-in) die HA Core API fragen, ob die Entitäten tatsächlich erstellt wurden. Aktivierung gewährt Lesezugriff auf die HA Core API. |
+| `verify_ha_entities` | bool | `false` | Im HA-Add-on-Modus den bereits deklarierten Lesezugriff auf die HA Core API zur Prüfung einer Canary-Entität verwenden. Docker hat kein Supervisor-Token; dort ist die Prüfung nicht verfügbar. |
 
 Jede per Discovery angelegte Entität trägt ein **Availability-Template**: fehlt
 ein Feld im letzten Telegramm des Zählers (manche Zähler senden abwechselnd
@@ -272,21 +285,18 @@ mindestens 1 h) Entitäten als `unavailable`, wenn der Zähler verstummt.
 `status` meldet, zwei **Diagnose**-Entitäten (im Abschnitt *Diagnose* des
 Geräts): einen `sensor` mit dem rohen Statustext und einen `binary_sensor`
 (`device_class: problem`), der *an* ist, sobald der Status etwas anderes als
-`OK` ist. Der Text wird unverändert von wmbusmeters übernommen, die konkreten
-Flags hängen also vom Treiber ab — z. B. dekodiert `elf2` das vollständige
-Fehler-Bitfeld des Wärmezählers (`DIFFERENTIAL_TEMPERATURE_TOO_LOW`,
-`TEMPORARY_ERROR`, …), während der ältere Treiber `elf` nur den allgemeinen
-TPL-Status meldet. Für die umfangreichere Diagnose `elf2` wählen.
+`OK` ist. Der Text wird unverändert von `wmbusmeters` übernommen; sein genauer
+Inhalt hängt vom ausgewählten Upstream-Treiber ab.
 
-### SEARCH-Modus
+### Älterer SEARCH-Modus
 
 | Feld | Typ | Default | Beschreibung |
 |---|---|---|---|
-| `search_mode` | bool | `false` | Aktiviert SEARCH ([§7](#7-search-modus--wenn-zu-viele-fremde-zähler-zu-hören-sind)) |
+| `search_mode` | bool | `false` | Aktiviert das versteckte ältere SEARCH-Backend aus [§7](#7-nach-wert-filtern--wenn-zu-viele-fremde-zähler-zu-hören-sind) |
 | `search_expected_value_m3` | float | `0` | Erwarteter m³-Stand |
 | `search_tolerance_m3` | float | `0.05` | Vergleichstoleranz — im Block nicht erhöhen |
 | `search_delta_mode` / `search_min_delta_m3` | bool/float | `false` / `0.001` | (Experimentell) Delta-Vergleich |
-| `search_topic` | str | `wmbus/search/candidates` | Topic der SEARCH-Ergebnisse |
+| `search_topic` | str | `wmbus/search/candidates` | Topic der SEARCH-Ergebnisse ohne Retain |
 
 ### Debug
 
@@ -301,14 +311,14 @@ TPL-Status meldet. Für die umfangreichere Diagnose `elf2` wählen.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `id` | str | ja | Dein Label (der HA-Sensorname) |
+| `id` | str | ja | Dein Zählerlabel für MQTT-Discovery-Namen und die generierte Konfiguration |
 | `meter_id` | str | ja | Die Seriennummer des Zählers (HEX, aus LISTEN) |
 | `type` | str | ja | **Der wmbusmeters-Treibername** (z. B. `hydrodigit`, `amiplus`, `izarv2`) **oder `auto`/`other`**. Ein freier String — wmbusmeters validiert den Treiber beim Dekodieren (bewusst kein Enum, damit neue Treiber nie abgelehnt werden). |
 | `type_other` | str? | bei `type=other` | Eigener Treibername |
 | `key` | str? | bei verschlüsselt | 32-Zeichen-AES-Schlüssel (HEX) |
 
-Häufige Treiber: Wasser — `multical21`, `iperl`, `hydrodigit`, `hydrus`, `mkradio3`,
-`izarv2`; Wärme — `kamheat`, `hydrocalm3`, `vario451`; Strom — `amiplus`.
+Die Treiberliste der WebUI wird aus dem festgelegten `wmbusmeters`-Build und
+dessen XMQ-Quellen erzeugt. Nutze diesen Katalog statt einer manuellen Liste.
 
 ---
 
@@ -324,12 +334,13 @@ Häufige Treiber: Wasser — `multical21`, `iperl`, `hydrodigit`, `hydrus`, `mkr
 ### „Telegramme erreichen den Broker, aber keine Entitäten in HA"
 
 Starten Sie den **Discovery Doctor** (Ansicht EINSTELLUNGEN): eine
-Ein-Klick-Checkliste prüft die Broker-Verbindung, ob MQTT Discovery aktiviert
-und retained ist, ob Home Assistant tatsächlich auf dem konfigurierten
-`discovery_prefix` hört (über HAs retained Birth-Message) und ob retained
-Discovery-Configs für jeden konfigurierten Zähler auf dem Broker existieren —
-mit Payload-Vorschau und einem Button **Re-Discovery erzwingen**. Kein
-Log-Graben, kein `mosquitto_sub`.
+Ein-Klick-Checkliste zeigt den aktuellen MQTT-Status der Bridge, die Discovery-
+Einstellungen und die Anzahl retained Sensor-Configs je konfiguriertem Zähler,
+einschließlich eines Beispiel-Payloads. Eine empfangene HA-Birth-Meldung ist ein
+positiver Nachweis für Broker und Präfix; ihr Fehlen ist nicht beweiskräftig,
+weil sie nicht immer retained ist. Die optionale Canary-Prüfung über die HA Core
+API liefert den stärkeren Nachweis. Der Dialog enthält auch **Re-Discovery
+erzwingen**.
 
 ### „Ich möchte neu anfangen — alle Zähler entfernen"
 
@@ -340,35 +351,44 @@ und setzt den Laufzeitzustand zurück (Kandidaten, Ignorierliste, Statistiken).
 Das Add-on kehrt in den Zustand nach der Installation zurück. Die Aktion ist
 unumkehrbar und fragt vorher nach Bestätigung.
 
+### „Ich möchte Optionen direkt in der WebUI ändern"
+
+Das Formular **Konfiguration** wird für skalare Optionen aus dem Add-on-Schema
+erzeugt; Zähler werden separat unter EMPFANG verwaltet. Im HA-Add-on-Modus
+speichert es über die Supervisor API, in Standalone-Docker direkt nach
+`/config/options.json`. Das MQTT-Passwort ist nur schreibbar; leer lassen behält
+den aktuellen Wert. Kernoptionen wirken erst nach einem vollständigen Add-on-
+oder Container-Neustart.
+
 ### „Mein Zähler verschlüsselt seine Telegramme — was nun?"
 
-Die meisten Abrechnungszähler verschlüsseln ihre Payload (der Kandidat zeigt
-das Badge **AES req.**). Ohne den individuellen 128-Bit-AES-Schlüssel (32
-Hex-Zeichen) ist keine Dekodierung möglich — das ist kein Fehler. Woher der
+Wenn LISTEN Verschlüsselung ausdrücklich meldet, zeigt der Kandidat das Badge
+**AES req.**. Ohne den individuellen 128-Bit-AES-Schlüssel (32 Hex-Zeichen)
+kann seine Payload nicht dekodiert werden. Woher der
 Schlüssel kommt: **Hausverwaltung / Genossenschaft**, der **Versorger**, der
 den Zähler abrechnet, oder der **Installateur**. Sie können den Zähler ohne
 Schlüssel hinzufügen und ihn später über den **Treiber…**-Button nachtragen.
-Bei falschem oder fehlendem Schlüssel ignoriert wmbusmeters den Zähler
-stillschweigend — das Add-on erkennt das und zeigt einen roten Status **🔑
-AES-Schlüssel ungültig / AES-Schlüssel fehlt** an der Zählerzeile; nach der
-Korrektur lädt die Pipeline neu und die Dekodierung läuft mit dem nächsten
-Telegramm weiter.
+Wenn `wmbusmeters` eine erkannte Warnung zu einem fehlenden oder ungültigen
+Schlüssel ausgibt, speichert die Bridge sie und zeigt den entsprechenden roten
+Status. Nach der Korrektur lädt die Pipeline neu und wartet auf das nächste
+Telegramm.
 
 ### „Ich sehe keine Telegramme" (RAW count = 0)
 1. Veröffentlicht der Empfänger auf `wmbus/<irgendetwas>/telegram`? Test: `mosquitto_sub -h <broker> -t 'wmbus/#' -v`.
-2. Ist die Bridge verbunden und subscribed? Log: `mqtt: connected` + `subscribed to wmbus/+/telegram`.
-3. Verwirft `filter_hex_only`? Setze `loglevel: verbose` und prüfe auf `dropped (not HEX)` — sendet der ESP base64/JSON, ändere das Format.
+2. Prüfe die tatsächlichen Startzeilen: `MQTT: <host>:<port> topic=<raw_topic>` und `MQTT broker ready`.
+3. Bei `filter_hex_only: true` werden Nicht-HEX-Payloads und Payloads mit ungerader Länge vor dem RAW-Zähler still verworfen. Sendet der ESP base64/JSON, ändere das Senderformat oder deaktiviere den Filter bewusst.
 4. Ist der Broker erreichbar? Verbindungsfehler prüfen (`mqtt_mode`).
 
 ### „Ich habe einen Zähler hinzugefügt, er erscheint aber nicht unter ZÄHLER"
 Er erscheint erst **nach dem nächsten Telegramm** für diese ID (einige Sekunden bis
 wenige Minuten). Wenn nicht — `meter_id`, Treiber, AES-Schlüssel und Logs prüfen.
 
-### „Ein Zähler verschwindet nach einem Add-on-Update" (z. B. Diehl/Izar `izarv2`)
-Behoben in **1.5.33**. Zuvor fehlten in der Liste erlaubter Treiber neuere (z. B.
-`izarv2`), also lehnte der Supervisor das Speichern ab und der Zähler ging beim
-Neustart verloren. **Add-on auf ≥1.5.33 aktualisieren**, Zähler entfernen und neu
-hinzufügen — er bleibt.
+### „Ein Treiber fehlt im Zählerformular"
+Das aktuelle Schema speichert `type` als freien String und verwendet kein festes
+Treiber-Enum. Der WebUI-Katalog wird aus den eingebauten und XMQ-Treibern des
+festgelegten `wmbusmeters`-Builds erzeugt; der Image-Build schlägt fehl, wenn der
+eingebaute Treiber `izar` fehlt. Prüfe die aktiven Optionen und wähle den Treiber
+erneut aus diesem Katalog.
 
 ### „Der Status zeigt «still», nicht rotes «offline»"
 Das ist beabsichtigt (Honest-Witness): ein Zähler ist passiv, längere Stille ist
@@ -378,16 +398,12 @@ aus festen 15/60 Min.
 
 ### „Der Wert wächst nur, er ist nicht momentan"
 Der angezeigte Hauptwert ist der **Zählerstand** (`total_m3`,
-`total_energy_consumption_kwh`). Wasserzähler, die nur `total_m3` liefern (z. B.
-`hydrodigit`, `itron`, `apator162`), haben kein Momentan-Durchfluss-Feld — berechne
-aktuellen/periodischen Verbrauch in HA mit einem **Utility-Meter**-Helfer (täglich/
+`total_energy_consumption_kwh`). Enthält das Decoder-JSON `total_m3`, aber kein
+Momentan-Durchfluss-Feld, erzeugt die Bridge keines. Berechne aktuellen/
+periodischen Verbrauch in HA mit einem **Utility-Meter**-Helfer (täglich/
 monatlich, übersteht Neustarts) oder **Derivative** (m³/h). `total_m3` wird als
 `device_class: water` + `state_class: total_increasing` veröffentlicht und fließt so
 auch in die HA-Wasser-/Energie-Statistik.
-
-### „HA zeigt kein Add-on-Update"
-HA erkennt eine neue Version nur, wenn sich `version:` in `config.yaml` ändert.
-Erzwingen: Settings → System → ⋮ → Reload oder `ha supervisor restart`.
 
 ### „Mein Zähler ist verschlüsselt — woher den AES-Schlüssel?"
 Vom Zähleranbieter (Hausverwaltung / Wasser-/Wärmeversorger), einem Aufkleber oder
@@ -402,9 +418,30 @@ Hinzufügen sollte das Log das Schreiben in `options.json` bestätigen. Notfalls
 
 ## 11. Wie es unter der Haube funktioniert
 
-Architektur, Prozessmodell, die `/data`-Runtime-Dateien, Soft-Reload, der ESP-
-Diagnosevertrag, das Dashboard-Modell und der dev→stable-Release-Ablauf — alles in
-**[`ARCHITECTURE.md`](ARCHITECTURE.md)** (eine Referenz für Maintainer/Mitwirkende).
+**Warum wird auf dem Server dekodiert und nicht auf dem ESP?** Projekte, die
+den Decoder in die ESP-Firmware einbetten, stoßen immer wieder auf dieselben
+Problemklassen: Jedes neue Zählermodell erfordert ein Firmware-Update, jedes
+ESPHome-/Toolchain-Release kann den Build des eingebetteten Decoders brechen,
+und am Ende bleibt die gesamte Geräteflotte auf einer alten ESPHome-Version
+gepinnt, nur damit eine Komponente weiter kompiliert. Hier trägt der ESP gar
+keinen Decoder, daher:
+
+- einen Zähler hinzufügen oder ändern = eine WebUI-Änderung — **nie ein Reflash**;
+- ESPHome-Updates können das Dekodieren nicht brechen — auf dem Chip gibt es
+  keinen Decoder, der brechen könnte;
+- AES-Schlüssel bleiben auf dem Server — der ESP sieht nie Schlüsselmaterial;
+- die Firmware ist für alle identisch und wächst nicht mit der Zahl der Zähler.
+
+Der ehrliche Preis: Es braucht einen dauerhaft laufenden Host und einen
+MQTT-Broker — was eine Home-Assistant-Installation ohnehin schon hat. Die
+vollständige Begründung samt Tabelle der Fehlerklassen steht in
+[`ARCHITECTURE.md`](ARCHITECTURE.md#why-decode-centrally).
+
+Die Integrationsgrenze zu `wmbusmeters`, der Telegrammfluss, das Prozessmodell,
+Runtime-Dateien, Soft-Reload, der ESP-Vertrag und der Dashboard-Status stehen in
+**[`ARCHITECTURE.md`](ARCHITECTURE.md)**. Build, CI, Decoder-Upgrades und die
+Grenze zwischen den Dev- und Stable-Repositories stehen in
+**[`DEVELOPMENT.md`](DEVELOPMENT.md)**.
 
 ---
 
@@ -418,7 +455,7 @@ geschriebenen `bridge.sh` — wird unter GPL-3.0 verteilt.
 - **wmbusmeters-ha-addon** — https://github.com/wmbusmeters/wmbusmeters-ha-addon (GPL-3.0)
 
 Ein von **Kustonium** entwickelter Fork: MQTT-Eingang statt lokalem Dongle, eine
-WebUI in 5 Sprachen, der LISTEN → ADD → SEARCH-Workflow aus der UI.
+WebUI in 5 Sprachen, LISTEN/ADD, Wertfilterung und Treibervergleich.
 
 ---
 

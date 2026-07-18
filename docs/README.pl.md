@@ -17,7 +17,7 @@
 4. [Szybki start — Docker standalone](#4-szybki-start--docker-standalone)
 5. [WebUI — co widzisz](#5-webui--co-widzisz)
 6. [Typowy workflow: od pustki do działającego licznika](#6-typowy-workflow-od-pustki-do-działającego-licznika)
-7. [Tryb SEARCH — gdy słychać za dużo cudzych liczników](#7-tryb-search--gdy-słychać-za-dużo-cudzych-liczników)
+7. [Filtr wartości — gdy słychać za dużo cudzych liczników](#7-filtr-wartości--gdy-słychać-za-dużo-cudzych-liczników)
 8. [Opcje konfiguracji](#8-opcje-konfiguracji)
 9. [Język interfejsu](#9-język-interfejsu)
 10. [Rozwiązywanie problemów](#10-rozwiązywanie-problemów)
@@ -54,8 +54,8 @@ flowchart LR
 
 > 🌉 **Całościowo ESP (odbiornik radiowy) i ten add-on (dekoder) tworzą
 > rozproszony _gateway wM-Bus → Home Assistant_** — radio stoi tam, gdzie jest
-> zasięg, a dekodowanie (deszyfracja, drivery, ~120 typów liczników) działa na
-> HA. W odróżnieniu od monolitycznych bramek wM-Bus (radio + dekoder w jednym
+> zasięg, a dekodowanie (deszyfracja i zestaw driverów z przypiętego buildu
+> `wmbusmeters`) działa na HA. W odróżnieniu od monolitycznych bramek wM-Bus (radio + dekoder w jednym
 > pudełku) nie wymaga lokalnego dongla USB i skaluje się przez dostawianie
 > tanich węzłów ESP.
 >
@@ -131,8 +131,10 @@ Konfiguracja w `./config/options.json` (referencja pól w [§8](#8-opcje-konfigu
 Po edycji: `docker compose restart wmbus`. WebUI: wystaw port `8099` w
 `docker-compose.yml` i otwórz `http://<host-ip>:8099/`.
 
-> 💡 W Dockerze globalny przycisk restartu nie zadziała (brak Supervisora) —
-> użyj `docker restart <container>`.
+> 💡 W Dockerze globalny przycisk **Restart** działa, jeśli kontener ma ustawioną
+> politykę restartu (przykładowy plik Compose używa `restart: unless-stopped`).
+> Bez niej przycisk zatrzyma kontener; uruchom go ponownie poleceniem
+> `docker start <container>`.
 
 ---
 
@@ -144,7 +146,7 @@ Dostępny w **5 językach** (EN/PL/DE/CS/SK) — przełącznik w prawym górnym 
 |---|---|
 | **PANEL** | Dashboard: pipeline ESP→MQTT→wmbusmeters→HA (klikalne kafelki) + statystyki. |
 | **LICZNIKI** | Twoje skonfigurowane liczniki: wartość, ostatni telegram, **ODBIÓR**. |
-| **ODBIERANE / SZUKAJ** | Wykryci kandydaci + skonfigurowane w eterze; tu dodajesz/usuwasz liczniki. |
+| **ODBIERANE / SZUKAJ** | Wykryci kandydaci + skonfigurowane w eterze; tu dodajesz/usuwasz liczniki i filtrujesz pokazane wartości. |
 | **LOGI / LOGI ESP** | Zdarzenia runtime i diagnostyka odbiorników ESP. |
 | **USTAWIENIA / O PROJEKCIE** | Aktywna konfiguracja, info. |
 
@@ -177,9 +179,10 @@ Najedź na **ⓘ** przy nagłówku ODBIÓR — masz legendę. W skrócie:
   wybrany przez Ciebie. Zielone wiersze oznaczają dodatkowe pola, żółte — inną
   wartość; więcej pól **nie** znaczy automatycznie poprawnie, więc porównaj
   wartości z wyświetlaczem licznika.
-- **Zgłoszenie…** dla kandydata celowo nie używa klucza AES i nie pokazuje
-  prywatnych odczytów. Jeśli chcesz zobaczyć wartości przed dodaniem licznika,
-  użyj **Dodaj → Porównaj** i wpisz klucz AES w tym modalu.
+- **Zgłoszenie…** używa zapisanego 32-znakowego klucza AES dla tego samego ID,
+  jeśli taki klucz istnieje, dzięki czemu `wmbusmeters --analyze` może pokazać
+  dane po deszyfracji. Sam klucz nigdy nie trafia do raportu, ale mogą znaleźć
+  się w nim odczyty licznika — sprawdź raport przed publicznym wklejeniem.
 - **Usuń zaznaczone** — zaznacz checkboxy i usuń kilka naraz (przycisk nad tabelą).
 
 ---
@@ -203,9 +206,10 @@ flowchart TD
 2. **Dodaj** kandydata (bez AES — od razu; z AES — wpisz 32-znakowy klucz HEX).
 3. Zapis trafia do `options.json`, pipeline DECODE przeładowuje się **bez pełnego
    restartu kontenera**.
-4. Po **następnym telegramie** tego licznika (od kilkudziesięciu sekund do
-   kilkunastu minut, zależnie od licznika) pojawia się on jako **Online** na
-   LICZNIKI, a HA Discovery tworzy encje `sensor.<id>_total_m3` itd.
+4. Po **następnym telegramie** tego licznika pojawia się on jako **Online** na
+   LICZNIKI, a HA Discovery tworzy encje dla liczbowych pól zwróconych przez
+   `wmbusmeters`, np. `total_m3`. Końcowy `entity_id` nadaje Home Assistant;
+   bridge nie ustala go na sztywno.
 
 Zanim przyjdzie pierwszy telegram, dashboard pokazuje sekcję **„czeka na pierwszy
 telegram"**. Pełny restart dodatku jest tylko awaryjnym fallbackiem.
@@ -214,23 +218,31 @@ telegram"**. Pełny restart dodatku jest tylko awaryjnym fallbackiem.
 / „unknown format signature"), użyj przycisku **Zgłoszenie…** w jego wierszu:
 add-on buduje gotowy do wklejenia blok zgłoszenia do projektu wmbusmeters
 (surowy telegram + wynik `wmbusmeters --analyze`). Telegram zawiera numer
-seryjny licznika; klucz AES nigdy nie jest dołączany.
+seryjny licznika. Klucz AES nigdy nie jest dołączany; jeśli zapisany klucz
+został użyty do analizy, zdekodowany wynik może zawierać odczyty licznika.
 
 ---
 
-## 7. Tryb SEARCH — gdy słychać za dużo cudzych liczników
+## 7. Filtr wartości — gdy słychać za dużo cudzych liczników
 
-W bloku odbiornik łapie dziesiątki cudzych liczników. SEARCH znajduje Twój,
-**porównując wskazanie m³ z wyświetlacza** z dekodami wszystkich kandydatów.
+Aktualny workflow w WebUI to pasek **Filtruj po wartości** w ODBIERANE / SZUKAJ:
 
-1. Wejdź na `#search`, wpisz **aktualny stan** z wyświetlacza (np. `23.93`) i
-   **tolerancję** (domyślnie `0.05` = 50 l; w bloku nie zwiększaj).
-2. Włącz SEARCH. Add-on dekoduje kandydatów wszystkimi sterownikami i szuka
-   dopasowania `total_m3 ≈ wskazanie ± tolerancja`.
-3. Po dopasowaniu w logach pojawia się `SEARCH MATCH: id=… driver=…` — dodaj ten
-   licznik z ODBIERANE.
-4. **Wyłącz `search_mode`** po skończeniu (tymczasowe liczniki SEARCH nie tworzą
-   encji w HA).
+1. Poczekaj, aż skonfigurowane liczniki lub kandydaci pokażą liczbę w kolumnie
+   **Wartość**.
+2. Wpisz odczyt z fizycznego wyświetlacza i tolerancję (domyślnie `0.05`).
+3. Przeglądarka pozostawi wiersze mieszczące się w tolerancji i ukryje wiersze
+   z inną albo brakującą wartością.
+
+Filtr porównuje wyłącznie wartości już pokazane w WebUI. Nie uruchamia kolejnych
+dekoderów, nie próbuje innych driverów i nie zmienia konfiguracji. Do zestawienia
+dwóch driverów dla tej samej ramki służy osobno przycisk **Porównaj**.
+
+Starszy backend `search_mode` nadal istnieje dla zastosowań zaawansowanych pod
+ukrytą trasą `#search`. Po włączeniu LISTEN zapisuje tylko kandydatów zgłoszonych
+jako nieszyfrowane wodomierze wraz z jednym sugerowanym driverem. Dopiero kolejny
+restart ładuje zapisanych kandydatów jako tymczasowe liczniki i sprawdza liczbowe
+pola, których nazwa zawiera `m3` albo `total_volume`. Mechanizm **nie** próbuje
+wszystkich driverów. Tymczasowe liczniki SEARCH są wyłączone z HA Discovery.
 
 ---
 
@@ -245,7 +257,7 @@ Z [`config.yaml`](../config.yaml).
 | `raw_topic` | str | `wmbus/+/telegram` | Topic z surowymi HEX-ami. `+` = wildcard (nazwa ESP w diagnostyce) |
 | `filter_hex_only` | bool | `true` | Ignoruj wiadomości niewyglądające jak HEX |
 | `mqtt_mode` | enum | `auto` | `auto` (kolejność: `external_mqtt_host` jeśli wpisany → broker HA z usługi Supervisora → sonda znanych brokerów-add-onów `core-mosquitto`/`a0d7b954-emqx`, z danymi `external_mqtt_username/password` jeśli podane) / `ha` (wymuś HA) / `external` (zawsze zewnętrzny) |
-| `external_mqtt_host/port/username/password` | str/int | — | Broker zewnętrzny (gdy `external`) |
+| `external_mqtt_host/port/username/password` | str/int | `""` / `1883` / `""` / `""` | Broker zewnętrzny (gdy `external`) |
 
 ### Discovery i wyjście
 
@@ -256,7 +268,7 @@ Z [`config.yaml`](../config.yaml).
 | `discovery_retain` | bool | `true` | Discovery jako retained |
 | `state_prefix` | str | `wmbusmeters` | Prefix tematu wartości |
 | `state_retain` | bool | `false` | Retained dla stanu |
-| `verify_ha_entities` | bool | `false` | (Opt-in) pyta HA Core API, czy encje faktycznie powstały. Włączenie nadaje read-only dostęp do HA Core API. |
+| `verify_ha_entities` | bool | `false` | W trybie add-onu HA używa zadeklarowanego dla dodatku dostępu read-only do HA Core API, aby sprawdzić encję kontrolną. Docker nie ma tokenu Supervisora, więc ta weryfikacja jest tam niedostępna. |
 
 Każda encja z Discovery ma **availability template**: gdy w ostatnim telegramie
 licznika brakuje danego pola (niektóre liczniki wysyłają naprzemiennie ramki
@@ -270,20 +282,18 @@ Poza liczbowymi sensorami pomiarowymi każdy licznik raportujący pole `status`
 dostaje też dwie encje **diagnostyczne** (w sekcji *Diagnostyka* urządzenia):
 `sensor` z surowym tekstem statusu oraz `binary_sensor` (`device_class:
 problem`), który włącza się, gdy status jest inny niż `OK`. Tekst jest
-przekazywany 1:1 z wmbusmeters, więc konkretne flagi zależą od drivera — np.
-`elf2` dekoduje pełne pole błędów ciepłomierza
-(`DIFFERENTIAL_TEMPERATURE_TOO_LOW`, `TEMPORARY_ERROR`, …), podczas gdy starszy
-`elf` raportuje tylko ogólny status TPL. Dla pełnej diagnostyki wybierz `elf2`.
+przekazywany 1:1 z `wmbusmeters`, więc jego dokładna treść zależy od wybranego
+drivera upstream.
 
-### Tryb SEARCH
+### Starszy tryb SEARCH
 
 | Pole | Typ | Domyślnie | Opis |
 |---|---|---|---|
-| `search_mode` | bool | `false` | Włącza SEARCH ([§7](#7-tryb-search--gdy-słychać-za-dużo-cudzych-liczników)) |
+| `search_mode` | bool | `false` | Włącza ukryty starszy backend SEARCH opisany w [§7](#7-filtr-wartości--gdy-słychać-za-dużo-cudzych-liczników) |
 | `search_expected_value_m3` | float | `0` | Oczekiwane wskazanie m³ |
 | `search_tolerance_m3` | float | `0.05` | Tolerancja — w bloku nie zwiększaj |
 | `search_delta_mode` / `search_min_delta_m3` | bool/float | `false` / `0.001` | (Eksperymentalne) porównanie delty |
-| `search_topic` | str | `wmbus/search/candidates` | Topic wyników SEARCH |
+| `search_topic` | str | `wmbus/search/candidates` | Topic wyników SEARCH publikowany bez retain |
 
 ### Debug
 
@@ -296,14 +306,14 @@ przekazywany 1:1 z wmbusmeters, więc konkretne flagi zależą od drivera — np
 
 | Pole | Typ | Wymagane | Opis |
 |---|---|---|---|
-| `id` | str | tak | Twoja etykieta (nazwa sensora HA) |
+| `id` | str | tak | Twoja etykieta licznika, używana w nazwach MQTT Discovery i generowanej konfiguracji |
 | `meter_id` | str | tak | Numer seryjny licznika (HEX, z LISTEN) |
 | `type` | str | tak | **Nazwa sterownika wmbusmeters** (np. `hydrodigit`, `amiplus`, `izarv2`) **lub `auto`/`other`**. Dowolny string — wmbusmeters waliduje sterownik przy dekodowaniu (świadomie nie enum, żeby nowe sterowniki nie były odrzucane). |
 | `type_other` | str? | gdy `type=other` | Niestandardowa nazwa sterownika |
 | `key` | str? | gdy szyfrowany | 32-znakowy klucz AES (HEX) |
 
-Najczęstsze sterowniki: woda — `multical21`, `iperl`, `hydrodigit`, `hydrus`,
-`mkradio3`, `izarv2`; ciepło — `kamheat`, `hydrocalm3`, `vario451`; prąd — `amiplus`.
+Lista driverów w WebUI jest generowana z przypiętego buildu `wmbusmeters` i jego
+źródeł XMQ. Korzystaj z tego katalogu zamiast ręcznej listy w dokumentacji.
 
 ---
 
@@ -319,12 +329,12 @@ nagłówek `Accept-Language` → domyślnie `en`. Przełącznik w prawym górnym
 ### „Telegramy docierają do brokera, ale w HA nie ma encji"
 
 Uruchom **Discovery Doctor** (widok USTAWIENIA): checklista jednym kliknięciem
-sprawdza połączenie z brokerem, czy MQTT Discovery jest włączone i retained,
-czy Home Assistant faktycznie nasłuchuje skonfigurowanego `discovery_prefix`
-(po retained birth message HA) oraz czy retained configi discovery istnieją na
-brokerze dla każdego skonfigurowanego licznika — z podglądem payloadu i
-przyciskiem **Wymuś ponowne discovery**. Bez grzebania w logach i
-`mosquitto_sub`.
+pokazuje bieżący stan MQTT bridge'a, ustawienia Discovery oraz liczbę retained
+configów sensorów dla każdego skonfigurowanego licznika, razem z przykładowym
+payloadem. Odebrany komunikat birth HA potwierdza właściwy broker i prefiks;
+jego brak niczego nie rozstrzyga, bo ten komunikat nie zawsze jest retained.
+Mocniejszym sprawdzeniem jest opcjonalna encja kontrolna przez HA Core API.
+Okno ma również przycisk **Wymuś ponowne discovery**.
 
 ### „Chcę zacząć od zera — usuń wszystkie liczniki"
 
@@ -336,29 +346,30 @@ jest nieodwracalna i wymaga potwierdzenia.
 
 ### „Chcę zmieniać opcje bez wychodzenia z WebUI"
 
-Widok USTAWIENIA ma edytowalny formularz **Konfiguracja** z tymi samymi opcjami
-co zakładka Konfiguracja w Home Assistant, z opisem „po co są" przy każdej.
-Formularz jest generowany ze schematu add-onu, więc zawsze zgadza się z HA. Zapis
-trafia do opcji przez Supervisor API; hasło MQTT jest tylko do zapisu (zostaw
-puste, by zachować). Opcje rdzenne wchodzą w życie po restarcie add-onu (górny
-pasek).
+Widok USTAWIENIA ma edytowalny formularz **Konfiguracja** dla opcji skalarnych
+ze schematu add-onu, z opisem „po co są" przy każdej. Liczniki są zarządzane
+osobno w ODBIERANE / SZUKAJ. Zapis trafia przez Supervisor API w trybie add-onu
+HA, a w samodzielnym Dockerze
+bezpośrednio do `/config/options.json`. Hasło MQTT jest tylko do zapisu (zostaw
+puste, by zachować obecną wartość). Opcje rdzenne wchodzą w życie po pełnym
+restarcie add-onu lub kontenera.
 
 ### „Mój licznik szyfruje telegramy — co dalej?"
 
-Większość liczników rozliczeniowych szyfruje payload (kandydat ma odznakę
-**AES req.**). Bez indywidualnego 128-bitowego klucza AES (32 znaki hex)
-dekodowanie jest niemożliwe — to nie jest błąd. Skąd wziąć klucz: **zarządca
+Gdy LISTEN jawnie zgłosi szyfrowanie, kandydat ma odznakę **AES req.**. Bez
+indywidualnego 128-bitowego klucza AES (32 znaki hex) jego payloadu nie da się
+zdekodować. Skąd wziąć klucz: **zarządca
 budynku / spółdzielnia**, **dostawca medium**, który rozlicza licznik, albo
 **instalator licznika**. Licznik możesz dodać bez klucza i uzupełnić go później
-przyciskiem **Driver…**. Jeśli klucz jest błędny lub go brak, wmbusmeters po
-cichu ignoruje licznik — add-on to wykrywa i pokazuje czerwony status **🔑
-klucz AES nieprawidłowy / brak klucza AES** przy liczniku; po poprawieniu
-klucza pipeline się przeładowuje i dekodowanie wraca przy następnym telegramie.
+przyciskiem **Driver…**. Gdy `wmbusmeters` wypisze rozpoznane ostrzeżenie o
+brakującym lub błędnym kluczu, bridge zapisuje je i pokazuje odpowiedni czerwony
+status przy liczniku. Po poprawieniu klucza pipeline się przeładowuje i czeka na
+następny telegram.
 
 ### „Nie widzę żadnych telegramów" (RAW count = 0)
 1. Odbiornik publikuje na `wmbus/<cokolwiek>/telegram`? Test: `mosquitto_sub -h <broker> -t 'wmbus/#' -v`.
-2. Bridge połączony i subskrybuje? Logi: `mqtt: connected` + `subscribed to wmbus/+/telegram`.
-3. `filter_hex_only` nie odrzuca? Włącz `loglevel: verbose` i sprawdź `dropped (not HEX)` — jeśli ESP wysyła base64/JSON, zmień format.
+2. Sprawdź rzeczywiste linie startowe: `MQTT: <host>:<port> topic=<raw_topic>` oraz `MQTT broker ready`.
+3. Przy `filter_hex_only: true` payloady niebędące HEX-em albo mające nieparzystą długość są po cichu odrzucane przed licznikiem RAW. Jeśli ESP wysyła base64/JSON, zmień format nadawcy albo świadomie wyłącz filtr.
 4. Broker osiągalny? Sprawdź błędy połączenia (`mqtt_mode`).
 
 ### „Dodałem licznik, ale nie pojawia się w LICZNIKI"
@@ -366,11 +377,12 @@ Pojawi się dopiero **po kolejnym telegramie** tego ID (od kilkudziesięciu s do
 kilkunastu min). Jeśli dalej nie ma — sprawdź `meter_id`, sterownik, klucz AES i
 logi.
 
-### „Licznik znika po aktualizacji dodatku" (np. Diehl/Izar `izarv2`)
-Naprawione od wersji **1.5.33**. Wcześniej lista dozwolonych sterowników nie
-zawierała nowszych (np. `izarv2`), więc Supervisor odrzucał zapis i licznik
-ginął przy restarcie. **Zaktualizuj dodatek do ≥1.5.33**, usuń i dodaj licznik
-ponownie — zostanie.
+### „Brakuje drivera w formularzu licznika"
+Aktualny schemat zapisuje `type` jako dowolny string; nie ma stałego enum z
+dozwolonymi driverami. Katalog WebUI powstaje z driverów wbudowanych i XMQ z
+przypiętego buildu `wmbusmeters`, a build obrazu kończy się błędem, jeśli brakuje
+wbudowanego drivera `izar`. Sprawdź aktywne opcje i wybierz driver ponownie z
+tego katalogu.
 
 ### „Status pokazuje «cisza», nie czerwone «offline»"
 Tak ma być (honest-witness): licznik jest pasywny, więc długa cisza jest
@@ -379,16 +391,12 @@ alarm. Próg liczy się z **rytmu danego licznika**, nie ze sztywnych 15/60 min.
 
 ### „Wartość tylko rośnie, nie jest chwilowa"
 Jako wartość główną pokazujemy **stan licznika** (`total_m3`,
-`total_energy_consumption_kwh`). Wodomierze wystawiające tylko `total_m3` (np.
-`hydrodigit`, `itron`, `apator162`) nie mają pola chwilowego przepływu —
-aktualne/okresowe zużycie policz w HA pomocnikiem **Utility Meter** (dobowy/
+`total_energy_consumption_kwh`). Jeśli JSON dekodera zawiera `total_m3`, ale nie
+zawiera pola chwilowego przepływu, bridge go nie tworzy. Aktualne/okresowe
+zużycie policz w HA pomocnikiem **Utility Meter** (dobowy/
 miesięczny, przeżywa restarty) lub **Derivative** (m³/h). `total_m3` jest
 publikowane jako `device_class: water` + `state_class: total_increasing`, więc
 wchodzi do statystyk wody/Energii HA.
-
-### „HA nie pokazuje aktualizacji dodatku"
-HA wykrywa nową wersję tylko gdy zmieni się `version:` w `config.yaml`.
-Wymuszenie: Settings → System → ⋮ → Reload albo `ha supervisor restart`.
 
 ### „Mam licznik szyfrowany, skąd klucz AES?"
 Od dostawcy liczników (administrator budynku / dostawca wody/ciepła), z naklejki
@@ -403,10 +411,29 @@ restart <container>`.
 
 ## 11. Jak to działa głębiej
 
-Architektura, model procesów, pliki runtime w `/data`, soft-reload, kontrakt
-diagnostyki ESP, model dashboardu i przepływ wydań dev→stable — wszystko w
-**[`ARCHITECTURE.md`](ARCHITECTURE.md)** (po angielsku, dla maintainerów i
-współtwórców).
+**Dlaczego dekodowanie na serwerze, a nie na ESP?** Projekty, które wbudowują
+dekoder w firmware ESP, wpadają wciąż w te same klasy problemów: każdy nowy
+model licznika wymaga aktualizacji firmware, każde wydanie ESPHome/toolchaina
+może zepsuć kompilację wbudowanego dekodera, a cała flota urządzeń kończy
+przypięta do starej wersji ESPHome tylko po to, żeby jeden komponent dalej się
+kompilował. Tutaj ESP w ogóle nie wozi dekodera, więc:
+
+- dodanie lub zmiana licznika to edycja w WebUI — **nigdy reflash**;
+- aktualizacje ESPHome nie mogą zepsuć dekodowania — na chipie nie ma dekodera,
+  który mógłby się zepsuć;
+- klucze AES zostają na serwerze — ESP nigdy nie widzi materiału kryptograficznego;
+- firmware jest identyczny dla każdego i nie rośnie wraz z liczbą liczników.
+
+Uczciwy koszt: potrzebny jest stale działający host i broker MQTT — czyli to,
+co instalacja Home Assistant i tak już ma. Pełne uzasadnienie, z tabelą klas
+awarii, znajdziesz w
+[`ARCHITECTURE.md`](ARCHITECTURE.md#why-decode-centrally).
+
+Granica integracji z `wmbusmeters`, przepływ telegramu, model procesów, pliki
+runtime, soft-reload, kontrakt ESP i dane panelu są opisane w
+**[`ARCHITECTURE.md`](ARCHITECTURE.md)**. Budowanie, CI, aktualizacje dekodera i
+granicę między repozytoriami dev i stable opisuje
+**[`DEVELOPMENT.md`](DEVELOPMENT.md)**.
 
 ---
 
@@ -420,7 +447,7 @@ GPL-3.0.
 - **wmbusmeters-ha-addon** — https://github.com/wmbusmeters/wmbusmeters-ha-addon (GPL-3.0)
 
 Fork rozwijany przez **Kustonium**: wejście MQTT zamiast lokalnego dongla, WebUI
-w 5 językach, workflow LISTEN → ADD → SEARCH przez UI.
+w 5 językach, LISTEN/ADD, filtrowanie wartości i porównywanie driverów.
 
 ---
 
