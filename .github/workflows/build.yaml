@@ -194,7 +194,7 @@ jobs:
 
       - name: Create GitHub Release
         if: matrix.arch == 'amd64'
-        uses: softprops/action-gh-release@v3.0.1
+        uses: softprops/action-gh-release@v3.0.2
         with:
           tag_name: ${{ env.ADDON_VERSION }}
           name: ${{ env.ADDON_VERSION }}
