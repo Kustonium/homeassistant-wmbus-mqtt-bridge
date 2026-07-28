@@ -1,3 +1,8 @@
+## 1.5.43
+
+### Fixed
+- time out preview rows stuck in "pending" state (9f76b46)
+
 ## 1.5.42
 
 ### Added

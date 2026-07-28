@@ -358,6 +358,11 @@ start_esp_subscribers
     _hb_now="$(epoch_now)"
     if (( _hb_now - _last_candidate_prune >= ${CANDIDATE_PRUNE_INTERVAL_SECONDS:-600} )); then
       prune_stale_candidates || true
+      # Same tick, after pruning: rows that survived but are stuck in "pending"
+      # (heard once, then silent -> decode attempts never reach the count that
+      # would end the state) get a time-based terminal state, so the WebUI stops
+      # showing "decoding…" for a candidate that is never coming back.
+      expire_stale_pending_previews || true
       _last_candidate_prune="${_hb_now}"
     fi
     # Discovery Doctor: WebUI requested a broker probe. Consume the flag
