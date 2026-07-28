@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
 description: "MQTT RAW HEX -> wmbusmeters (stdin:hex) -> MQTT + Home Assistant Discovery"
-version: "1.5.42"
+version: "1.5.43"
 slug: "wmbus_mqtt_bridge"
 stage: experimental
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
@@ -15,8 +15,7 @@ ingress_port: 8099
 hassio_api: true
 # Read-only access to the HA Core API, used ONLY by the opt-in entity
 # verification (verify_ha_entities). When that option is false (default), the
-# add-on does not call the Core API. See _bmad-output/planning-artifacts/prds/
-# prd-ha-entity-verification-2026-06-05/prd.md.
+# add-on does not call the Core API.
 homeassistant_api: true
 panel_icon: mdi:gauge
 panel_title: "wMBus Bridge"
@@ -51,8 +50,9 @@ options:
 
   # Opt-in: ask the HA Core API whether HA actually creates the add-on's
   # Discovery entities (via a hidden "canary" sensor wmbus_bridge_health).
-  # Off by default — turning it on grants the add-on read-only access to HA
-  # states. Only meaningful in HA add-on mode (needs SUPERVISOR_TOKEN).
+  # Off by default. Read-only HA API access is declared statically; this option
+  # only controls whether the API call is made. HA add-on mode only
+  # (needs SUPERVISOR_TOKEN).
   verify_ha_entities: false
 
   meters: []

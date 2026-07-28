@@ -275,6 +275,66 @@ prune_official_meter_previews() {
   : "${_pruned}"  # preview files are one-shot inputs; LISTEN never reloads
 }
 
+# Flip preview rows stuck in "pending" to the terminal "no_decode_result".
+#
+# The only other way out of "pending" is _record_preview_no_decode_attempt(),
+# which needs cnt>=3 decode attempts — and attempts are driven by INCOMING
+# frames. A candidate heard once or twice that then goes silent therefore never
+# reaches a terminal state: the WebUI shows "decoding…" until the 24 h prune
+# deletes the whole row. This makes the escape time-based instead.
+#
+# Read-only scan; the flip itself goes through the existing _set_preview_state(),
+# which upserts under flock and discards the attempt counter.
+#
+# As in prune_stale_candidates(), the python program is passed via -c and NOT via
+# a stdin heredoc — the heredoc variant is known to break in this
+# ticker/flock/command-substitution context (see the note there).
+expire_stale_pending_previews() {
+  local file="${STATUS_CANDIDATE_PREVIEW_STATE_FILE}"
+  local max_age="${PREVIEW_PENDING_TIMEOUT_SECONDS:-300}"
+  [[ -f "${file}" ]] || return 0
+  [[ "${max_age}" =~ ^[0-9]+$ ]] || max_age=300
+  command -v python3 >/dev/null 2>&1 || return 0
+
+  local _py='
+import sys, datetime
+src, max_age = sys.argv[1], int(sys.argv[2])
+now = datetime.datetime.now(datetime.timezone.utc)
+out = []
+with open(src, "r", encoding="utf-8", errors="replace") as f:
+    for line in f:
+        cols = line.rstrip("\n").split("\t")
+        if len(cols) < 3 or cols[1] != "pending":
+            continue
+        ts = cols[2].strip()
+        try:
+            d = datetime.datetime.fromisoformat(ts)
+        except ValueError:
+            continue
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=datetime.timezone.utc)
+        if (now - d).total_seconds() > max_age:
+            out.append(cols[0])
+sys.stdout.write("\n".join(out))
+'
+
+  local _stuck _id _state
+  _stuck="$(python3 -c "${_py}" "${file}" "${max_age}" 2>/dev/null)" || return 0
+  [[ -n "${_stuck}" ]] || return 0
+
+  while IFS= read -r _id; do
+    _id="$(normalize_meter_id "${_id}")"
+    [[ "${_id}" =~ ^[0-9A-Fa-f]{8}$ ]] || continue
+    # Re-read right before writing: a frame may have arrived between the scan and
+    # here, in which case the row already carries a terminal state that must not
+    # be overwritten.
+    _state="$(awk -F '\t' -v id="${_id}" '$1 == id {print $2}' "${file}" 2>/dev/null | tail -n 1)"
+    [[ "${_state}" == "pending" ]] || continue
+    _set_preview_state "${_id}" "no_decode_result"
+    log "preview ${_id}: stuck pending for >$((max_age / 60))min without a telegram, marked no_decode_result"
+  done <<< "${_stuck}"
+}
+
 # Physically remove candidate rows whose last telegram (column 4, ISO last_seen)
 # is older than CANDIDATE_PRUNE_AFTER_SECONDS (default 24h). This is the bridge-side
 # counterpart to the WebUI's 24h display freshness filter: until now the row only
