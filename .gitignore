@@ -9,3 +9,10 @@ _bmad/
 _bmad-output/
 _bmad-custom-backup-temp/
 CLAUDE.md
+
+# promote.yaml clones the dev repo into _dev/ inside this working tree.
+# It must never be committed: because that clone carries its own .git, `git add -A`
+# records it as a submodule gitlink (mode 160000) with no matching .gitmodules,
+# which makes every later checkout cleanup fail with
+# "fatal: No url found for submodule path '_dev' in .gitmodules".
+_dev/
