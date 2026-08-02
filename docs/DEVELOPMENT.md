@@ -121,7 +121,7 @@ as an implemented promotion process.
 The repository currently runs these independent workflows:
 
 - `shellcheck.yml` runs ShellCheck at warning severity on repository `*.sh`
-  files, excluding `.git`, `.claude`, and `wmbusmeters-mqtt-stdin`;
+  files, excluding `.git` and `.claude`;
 - `yaml-lint.yml` runs `yamllint` on the listed workflow files,
   `.github/dependabot.yml`, `config.yaml`, and `repository.yaml`;
 - `build.yaml` runs the two static contract tests before image builds, then the

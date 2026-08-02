@@ -457,6 +457,7 @@ for understanding the system.
 | `status_rate_1m.json`, `status_rate_history.tsv` | receive rate and rolling history |
 | `status_bridge_start.txt` | bridge start epoch |
 | `status_esp_telegram_devices.tsv` | per-ESP RAW reception tracker |
+| `status_esp_meter_device.tsv` | which ESP delivered a given meter's telegrams (band fallback) |
 | `status_esp_health.json`, `status_esp_meters.json` | per-ESP health and meter flags |
 | `status_esp_diag.json` | latest ESP diagnostic summary |
 | `status_esp_meter_snapshot.json`, `status_esp_meter_window.json` | per-ESP, per-meter reception windows |
