@@ -456,8 +456,25 @@
     } else if (bestPct >= 0) {
       rxHtml = `<span title="${escapeHtml(t("reception_pct_title", "reception % over the diagnostic window"))}" style="${pill}${rxPctStyle(bestPct)}">📶 ${bestPct}%</span>`;
     }
-    if (!flagBadge && !rxHtml) return "";
-    return `<div style="margin-top:5px;display:flex;flex-direction:column;align-items:flex-start;gap:4px;">${flagBadge}${rxHtml}</div>`;
+    // wM-Bus band (T1/C1/S1) the meter's telegrams arrived on. Two accuracies,
+    // rendered differently so the reader is never told more than is known:
+    //   band_source "exact"       — the link mode the ESP decoded for THIS meter
+    //                               (diag per-meter topic, needs highlight_meters)
+    //   band_source "listen_mode" — inferred from the receiving node's
+    //                               listen_mode; correct on a single-band node,
+    //                               but a property of the receiver, not the frame
+    // Nothing is rendered when neither source can answer.
+    const band = String(row.band || "").toUpperCase();
+    let bandHtml = "";
+    if (band === "T1" || band === "C1" || band === "S1") {
+      const approx = row.band_source === "listen_mode";
+      const bandTitle = approx
+        ? t("band_from_listen_mode", "band inferred from the receiving ESP's listen_mode, not read from the telegram")
+        : t("band_exact", "link mode the ESP decoded this meter's telegram with");
+      bandHtml = `<span title="${escapeHtml(bandTitle)}" style="${pill}background:#2b3550;color:#9fb4e6;cursor:help;">📻 ${escapeHtml(band)}${approx ? "?" : ""}</span>`;
+    }
+    if (!flagBadge && !rxHtml && !bandHtml) return "";
+    return `<div style="margin-top:5px;display:flex;flex-direction:column;align-items:flex-start;gap:4px;">${flagBadge}${bandHtml}${rxHtml}</div>`;
   }
 
   // Legend for the reception column, attached to the column HEADER as an "ⓘ"
@@ -468,6 +485,8 @@
     const lines = [
       `${t("legend_title", "Legend")}:`,
       `📡 ESP — ${t("esp_flagged_meter", "flagged on the ESP")}`,
+      `📻 T1 / C1 / S1 — ${t("legend_band", "wM-Bus band the telegrams arrived on")}`,
+      `📻 T1? — ${t("legend_band_approx", "band inferred from the receiving ESP's listen_mode, not read from the telegram")}`,
       `📶 esp N% · 1.2k — ${t("legend_reception_pct", "reception % and telegrams read per ESP (diagnostic window)")}`,
       t("legend_per_esp_note", "Per-ESP counts overlap (each ESP hears the same telegrams) and use the diagnostic window — they do not sum to 15m/60m."),
       `▁▃▅▇ — ${t("legend_signal_bars", "telegrams in the last 15 min")}`,

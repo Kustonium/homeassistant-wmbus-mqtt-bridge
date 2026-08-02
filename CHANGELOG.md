@@ -1,3 +1,22 @@
+## 1.5.44
+
+### Added
+- show the wM-Bus band (T1/C1/S1) a meter was received on (9d30fa6)
+
+### Removed
+- vendored snapshot of the upstream wmbusmeters add-on (`wmbusmeters-mqtt-stdin/`,
+  267 files, 2.2 MB). It was imported as a reference in May 2026 and never wired
+  into this add-on: the `Dockerfile` does not copy it into the image, no script or
+  workflow reads it, and it was excluded from ShellCheck CI, so it could not affect
+  behaviour. Its subsystems are all superseded — Home Assistant Discovery is
+  generated at runtime from the decoded telegram by
+  `rootfs/usr/bin/bridge-lib/09-discovery.sh` instead of from the 37 per-driver JSON
+  templates, and the WebUI is served directly by `rootfs/usr/bin/webui.py` on the
+  ingress port instead of by the bundled Flask/nginx/Ace stack. The snapshot also
+  carried third-party assets (Ace editor, Bootstrap) with no origin or licence note,
+  which this repository should not redistribute unattributed. No user-visible change.
+  The files remain retrievable from git history at commit `07edb6c`.
+
 ## 1.5.43
 
 ### Fixed

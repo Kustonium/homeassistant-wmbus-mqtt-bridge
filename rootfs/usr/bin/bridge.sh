@@ -149,6 +149,15 @@ STATUS_OFFICIAL_METERS_COUNT_FILE="${BASE}/status_official_meters_count.txt"
 # current bridge session via the configured RAW_TOPIC.
 # Format: device_name<TAB>last_seen_epoch<TAB>last_topic<TAB>telegram_count
 STATUS_ESP_TELEGRAM_DEVICES_FILE="${BASE}/status_esp_telegram_devices.tsv"
+# Which ESP device delivered a given meter's telegrams — written by the same
+# background subscriber, from the RAW topic itself. Combined with that device's
+# listen_mode (status_esp_health.json, always published) this lets webui.py show
+# the wM-Bus band for meters that are NOT in the ESP's highlight_meters list, for
+# which no per-meter diagnostic topic exists. Only ever an approximation: it is
+# the band the receiving node was listening on, not a property read out of the
+# telegram. Exact per-meter "mode" from the diag topics always wins.
+# Format: meter_id<TAB>device_name<TAB>last_seen_epoch
+STATUS_ESP_METER_DEVICE_FILE="${BASE}/status_esp_meter_device.tsv"
 SEARCH_MATCHES_FILE="${BASE}/search_matches.tsv"
 SEARCH_STATUS_FILE="${BASE}/search_status.json"
 # discovery_published flag — file-backed (see write_status_json). The raw-counter
@@ -193,7 +202,7 @@ RAW_RATE_CUR_MIN_COUNT=0
 # shellcheck disable=SC2034
 RAW_RATE_PREV_MIN_COUNT=0
 
-touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_METER_KEY_PROBLEM_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" "${STATUS_BROKER_ERROR_FILE}"
+touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_METER_KEY_PROBLEM_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${STATUS_ESP_METER_DEVICE_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" "${STATUS_BROKER_ERROR_FILE}"
 printf '0\n' > "${STATUS_OFFICIAL_METERS_COUNT_FILE}" 2>/dev/null || true
 # Remove any orphaned pending-reload marker left by a hard stop during deferred sleep.
 rm -rf "${BASE}/.reload_listen_pending" 2>/dev/null || true
@@ -202,6 +211,7 @@ rm -rf "${BASE}/.reload_listen_pending" 2>/dev/null || true
 rm -rf "${BASE}/.preview_attempts" 2>/dev/null || true
 mkdir -p "${BASE}/.preview_attempts" 2>/dev/null || true
 : > "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" 2>/dev/null || true
+: > "${STATUS_ESP_METER_DEVICE_FILE}" 2>/dev/null || true
 # HA presence is session-scoped to the current broker. Clear stale state so a
 # previous run's "online" cannot mask a now-foreign broker until the retained
 # birth message (if any) re-arrives on subscribe.
@@ -398,7 +408,7 @@ start_esp_subscribers
       # absent status_candidates.tsv and silently dropped every candidate
       # until the next restart). All these vars are defined before this
       # ticker subshell forks, so they are in scope here.
-      touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_METER_KEY_PROBLEM_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" "${STATUS_BROKER_ERROR_FILE}" 2>/dev/null || true
+      touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_METER_KEY_PROBLEM_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${STATUS_ESP_METER_DEVICE_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" "${STATUS_BROKER_ERROR_FILE}" 2>/dev/null || true
       # The wipe also removed the heartbeat we stamped at the top of this loop;
       # re-stamp now so the WebUI never sees a liveness gap before the next tick.
       printf '%s\n' "$(epoch_now)" > "${STATUS_HEARTBEAT_FILE}" 2>/dev/null || true

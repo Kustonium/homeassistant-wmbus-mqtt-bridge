@@ -219,16 +219,43 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 
   if [[ "${_RT_DEV_POS}" -ge 0 ]]; then
     log "ESP-device tracker: device name at topic segment ${_RT_DEV_POS} of '${RAW_TOPIC}'"
+    # Last device recorded per meter id, kept in this subshell only. The TSV is
+    # written ONLY when a meter's device changes (or is seen for the first time),
+    # so a steady multi-meter installation does zero extra disk writes per
+    # telegram — this loop already upserts the per-device row on every message
+    # and a second unconditional rewrite here would double that cost.
+    declare -A _MD_LAST=()
     while true; do
       _sub_t0="$(epoch_now)"
       # Read via process substitution, not a pipe: with set -euo pipefail a
       # mosquitto_sub timeout/disconnect would otherwise kill this tracker.
-      while IFS= read -r _tg_topic; do
+      # -F '%t\t%p' (was '%t'): the payload is needed to attribute the telegram
+      # to a meter id, which is what gives the band fallback something to key on.
+      while IFS=$'\t' read -r _tg_topic _tg_payload; do
         [[ -n "${_tg_topic}" ]] || continue
         IFS='/' read -ra _T_PARTS <<< "${_tg_topic}"
         _dev="${_T_PARTS[${_RT_DEV_POS}]:-}"
         [[ -n "${_dev}" ]] || continue
         _now=$(date +%s 2>/dev/null || echo 0)
+
+        # Meter -> ESP device attribution. meter_id_from_raw_hex validates the
+        # L-field and returns "" when the frame does not parse as a standard
+        # wM-Bus DLL header, so Diehl/IZAR-style frames simply get no fallback
+        # band rather than a wrong one.
+        _md_id="$(meter_id_from_raw_hex "$(printf '%s' "${_tg_payload}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')")"
+        if [[ "${_md_id}" =~ ^[0-9A-F]{8}$ && "${_MD_LAST[${_md_id}]:-}" != "${_dev}" ]]; then
+          _MD_LAST["${_md_id}"]="${_dev}"
+          _md_tmp="${STATUS_ESP_METER_DEVICE_FILE}.tmp"
+          awk -F'\t' -v id="${_md_id}" -v dev="${_dev}" -v now="${_now}" '
+            BEGIN { upd = 0 }
+            $1 == id { print id "\t" dev "\t" now; upd = 1; next }
+            { print }
+            END { if (!upd) print id "\t" dev "\t" now }
+          ' "${STATUS_ESP_METER_DEVICE_FILE}" 2>/dev/null > "${_md_tmp}" \
+            && mv "${_md_tmp}" "${STATUS_ESP_METER_DEVICE_FILE}" 2>/dev/null \
+            || true
+        fi
+
         _tmp="${STATUS_ESP_TELEGRAM_DEVICES_FILE}.tmp"
         # Upsert the row for this device — increment count if exists,
         # otherwise append a fresh row with count=1.
@@ -246,7 +273,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
           && mv "${_tmp}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" 2>/dev/null \
           || true
       done < <(
-        ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%t' -W 180 2>/dev/null
+        ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%t\t%p' -W 180 2>/dev/null
       )
       _sub_reconnect_sleep "${_sub_t0}"
     done

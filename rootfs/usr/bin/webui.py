@@ -96,6 +96,12 @@ STATUS_ESP_METER_SNAPSHOT_JSON = BASE / "status_esp_meter_snapshot.json"
 # frequent "count" trigger (every N telegrams), so the per-ESP % populates in
 # minutes instead of waiting for the 15-min batch. Map keyed dev -> id -> fields.
 STATUS_ESP_METER_WINDOW_JSON = BASE / "status_esp_meter_window.json"
+# Meter -> ESP device attribution (bridge.sh, from the RAW topic itself). Used
+# only for the wM-Bus band fallback: combined with that device's listen_mode
+# from status_esp_health.json it gives an approximate band for meters that have
+# no per-meter diagnostic topic (no highlight_meters on the ESP).
+# Format: meter_id<TAB>device_name<TAB>last_seen_epoch
+STATUS_ESP_METER_DEVICE_FILE = BASE / "status_esp_meter_device.tsv"
 # ESP events TSV and per-event detail files (written by bridge.sh event subscriber)
 STATUS_ESP_EVENTS_FILE = BASE / "status_esp_events.tsv"
 STATUS_ESP_SUGGESTION_FILE = BASE / "status_esp_suggestion.json"
@@ -1535,6 +1541,83 @@ def state(include_ignored: bool = False) -> dict:
                 if _wcur is None or _wct >= _wcur["count"]:
                     _wper[_wdev] = {"pct": _wpct, "count": _wct}
 
+    # wM-Bus band (T1/C1/S1) per meter, from two sources with different accuracy.
+    #
+    # EXACT — the ESP publishes the link mode it actually decoded the telegram
+    # with, per meter, in both diag meter topics ("mode" field). That is a
+    # property of the received frame. It exists only for meters listed in the
+    # ESP's highlight_meters, because that is what those topics are gated on.
+    #
+    # APPROXIMATE — for every other meter, take the ESP device that delivered its
+    # telegrams (status_esp_meter_device.tsv) and read that node's listen_mode
+    # from the always-on health pulse. On a node running listen_mode t1/c1/s1
+    # every frame it receives is by definition on that band, so the answer is
+    # right; it is called approximate because it is inferred from the receiver's
+    # configuration and not read out of the telegram. A node in "both" mode
+    # yields no answer at all rather than a guess between T1 and C1.
+    #
+    # Exact always wins. band_source_by_id lets the UI say which one it showed.
+    band_by_id: dict[str, str] = {}
+    band_source_by_id: dict[str, str] = {}
+
+    def _band_norm(v) -> str:
+        _b = str(v or "").strip().upper()
+        return _b if _b in ("T1", "C1", "S1") else ""
+
+    # Exact, pass 1: per-meter windows (frequent).
+    if isinstance(_win_raw, dict):
+        for _bmeters in _win_raw.values():
+            if not isinstance(_bmeters, dict):
+                continue
+            for _bid_raw, _brow in _bmeters.items():
+                if not isinstance(_brow, dict):
+                    continue
+                _bmid = normalize_meter_id(_brow.get("id") or _bid_raw)
+                _bmode = _band_norm(_brow.get("mode"))
+                if _bmid and _bmode:
+                    band_by_id[_bmid] = _bmode
+                    band_source_by_id[_bmid] = "exact"
+
+    # Exact, pass 2: the 15-min snapshot batch. Only fills gaps — a window entry
+    # is newer, so it is not overwritten here.
+    if isinstance(_snap_raw, dict):
+        for _bsnap in _snap_raw.values():
+            if not isinstance(_bsnap, dict):
+                continue
+            _blist = _bsnap.get("meters")
+            if not isinstance(_blist, list):
+                continue
+            for _bm in _blist:
+                if not isinstance(_bm, dict):
+                    continue
+                _bmid = normalize_meter_id(_bm.get("id"))
+                _bmode = _band_norm(_bm.get("mode"))
+                if _bmid and _bmode and _bmid not in band_by_id:
+                    band_by_id[_bmid] = _bmode
+                    band_source_by_id[_bmid] = "exact"
+
+    # Approximate: meter -> device -> that device's listen_mode.
+    _listen_by_dev: dict[str, str] = {}
+    _health_for_band = read_json(STATUS_ESP_HEALTH_JSON)
+    if isinstance(_health_for_band, dict):
+        for _hdev, _hrow in _health_for_band.items():
+            if not isinstance(_hrow, dict):
+                continue
+            # "T1 only" / "S1 only" / "T1+C1 (both, 3:1 bias)" -> first token.
+            _lm = str(_hrow.get("listen_mode") or "").strip().upper()
+            _lm_band = _band_norm(_lm.split()[0]) if _lm else ""
+            # A node listening to more than one band cannot attribute a frame,
+            # so it contributes nothing rather than a coin flip.
+            if _lm_band and "+" not in _lm and "BOTH" not in _lm:
+                _listen_by_dev[_hdev] = _lm_band
+    if _listen_by_dev:
+        for _arow in read_tsv(STATUS_ESP_METER_DEVICE_FILE, ["id", "device", "last_seen"]):
+            _amid = normalize_meter_id(_arow.get("id"))
+            _aband = _listen_by_dev.get(_arow.get("device", ""), "")
+            if _amid and _aband and _amid not in band_by_id:
+                band_by_id[_amid] = _aband
+                band_source_by_id[_amid] = "listen_mode"
+
     def _rx_esps(mid: str) -> list:
         _per = reception_by_esp.get(mid)
         if not _per:
@@ -1551,6 +1634,9 @@ def state(include_ignored: bool = False) -> dict:
         # Per-meter reception % (#15); -1 = no data (diag off / not highlighted / stale).
         c["reception_pct"] = reception_by_id.get(normalize_meter_id(c.get("id")), -1)
         c["reception_esps"] = _rx_esps(normalize_meter_id(c.get("id")))
+        # wM-Bus band the telegrams arrived on; "" when nothing can say so.
+        c["band"] = band_by_id.get(normalize_meter_id(c.get("id")), "")
+        c["band_source"] = band_source_by_id.get(normalize_meter_id(c.get("id")), "")
         # preview_active = there's a preview config for this candidate.
         # Single source of truth = filesystem; one-shot RAW decoders consume the
         # config without touching the always-on LISTEN pipeline.
@@ -1572,6 +1658,8 @@ def state(include_ignored: bool = False) -> dict:
         m["esp_flagged"] = "true" if normalize_meter_id(m.get("id") or m.get("meter_id")) in esp_flagged_ids else "false"
         m["reception_pct"] = reception_by_id.get(normalize_meter_id(m.get("id") or m.get("meter_id")), -1)
         m["reception_esps"] = _rx_esps(normalize_meter_id(m.get("id") or m.get("meter_id")))
+        m["band"] = band_by_id.get(normalize_meter_id(m.get("id") or m.get("meter_id")), "")
+        m["band_source"] = band_source_by_id.get(normalize_meter_id(m.get("id") or m.get("meter_id")), "")
 
     # Build normalized options_meter_ids early — used both for TSV filtering and
     # candidate dedup. Do not write back to status_meters.tsv from this read path.
