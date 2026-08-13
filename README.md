@@ -1,5 +1,31 @@
 # Home Assistant Add-on: wMBus MQTT Bridge
 
+[![Release][release-shield]][releases]
+[![License][license-shield]][license]
+![Supports aarch64 Architecture][aarch64-shield]
+![Supports amd64 Architecture][amd64-shield]
+
+[![Build][build-shield]][build]
+[![Commit activity][commits-shield]][commits]
+
+<!-- Badges read live data from the stable repository, which is the channel end
+     users install. Nothing here is a hand-written claim about the project's
+     state: in particular there is no shields.io "maintenance/yes/<year>" badge,
+     because that one silently turns into a red "maintained: no!" the moment the
+     hard-coded year rolls over. -->
+
+[release-shield]: https://img.shields.io/github/v/release/Kustonium/homeassistant-wmbus-mqtt-bridge
+[releases]: https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/releases
+[license-shield]: https://img.shields.io/github/license/Kustonium/homeassistant-wmbus-mqtt-bridge
+[license]: https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/blob/main/LICENSE
+[aarch64-shield]: https://img.shields.io/badge/aarch64-yes-green.svg
+[amd64-shield]: https://img.shields.io/badge/amd64-yes-green.svg
+[build-shield]: https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/actions/workflows/build.yaml/badge.svg
+[build]: https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/actions/workflows/build.yaml
+[commits-shield]: https://img.shields.io/github/commit-activity/y/Kustonium/homeassistant-wmbus-mqtt-bridge
+[commits]: https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/commits/main
+
+
 [![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FKustonium%2Fhomeassistant-wmbus-mqtt-bridge)
 <a href="https://buymeacoffee.com/Kustonium"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="41"></a>
 
