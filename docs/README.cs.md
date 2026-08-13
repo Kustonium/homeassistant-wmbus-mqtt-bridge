@@ -277,6 +277,29 @@ surovým textem stavu a `binary_sensor` (`device_class: problem`), který se
 zapne pokaždé, když je stav jiný než `OK`. Text se přebírá doslovně z
 wmbusmeters, takže jeho přesný obsah závisí na vybraném ovladači upstreamu.
 
+Kromě toho most publikuje konfiguraci Discovery pro **každé** pole, které
+ovladač vrací, a rozděluje je podle toho, co měří:
+
+- pole, které Home Assistant umí zařadit (odhadneme `device_class`), nebo které
+  nese jednotku spotřeby — m³, GJ, MJ, kWh, Wh, l, hca, kVARh, kVAh, tedy i
+  veličiny, pro které HA třídu nemá: objem na měřiči tepla, tepelná energie v
+  GJ/MJ, jednotky indikátoru topných nákladů a jalová i zdánlivá energie — se
+  stane běžným měřicím senzorem, zapnutým;
+- všechno ostatní se stane **diagnostickou** entitou publikovanou jako
+  **vypnutá** (`enabled_by_default: false`): čísla bez třídy (stáří záznamu,
+  čítače chyb), textová pole (`current_status`, `meter_datetime`, …) a pole,
+  která ovladač právě hlásí jako `null` (`fraud_date`, dokud k podvodu
+  nedošlo). Home Assistant takovou entitu zaregistruje a na stránce zařízení ji
+  ukáže jako vypnutou; zapneš ty, které potřebuješ.
+
+Entitu nedostane pouze identita měřiče (`id`, `name`, `meter`, `media`,
+`timestamp`, `rssi`, `lqi`) — je už v názvu zařízení a v atributech entit.
+
+Home Assistant čte `enabled_by_default` jen při prvním přidání entity, takže
+aktualizace nikdy nevypne to, co už máš. `entity_category` se naproti tomu
+uplatní při každé aktualizaci konfigurace, takže číselná pole bez třídy
+založená starší verzí se přesunou do sekce *Diagnostika*.
+
 ### Starší režim SEARCH
 
 | Pole | Typ | Výchozí | Popis |

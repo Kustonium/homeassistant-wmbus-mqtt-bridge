@@ -288,6 +288,32 @@ Geräts): einen `sensor` mit dem rohen Statustext und einen `binary_sensor`
 `OK` ist. Der Text wird unverändert von `wmbusmeters` übernommen; sein genauer
 Inhalt hängt vom ausgewählten Upstream-Treiber ab.
 
+Darüber hinaus veröffentlicht die Bridge eine Discovery-Konfiguration für
+**jedes** Feld des Treibers und teilt sie danach auf, was sie messen:
+
+- ein Feld, das Home Assistant klassifizieren kann (`device_class` wird
+  geraten) oder das eine Verbrauchseinheit trägt — m³, GJ, MJ, kWh, Wh, l, hca,
+  kVARh, kVAh, also auch die Größen, für die HA keine Klasse hat: Volumen am
+  Wärmezähler, Wärmeenergie in GJ/MJ, Einheiten des Heizkostenverteilers sowie
+  Blind- und Scheinenergie — wird ein normaler Mess-Sensor, aktiviert;
+- alles andere wird eine **Diagnose**-Entität, **deaktiviert** veröffentlicht
+  (`enabled_by_default: false`): Zahlen ohne Klasse (Alter des Eintrags,
+  Fehlerzähler), Textfelder (`current_status`, `meter_datetime`, …) sowie
+  Felder, die der Treiber aktuell als `null` meldet (`fraud_date`, solange es
+  keinen Betrugsfall gab). Home Assistant registriert eine solche Entität und
+  zeigt sie auf der Geräteseite ausgeschaltet an; du aktivierst die, die du
+  brauchst.
+
+Keine Entität erhält nur die Identität des Zählers (`id`, `name`, `meter`,
+`media`, `timestamp`, `rssi`, `lqi`) — sie steckt bereits im Gerätenamen und in
+den Entitätsattributen.
+
+Home Assistant wertet `enabled_by_default` nur beim erstmaligen Anlegen einer
+Entität aus, ein Update deaktiviert also nie etwas Bestehendes.
+`entity_category` wird dagegen bei jeder Konfigurationsaktualisierung
+angewendet, sodass numerische Felder ohne Klasse aus einer älteren Version in
+den Abschnitt *Diagnose* wandern.
+
 ### Älterer SEARCH-Modus
 
 | Feld | Typ | Default | Beschreibung |
