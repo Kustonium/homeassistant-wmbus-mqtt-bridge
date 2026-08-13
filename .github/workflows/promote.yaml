@@ -142,8 +142,15 @@ jobs:
           # same way config.yaml did. Repo-infra and identity are deliberately
           # NOT here: .github/ (this very workflow lives there), repository.yaml
           # (name/url), config.yaml identity (handled in the sync step), LICENSE.
+          #
+          # icon.png / logo.png are add-on artwork, not identity: Supervisor reads
+          # them from the directory holding config.yaml and stable must show the
+          # same tile as dev. They were missing from this list, so 1.5.45 shipped
+          # the icon in its release notes while stable still drew the generic
+          # puzzle placeholder. Listing a file that dev does not have is harmless —
+          # the -e guard below skips it.
           for item in rootfs Dockerfile docker translations wmbusmeters-mqtt-stdin \
-                      README.md THIRD_PARTY_NOTICES.md docs; do
+                      README.md THIRD_PARTY_NOTICES.md docs icon.png logo.png; do
             if [[ -e "_dev/${item}" ]]; then
               rm -rf "${item}"
               cp -r "_dev/${item}" "${item}"
