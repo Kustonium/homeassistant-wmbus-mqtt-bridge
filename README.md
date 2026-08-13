@@ -57,7 +57,7 @@ ESP32 / Gateway / Bridge
 - **Wejście STDIN dla wmbusmeters** — telegramy przekazywane przez `stdin:hex`, czego oryginalny add-on nie obsługuje.
 - **Pełne dekodowanie przez wmbusmeters** — projekt nie zastępuje wmbusmeters, lecz wykorzystuje go w całości.
 - **MQTT + Home Assistant Discovery** — dane publikowane w MQTT i automatycznie rejestrowane w HA.
-- **Encje diagnostyczne statusu** — gdy licznik raportuje pole `status`, powstaje sensor z tekstem przekazanym przez wybrany driver `wmbusmeters` oraz `binary_sensor` (`device_class: problem`) włączający się przy każdym stanie innym niż `OK`.
+- **Encje diagnostyczne statusu** — gdy licznik raportuje pole `status`, powstaje sensor z tekstem przekazanym przez wybrany driver `wmbusmeters` oraz `binary_sensor` (`device_class: problem`) włączający się przy każdym stanie innym niż `OK`. Publikowane są **wszystkie** pola drivera: te z jednostką zużycia lub rozpoznaną `device_class` jako zwykłe sensory, cała reszta (liczby bez klasy, teksty, pola `null`) jako encje diagnostyczne wyłączone domyślnie — włączasz w HA tylko te, których potrzebujesz.
 - **Tryb LISTEN (nasłuch)** — gdy lista `meters` jest pusta, add-on wypisuje w logach wszystkie słyszane liczniki wraz z sugerowanym driverem.
 - **Filtrowanie po wartości** — gdy nasłuch słyszy wiele cudzych liczników, WebUI filtruje już wyświetlone wartości według odczytu z fizycznego licznika i tolerancji.
 - **Interaktywny panel WebUI** — zarządzanie przez przeglądarkę (panel boczny w HA / port `8099` w Dockerze): lista wykrytych kandydatów, dodawanie licznika przez modal, podgląd wartości bez trwałego dodawania, filtrowanie wartości, porównanie driverów i logi ESP. Interfejs w 5 językach: 🇬🇧 EN · 🇵🇱 PL · 🇩🇪 DE · 🇨🇿 CS · 🇸🇰 SK.
@@ -338,7 +338,7 @@ ESP32 / Gateway / Bridge
 - STDIN support for wmbusmeters (`stdin:hex`)
 - Full decoding handled by upstream wmbusmeters
 - MQTT output with Home Assistant Discovery
-- Status diagnostic entities: when a meter reports a `status` field, a text sensor with the value supplied by the selected `wmbusmeters` driver plus a `binary_sensor` (`device_class: problem`) that turns on for any non-`OK` state
+- Status diagnostic entities: when a meter reports a `status` field, a text sensor with the value supplied by the selected `wmbusmeters` driver plus a `binary_sensor` (`device_class: problem`) that turns on for any non-`OK` state. **Every** driver field is published: those with a consumption unit or a recognised `device_class` as plain sensors, everything else (unclassified numbers, text, `null` fields) as diagnostic entities disabled by default, so you enable only the ones you need
 - LISTEN mode: when `meters` list is empty, logs all detected meter IDs and suggested drivers
 - Value filtering: when LISTEN hears many neighbours' meters, the WebUI filters already displayed values by the physical meter reading and tolerance
 - Interactive WebUI: browser management panel (HA side panel / port `8099` in Docker) — detected candidates, modal-based meter add, value preview without permanent configuration, value filtering, driver comparison and ESP logs. Available in 5 languages: 🇬🇧 EN · 🇵🇱 PL · 🇩🇪 DE · 🇨🇿 CS · 🇸🇰 SK.

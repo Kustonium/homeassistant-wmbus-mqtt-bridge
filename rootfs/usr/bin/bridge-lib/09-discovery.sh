@@ -64,18 +64,46 @@ emit_discovery_from_json() {
   # self-tunes.
   expire_after=$(( (expire_after / 60) * 60 ))
 
-  while IFS= read -r key; do
+  # Field loop. The feeder below emits "<json type><TAB><key>" for every field
+  # the driver publishes, so one payload builder covers them all. The split is
+  # by what the field measures, not by its JSON type:
+  #
+  #   - a numeric field that HA can classify (device_class) or that carries a
+  #     consumption unit (m³/GJ/MJ/kWh/Wh/l, incl. heat volume where HA has no
+  #     device_class) stays a plain measurement sensor, enabled;
+  #   - everything else — numeric fields with no class (record ages, error
+  #     counters), text fields (status words, datetimes) and fields the driver
+  #     currently reports as null (fraud_date before any fraud) — becomes a
+  #     diagnostic sensor published with enabled_by_default:false.
+  #
+  # NB enabled_by_default is read by HA only when it first adds an entity, so
+  # this never disables an entity that already exists; entity_category IS
+  # re-applied on every config update, so previously created fields do move
+  # into the device's Diagnostics section.
+  while IFS=$'\t' read -r ftype key; do
     [[ -n "${key}" ]] || continue
 
-    local obj cache_key key_lc unit device_class state_class cfg_topic unique_id sensor_name payload
+    local obj cache_key key_lc unit device_class state_class entity_category cfg_topic unique_id sensor_name payload
 
     obj="$(sanitize_obj_id "${key}")"
     [[ -n "${obj}" ]] || continue
 
     key_lc="$(echo "${key}" | tr '[:upper:]' '[:lower:]')"
-    unit="$(guess_unit "${key}")"
-    device_class="$(guess_device_class "${key_lc}" "${unit}" "${media}")"
-    state_class="$(guess_state_class "${key_lc}" "${device_class}")"
+    if [[ "${ftype}" == "number" ]]; then
+      unit="$(guess_unit "${key}")"
+      device_class="$(guess_device_class "${key_lc}" "${unit}" "${media}")"
+      state_class="$(guess_state_class "${key_lc}" "${device_class}")"
+      if [[ -n "${device_class}" ]] || is_consumption_unit "${unit}"; then
+        entity_category=""
+      else
+        entity_category="diagnostic"
+      fi
+    else
+      unit=""
+      device_class=""
+      state_class=""
+      entity_category="diagnostic"
+    fi
 
     cfg_topic="${DISCOVERY_PREFIX}/sensor/${uniq}/${obj}/config"
     unique_id="${uniq}_${obj}"
@@ -96,6 +124,7 @@ emit_discovery_from_json() {
       --arg unit "${unit}" \
       --arg dc "${device_class}" \
       --arg sc "${state_class}" \
+      --arg ecat "${entity_category}" \
       --argjson expire "${expire_after}" \
       '(
         {
@@ -121,6 +150,7 @@ emit_discovery_from_json() {
         + (if ($unit|length)>0 then {unit_of_measurement:$unit} else {} end)
         + (if ($dc|length)>0 then {device_class:$dc} else {} end)
         + (if ($sc|length)>0 then {state_class:$sc} else {} end)
+        + (if ($ecat|length)>0 then {entity_category:$ecat, enabled_by_default:false} else {} end)
       )'
     )"
 
@@ -142,9 +172,10 @@ emit_discovery_from_json() {
         and ($k != "device_date_time")
         and ($k != "rssi")
         and ($k != "lqi")
+        and ($k != "status")
       )
-      | select((.value|type)=="number")
-      | .key
+      | select((.value|type) != "object" and (.value|type) != "array")
+      | "\(.value|type)\t\(.key)"
     ' <<<"${json_line}" 2>/dev/null || true
   )
 
@@ -304,8 +335,9 @@ clear_search_discovery_from_json() {
         and ($k != "device_date_time")
         and ($k != "rssi")
         and ($k != "lqi")
+        and ($k != "status")
       )
-      | select((.value|type)=="number")
+      | select((.value|type) != "object" and (.value|type) != "array")
       | .key
     ' <<<"${json_line}" 2>/dev/null || true
   )

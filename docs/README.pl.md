@@ -285,6 +285,29 @@ problem`), który włącza się, gdy status jest inny niż `OK`. Tekst jest
 przekazywany 1:1 z `wmbusmeters`, więc jego dokładna treść zależy od wybranego
 drivera upstream.
 
+Poza tym most publikuje konfigurację Discovery dla **każdego** pola zwróconego
+przez driver i dzieli je według tego, co mierzą:
+
+- pole, które Home Assistant potrafi sklasyfikować (zgadujemy `device_class`)
+  albo które ma jednostkę zużycia — m³, GJ, MJ, kWh, Wh, l, hca, kVARh, kVAh,
+  czyli także wielkości, dla których HA nie ma klasy: objętość na liczniku
+  ciepła, energia cieplna w GJ/MJ, jednostki podzielnika kosztów oraz energia
+  bierna i pozorna — zostaje zwykłym sensorem pomiarowym, włączonym;
+- cała reszta zostaje encją **diagnostyczną** publikowaną jako **wyłączona**
+  (`enabled_by_default: false`): liczby bez klasy (wiek odczytu, liczniki
+  błędów), pola tekstowe (`current_status`, `meter_datetime`, …) oraz pola,
+  które driver zwraca w danej chwili jako `null` (`fraud_date`, zanim wystąpi
+  oszustwo). Home Assistant rejestruje taką encję i pokazuje ją na stronie
+  urządzenia jako wyłączoną; włączasz te, które są Ci potrzebne.
+
+Encji nie dostaje wyłącznie tożsamość licznika (`id`, `name`, `meter`, `media`,
+`timestamp`, `rssi`, `lqi`) — jest już w nazwie urządzenia i w atrybutach encji.
+
+Home Assistant czyta `enabled_by_default` tylko przy pierwszym dodaniu encji,
+więc aktualizacja nigdy nie wyłącza tego, co już masz. `entity_category` jest
+natomiast stosowana przy każdej aktualizacji konfiguracji, więc pola liczbowe
+bez klasy założone przez starszą wersję przenoszą się do sekcji *Diagnostyka*.
+
 ### Starszy tryb SEARCH
 
 | Pole | Typ | Domyślnie | Opis |

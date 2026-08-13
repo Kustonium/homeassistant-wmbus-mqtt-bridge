@@ -275,6 +275,29 @@ dostane aj dve **diagnostické** entity (v sekcii *Diagnostika* zariadenia):
 ktorý sa zapne vždy, keď je stav iný než `OK`. Text sa preberá doslovne z
 wmbusmeters, takže jeho presný obsah závisí od vybraného ovládača upstreamu.
 
+Okrem toho most publikuje konfiguráciu Discovery pre **každé** pole, ktoré
+ovládač vracia, a rozdeľuje ich podľa toho, čo merajú:
+
+- pole, ktoré Home Assistant vie zaradiť (odhadneme `device_class`), alebo
+  ktoré nesie jednotku spotreby — m³, GJ, MJ, kWh, Wh, l, hca, kVARh, kVAh,
+  teda aj veličiny, pre ktoré HA triedu nemá: objem na merači tepla, tepelná
+  energia v GJ/MJ, jednotky pomerového rozdeľovača vykurovacích nákladov a
+  jalová i zdanlivá energia — sa stane bežným meracím senzorom, zapnutým;
+- všetko ostatné sa stane **diagnostickou** entitou publikovanou ako **vypnutá**
+  (`enabled_by_default: false`): čísla bez triedy (vek záznamu, počítadlá chýb),
+  textové polia (`current_status`, `meter_datetime`, …) a polia, ktoré ovládač
+  práve hlási ako `null` (`fraud_date`, kým k podvodu nedošlo). Home Assistant
+  takúto entitu zaregistruje a na stránke zariadenia ju zobrazí ako vypnutú;
+  zapneš tie, ktoré potrebuješ.
+
+Entitu nedostane iba identita merača (`id`, `name`, `meter`, `media`,
+`timestamp`, `rssi`, `lqi`) — je už v názve zariadenia a v atribútoch entít.
+
+Home Assistant číta `enabled_by_default` len pri prvom pridaní entity, takže
+aktualizácia nikdy nevypne to, čo už máš. `entity_category` sa naopak uplatní
+pri každej aktualizácii konfigurácie, takže číselné polia bez triedy založené
+staršou verziou sa presunú do sekcie *Diagnostika*.
+
 ### Starší režim SEARCH
 
 | Pole | Typ | Predvolené | Popis |

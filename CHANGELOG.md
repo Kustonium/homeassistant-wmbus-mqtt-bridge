@@ -1,3 +1,69 @@
+## 1.5.45
+
+### Added
+- publish every driver field, split measurements from diagnostics (a8d357c)
+- publish discovery entities for text fields, disabled by default (1a6fe07)
+- ship an add-on icon instead of the generic placeholder (f0dbd8e)
+- Discovery entities for the decoder's text fields, published disabled. Until now
+  `emit_discovery_from_json` created an entity only for JSON fields of type
+  `number`, plus the dedicated pair for a field named exactly `status`. A meter
+  whose driver reports its state under a different name (`apatorna1`:
+  `current_status`, `frame_status`, `historic_status`, plus `meter_datetime` and
+  `historic_datetime`) therefore showed those values on the WebUI METERS tab but
+  had no matching entity in Home Assistant — the data was reachable only through
+  the entity attributes fed by `json_attributes_topic`. Every remaining string
+  field now gets its own `sensor` config with `entity_category: diagnostic` and
+  `enabled_by_default: false`, so Home Assistant registers it and lists it on the
+  device page switched off; the user enables the ones they want. Numeric fields are
+  untouched (same unit/device_class/state_class guessing, still enabled), and
+  `status` keeps its existing text sensor plus `problem` binary sensor — it is now
+  excluded from the generic loop so the two paths cannot publish to the same config
+  topic. `enabled_by_default` is read by Home Assistant only when it first adds an
+  entity to its registry, so upgrading changes nothing for entities that already
+  exist.
+- add-on icon (`icon.png`, 256x256). Home Assistant was drawing the generic puzzle
+  placeholder because the repository carried no icon file at all; Supervisor reads
+  `icon.png` from the directory that holds `config.yaml`. The source artwork is a
+  rounded square sitting on an opaque black JPEG background, which would have shown
+  up as a black tile on the light theme, so the corners are transparent in the PNG
+  and the tile now matches both themes. No behaviour change.
+
+### Changed
+- Discovery now publishes **every** field the driver exposes, and splits entities by
+  what they measure instead of by JSON type. A numeric field that Home Assistant can
+  classify (`guess_device_class` returns a class) or that carries a consumption unit
+  stays a plain measurement sensor; everything else — numbers with no class (record
+  ages, error counters), text fields and fields the driver currently reports as
+  `null` — is published with `entity_category: diagnostic` and
+  `enabled_by_default: false`. The consumption-unit check (`is_consumption_unit`:
+  m³, GJ, MJ, kWh, Wh, l) exists because `guess_device_class` deliberately returns
+  an empty class for m³ on heat and cooling meters, and GJ/MJ have no Home Assistant
+  device class at all — without it a heat meter's consumption would have been filed
+  as a diagnostic. Motivated by a `hydrodigit` report: `fraud_date` and `leak_date`
+  arrive as JSON `null` until the event occurs, so the type filter dropped them
+  entirely; they now exist as diagnostic entities that stay `unavailable` until the
+  meter fills them in. Only container values (`object`, `array`) and the meter's
+  identity (`id`, `name`, `meter`, `media`, `timestamp`, `rssi`, `lqi`) are still
+  skipped. NB the two flags behave differently on upgrade, deliberately: Home
+  Assistant reads `enabled_by_default` only when it first adds an entity, so nothing
+  you already have gets disabled, while `entity_category` is re-applied on every
+  config update, so unclassified numeric fields created by an older version move
+  into the device's Diagnostics section.
+
+### Fixed
+- treat hca and reactive/apparent energy as consumption units (a2c511c)
+- heat cost allocator readings were filed as disabled diagnostics. `hca` — the unit
+  of an `fhkvdataiii`-style allocator, and the only value such a device bills on —
+  has no Home Assistant device class, so the measurement-versus-diagnostic split
+  introduced in this cycle sent `current_hca` and `previous_hca` to the Diagnostics
+  section with `enabled_by_default: false`, leaving the allocator with nothing but
+  its two temperatures as ordinary sensors. Found on a live test instance replaying
+  simulated telegrams. `is_consumption_unit` now also covers `hca`, plus `kVARh` and
+  `kVAh`, which are cumulative billing quantities with no HA device class either.
+  NB Home Assistant reads `enabled_by_default` only when it first adds an entity, so
+  an allocator entity already created as disabled has to be enabled by hand once;
+  the category change to a plain sensor applies on the next telegram.
+
 ## 1.5.44
 
 ### Added

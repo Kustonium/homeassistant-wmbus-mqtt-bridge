@@ -284,6 +284,30 @@ section): a `sensor` with the raw status text and a `binary_sensor`
 than `OK`. The text is passed through verbatim from `wmbusmeters`, so its exact
 content depends on the selected upstream driver.
 
+Beyond that, the bridge publishes a Discovery config for **every** field the
+driver exposes and splits them by what they measure:
+
+- a field Home Assistant can classify (a `device_class` is guessed) or one
+  carrying a consumption unit — m³, GJ, MJ, kWh, Wh, l, hca, kVARh, kVAh, that
+  is also the quantities HA has no class for: heat volume, heat energy in
+  GJ/MJ, heat cost allocator units and reactive/apparent energy — becomes an
+  ordinary measurement sensor, enabled;
+- everything else becomes a **diagnostic** sensor published as **disabled**
+  (`enabled_by_default: false`): unclassified numbers such as record ages and
+  error counters, text fields (`current_status`, `meter_datetime`, …) and
+  fields the driver currently reports as `null` (a `fraud_date` before any
+  fraud). Home Assistant registers such an entity and lists it on the device
+  page switched off; you enable the ones you want.
+
+Only the meter's identity (`id`, `name`, `meter`, `media`, `timestamp`, `rssi`,
+`lqi`) never becomes an entity — it is already in the device name and in the
+entity attributes.
+
+Home Assistant reads `enabled_by_default` only when it first adds an entity, so
+an upgrade never disables what you already have. `entity_category` is re-applied
+on every config update, so unclassified numeric fields created by an older
+version do move into the device's *Diagnostics* section.
+
 ### Legacy SEARCH mode
 
 | Field | Type | Default | Description |

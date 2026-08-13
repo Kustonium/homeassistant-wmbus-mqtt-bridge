@@ -323,7 +323,7 @@ configuration directories remain intact.
 |---|---|
 | Receiver input | `raw_topic`, default `wmbus/+/telegram` |
 | Decoded state | `<state_prefix>/<meter_id>/state` |
-| Numeric Discovery | `<discovery_prefix>/sensor/wmbus_<id>/<field>/config` |
+| Field Discovery | `<discovery_prefix>/sensor/wmbus_<id>/<field>/config` |
 | Status text | `<discovery_prefix>/sensor/wmbus_<id>/status/config` |
 | Status problem | `<discovery_prefix>/binary_sensor/wmbus_<id>/status_problem/config` |
 | Search results | `search_topic`, default `wmbus/search/candidates` |
@@ -332,6 +332,33 @@ The state payload is the decoded JSON from `wmbusmeters`. Metadata fields are
 kept as attributes, while numeric fields receive Discovery sensors. The decoder
 string field `status`, when present, receives a diagnostic text sensor and a
 problem binary sensor.
+
+Every remaining field the driver publishes receives a Discovery sensor as well,
+split by what it measures rather than by its JSON type:
+
+- numeric fields that Home Assistant can classify (`guess_device_class` returns
+  a class) or that carry a consumption unit — the `is_consumption_unit` set:
+  `m³`, `GJ`, `MJ`, `kWh`, `Wh`, `l`, `hca`, `kVARh`, `kVAh`. It exists because
+  Home Assistant has no class for several billing quantities: heat-meter volume
+  (where the bridge deliberately leaves `device_class` empty), heat energy in
+  GJ/MJ, the allocation units of a heat cost allocator — `hca` is the entire
+  reading of an `fhkvdataiii`-style device — and reactive/apparent energy;
+- everything else is published with `entity_category: diagnostic` and
+  `enabled_by_default: false`: unclassified numbers (record ages, error
+  counters), string fields, and fields whose current value is `null`, which a
+  driver uses for events that have not happened yet (`fraud_date`).
+
+Only container values (`object`, `array`) and the metadata keys listed above are
+skipped entirely. Drivers emit many secondary fields, most are useless as
+long-term statistics, and Home Assistant already offers a per-entity enable
+switch — so the bridge registers everything and leaves the choice to the user.
+
+The two flags behave differently on upgrade, which is deliberate:
+`enabled_by_default` is evaluated only when Home Assistant first adds an entity
+to its registry, so republishing a config never disables an entity a user has
+already enabled and never re-enables one they disabled; `entity_category` is
+re-applied on every config update, so fields created by an older version move
+into the device's Diagnostics section.
 
 Discovery behavior is designed around partial telegrams:
 
