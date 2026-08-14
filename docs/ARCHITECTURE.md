@@ -360,6 +360,60 @@ already enabled and never re-enables one they disabled; `entity_category` is
 re-applied on every config update, so fields created by an older version move
 into the device's Diagnostics section.
 
+Each entity also carries the driver's own words for its field. `wmbusmeters
+--listfields=<driver>` prints a description per field; the bridge loads that
+catalog once per driver (the decoder binary is pinned, so it cannot change while
+the container runs) and merges the text into the entity's attributes as
+`Description`. The catalog names repeated fields with a placeholder —
+`consumption_at_history_{storage_counter-7counter}_m3` — so the lookup matches
+with a glob rather than by equality.
+
+The merge matters: an entity has exactly one `json_attributes_topic`, and it is
+already pointed at the state topic so every decoded field of the telegram
+reaches the attributes. The description is therefore added through a
+`json_attributes_template` that combines both — `dict(value_json,
+Description="…") | tojson` — instead of replacing the pass-through. A field the
+catalog does not describe keeps the plain pass-through with no template at all,
+and if the decoder cannot be queried the descriptions are simply absent.
+
+A meter entry may narrow what Discovery publishes at all. `exclude_fields` holds
+glob patterns, comma- or space-separated; a decoded field whose name matches any
+of them gets no entity. `refresh_meter_files()` rebuilds the patterns into
+`METER_EXCLUDE_FIELDS` from `options.json`, and because that function is also
+the soft-reload path, editing a meter takes effect without restarting the
+container. Excluding `status` removes both entities of its dedicated pair — the
+text sensor and the problem binary sensor — since a problem flag without the
+status it reports on is worse than neither.
+
+The option exists for drivers that report a whole ledger on every telegram:
+`evo868` sends twelve monthly history readings plus twelve matching dates, so a
+single pattern replaces twenty-four entities per meter. An excluded field is not
+merely skipped — the bridge publishes an empty retained config for it once, the
+MQTT Discovery removal protocol, so entities created before the pattern was
+added disappear instead of lingering until they expire.
+
+Removal is the part to think about before using it: the entity leaves Home
+Assistant together with its recorder history, and re-adding the field later
+brings the entity back with whatever enabled state it had, for the reason
+described next.
+
+Deleting the device in Home Assistant does not reset that state, which is worth
+knowing before drawing conclusions from a "clean" test. Home Assistant keeps
+removed entities in a graveyard and restores them when the same `unique_id`
+appears again: `async_get_or_create` in `homeassistant/helpers/entity_registry.py`
+pops the record from `deleted_entities` and brings back its `entity_id`,
+`disabled_by`, `hidden_by`, `options` and `aliases`, with a retention of
+`ORPHANED_ENTITY_KEEP_SECONDS` (30 days). `enabled_by_default` is not consulted
+on that path at all, so an entity someone enabled by hand comes back enabled
+after the device is deleted and rediscovered.
+
+Two signs tell a restore apart from a fresh creation: the device keeps the same
+`device_id` (a newly created one gets a fresh identifier), and the restored
+entity carries the registry `options` it had before. Observing what the bridge
+actually publishes therefore requires a `unique_id` Home Assistant has never
+seen — a meter id that was never configured before — not a delete-and-wait
+cycle.
+
 Discovery behavior is designed around partial telegrams:
 
 - configuration is published before state;

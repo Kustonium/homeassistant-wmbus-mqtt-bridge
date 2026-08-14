@@ -158,10 +158,16 @@ status_detect_key_problem() {
   warn "key problem for meter ${id}: ${reason} (wmbusmeters ignores it until the next pipeline reload)"
 }
 
+# NB refresh_meter_files() fills METER_EXCLUDE_FIELDS, which is declared next to
+# the function that reads it in 08-discovery-helpers.sh. Rebuilding it here means
+# the reload path refreshes the filter too, so editing a meter takes effect
+# without a container restart and there is no second cache to invalidate.
+
 # shellcheck disable=SC2034
 refresh_meter_files() {
   rm -f "${METER_DIR}/meter-"* 2>/dev/null || true
 
+  METER_EXCLUDE_FIELDS=()
   OFFICIAL_METERS_COUNT=0
   local configured_count=0
   if [[ -f "${OPTIONS_JSON}" ]] && jq -e '.meters and (.meters|length>0)' "${OPTIONS_JSON}" >/dev/null 2>&1; then
@@ -189,13 +195,16 @@ refresh_meter_files() {
     write_search_status "listen" "listen_mode"
   else
     local loaded_count=0
-    local meter_json file friendly_name driver driver_other mid_raw key mid
+    local meter_json file friendly_name driver driver_other mid_raw key mid exclude_fields
     while IFS= read -r meter_json; do
       friendly_name="$(echo "${meter_json}" | jq -r '.id // "meter"')"
       driver="$(echo "${meter_json}" | jq -r '.type // "auto"')"
       driver_other="$(echo "${meter_json}" | jq -r '.type_other // empty')"
       mid_raw="$(echo "${meter_json}" | jq -r '.meter_id // empty')"
       key="$(echo "${meter_json}" | jq -r '.key // empty')"
+      # Accept commas as separators too — a human writing a list of patterns
+      # reaches for them, and options.json holds a single string.
+      exclude_fields="$(echo "${meter_json}" | jq -r '.exclude_fields // empty' | tr ',' ' ')"
 
       if [[ -z "${key}" || "${key}" == "null" ]]; then
         key=""
@@ -220,6 +229,10 @@ refresh_meter_files() {
         continue
       fi
 
+      if [[ -n "${exclude_fields}" && "${exclude_fields}" != "null" ]]; then
+        METER_EXCLUDE_FIELDS["${mid,,}"]="${exclude_fields}"
+      fi
+
       loaded_count=$((loaded_count + 1))
       file="$(printf '%s/meter-%04d' "${METER_DIR}" "${loaded_count}")"
       {
@@ -238,7 +251,11 @@ refresh_meter_files() {
         fi
       } > "${file}"
 
-      log "meter: ${friendly_name} id=${mid} driver=${driver}"
+      if [[ -n "${METER_EXCLUDE_FIELDS[${mid,,}]:-}" ]]; then
+        log "meter: ${friendly_name} id=${mid} driver=${driver} exclude_fields=${METER_EXCLUDE_FIELDS[${mid,,}]}"
+      else
+        log "meter: ${friendly_name} id=${mid} driver=${driver}"
+      fi
     done < <(jq -c '.meters[]' "${OPTIONS_JSON}" 2>/dev/null || true)
     OFFICIAL_METERS_COUNT="${loaded_count}"
     if [[ "${loaded_count}" -gt 0 ]]; then

@@ -96,6 +96,105 @@ guess_device_class() {
   esac
 }
 
+# Field descriptions written by the driver author, from
+# `wmbusmeters --listfields=<driver>`. Keyed "<driver>|<pattern>"; the catalog
+# uses templated names for repeated fields
+# (consumption_at_history_{storage_counter-7counter}_m3), so lookups match with
+# a glob rather than by equality. Loaded once per driver — the decoder binary is
+# pinned, so its catalog cannot change while the container runs.
+declare -A FIELD_CATALOG
+declare -A FIELD_CATALOG_LOADED
+declare -A FIELD_DESCRIPTION_CACHE
+# Overridable so the test suite can point the catalog loader at a stub and
+# exercise the parser without the decoder binary.
+WMBUSMETERS_BIN="${WMBUSMETERS_BIN:-/usr/bin/wmbusmeters}"
+
+load_field_catalog() {
+  local driver="${1,,}"
+  [[ -n "${driver}" && "${driver}" != "auto" && "${driver}" != "unknown" ]] || return 0
+  [[ "${driver}" =~ ^[a-z0-9_]+$ ]] || return 0
+  [[ -z "${FIELD_CATALOG_LOADED[${driver}]+x}" ]] || return 0
+  FIELD_CATALOG_LOADED["${driver}"]=1
+
+  local line name desc
+  # --listfields prints "<padding><name><2+ spaces><description>". The split is
+  # done with bash parameter expansion rather than sed: the add-on image is
+  # Alpine and ships busybox sed, which does not turn a "\t" in the replacement
+  # into a tab the way GNU sed does. Descriptions contain single spaces, so
+  # splitting on any whitespace would truncate them.
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -n "${line}" ]] || continue
+    name="${line%%  *}"
+    if [[ "${name}" == "${line}" ]]; then
+      desc=""
+    else
+      desc="${line#"${name}"}"
+      desc="${desc#"${desc%%[![:space:]]*}"}"
+    fi
+    [[ -n "${name}" ]] || continue
+    # Quotes and backslashes would land inside a Jinja string literal in the
+    # Discovery payload; drop them rather than escape through two layers.
+    desc="${desc//\"/}"
+    desc="${desc//\\/}"
+    FIELD_CATALOG["${driver}|${name}"]="${desc}"
+  done < <(timeout 10 "${WMBUSMETERS_BIN}" "--listfields=${driver}" 2>/dev/null || true)
+}
+
+# Description for one decoded field, or empty. Memoised per driver+field so the
+# glob scan runs once per entity rather than once per telegram.
+field_description() {
+  local driver="${1,,}" key="${2,,}"
+  [[ -n "${driver}" && -n "${key}" ]] || return 0
+  local cache="${driver}|${key}"
+  if [[ -n "${FIELD_DESCRIPTION_CACHE[${cache}]+x}" ]]; then
+    printf '%s' "${FIELD_DESCRIPTION_CACHE[${cache}]}"
+    return 0
+  fi
+  load_field_catalog "${driver}"
+  local entry pattern found=""
+  for entry in "${!FIELD_CATALOG[@]}"; do
+    [[ "${entry}" == "${driver}|"* ]] || continue
+    pattern="${entry#*|}"
+    # Templated placeholders behave as a wildcard for the concrete field name.
+    pattern="${pattern//\{*\}/*}"
+    # shellcheck disable=SC2053
+    if [[ "${key}" == ${pattern,,} ]]; then
+      found="${FIELD_CATALOG[${entry}]}"
+      break
+    fi
+  done
+  FIELD_DESCRIPTION_CACHE["${cache}"]="${found}"
+  printf '%s' "${found}"
+}
+
+# Per-meter Discovery field filter, keyed by lowercase meter id; the value is a
+# whitespace-separated list of glob patterns. Declared here, beside the function
+# that reads it, rather than in 07-meters.sh where refresh_meter_files() fills
+# it: an undeclared associative array makes bash evaluate the subscript as
+# arithmetic, and a meter id with a leading zero then aborts the lookup with
+# "value too great for base". Declaring it next to its consumer removes the
+# dependency on library sourcing order.
+declare -A METER_EXCLUDE_FIELDS
+
+# Has this meter's configuration excluded this field from Discovery?
+# METER_EXCLUDE_FIELDS holds whitespace-separated glob patterns per lowercase
+# meter id (filled by refresh_meter_files). Matching is case-insensitive and
+# uses shell globs, so one pattern covers a whole family of fields — the case
+# this exists for is a driver like evo868, which reports twelve monthly history
+# readings plus twelve matching dates on every telegram.
+field_excluded_for_meter() {
+  local id="${1,,}" key="${2,,}" patterns pat
+  patterns="${METER_EXCLUDE_FIELDS[${id}]:-}"
+  [[ -n "${patterns}" ]] || return 1
+  for pat in ${patterns}; do
+    # Unquoted on purpose: this is a glob match, not a string comparison.
+    # shellcheck disable=SC2053
+    [[ "${key}" == ${pat,,} ]] && return 0
+  done
+  return 1
+}
+
 # Does this unit measure the quantity the meter bills for (volume, energy,
 # allocation units)? Used to decide whether a field is a primary measurement or
 # a diagnostic: device_class alone is not enough, because Home Assistant has no

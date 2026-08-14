@@ -293,10 +293,20 @@ ovládač vracia, a rozdeľuje ich podľa toho, čo merajú:
 Entitu nedostane iba identita merača (`id`, `name`, `meter`, `media`,
 `timestamp`, `rssi`, `lqi`) — je už v názve zariadenia a v atribútoch entít.
 
+Každá entita navyše nesie atribút `Description` — popis poľa od autora ovládača,
+získaný z `wmbusmeters --listfields`. Stojí vedľa dekódovaných polí telegramu v
+atribútoch entity, takže nič z toho, čo tam bolo predtým, nezmizne.
+
 Home Assistant číta `enabled_by_default` len pri prvom pridaní entity, takže
 aktualizácia nikdy nevypne to, čo už máš. `entity_category` sa naopak uplatní
 pri každej aktualizácii konfigurácie, takže číselné polia bez triedy založené
 staršou verziou sa presunú do sekcie *Diagnostika*.
+
+To isté platí aj naopak: entita vytvorená ako vypnutá zostane vypnutá, kým ju na
+stránke zariadenia nezapneš — aj keď by ju novšia verzia doplnku už publikovala
+ako bežný senzor. Zmazanie zariadenia nepomôže, pretože Home Assistant
+odstránené entity vrátane stavu zapnutia obnoví, len čo je ten istý merač znovu
+detekovaný; tento záznam si drží 30 dní. Stačí ju raz zapnúť ručne.
 
 ### Starší režim SEARCH
 
@@ -326,6 +336,7 @@ staršou verziou sa presunú do sekcie *Diagnostika*.
 | `type` | str | áno | **Názov ovládača wmbusmeters** (napr. `hydrodigit`, `amiplus`, `izarv2`) **alebo `auto`/`other`**. Voľný reťazec — wmbusmeters overí ovládač pri dekódovaní (zámerne nie enum, aby nové ovládače neboli odmietané). |
 | `type_other` | str? | pri `type=other` | Vlastný názov ovládača |
 | `key` | str? | pri šifrovaní | 32-znakový AES kľúč (HEX) |
+| `exclude_fields` | str? | nie | Vzory (globy) polí, ktoré **nemajú** dostať entitu v Home Assistante — napr. `consumption_at_history_*, history_*_date`. Oddelené čiarkami alebo medzerami; prázdne publikuje všetky polia. |
 
 Zoznam ovládačov vo WebUI sa generuje z pripnutého zostavenia `wmbusmeters` a
 jeho XMQ zdrojov. Používajte tento katalóg namiesto ručne udržiavaného zoznamu

@@ -83,10 +83,26 @@ emit_discovery_from_json() {
   while IFS=$'\t' read -r ftype key; do
     [[ -n "${key}" ]] || continue
 
-    local obj cache_key key_lc unit device_class state_class entity_category cfg_topic unique_id sensor_name payload
+    local obj cache_key key_lc unit device_class state_class entity_category cfg_topic unique_id sensor_name payload field_desc
 
     obj="$(sanitize_obj_id "${key}")"
     [[ -n "${obj}" ]] || continue
+
+    # Field excluded by this meter's configuration. Clearing the retained config
+    # once (rather than only skipping the publish) is what makes the option act
+    # on entities that already exist: an empty retained payload is the MQTT
+    # Discovery removal protocol, so Home Assistant drops the entity instead of
+    # leaving it behind to expire.
+    if field_excluded_for_meter "${id}" "${key}"; then
+      cache_key="${id}|${obj}|excluded"
+      if [[ -z "${DISCOVERY_SENT_FIELD[${cache_key}]+x}" ]]; then
+        if mqtt_pub "${DISCOVERY_PREFIX}/sensor/${uniq}/${obj}/config" "" "true"; then
+          DISCOVERY_SENT_FIELD["${cache_key}"]=1
+          log "discovery: field ${key} excluded for id=${id} (config cleared)"
+        fi
+      fi
+      continue
+    fi
 
     key_lc="$(echo "${key}" | tr '[:upper:]' '[:lower:]')"
     if [[ "${ftype}" == "number" ]]; then
@@ -108,6 +124,10 @@ emit_discovery_from_json() {
     cfg_topic="${DISCOVERY_PREFIX}/sensor/${uniq}/${obj}/config"
     unique_id="${uniq}_${obj}"
     sensor_name="${name} ${key}"
+    # The driver's own words for this field, surfaced as an entity attribute.
+    # Looked up here rather than per telegram: the block below runs once per
+    # entity, guarded by the DISCOVERY_SENT_FIELD cache.
+    field_desc="$(field_description "${meter}" "${key}")"
 
     cache_key="${id}|${obj}|${expire_after}"
     [[ -n "${DISCOVERY_SENT_FIELD[${cache_key}]+x}" ]] && continue
@@ -125,6 +145,7 @@ emit_discovery_from_json() {
       --arg dc "${device_class}" \
       --arg sc "${state_class}" \
       --arg ecat "${entity_category}" \
+      --arg desc "${field_desc}" \
       --argjson expire "${expire_after}" \
       '(
         {
@@ -151,6 +172,13 @@ emit_discovery_from_json() {
         + (if ($dc|length)>0 then {device_class:$dc} else {} end)
         + (if ($sc|length)>0 then {state_class:$sc} else {} end)
         + (if ($ecat|length)>0 then {entity_category:$ecat, enabled_by_default:false} else {} end)
+        # The attributes topic already carries the whole decoded telegram, and
+        # there is only one of them per entity — so the description is MERGED
+        # into that payload rather than replacing it. Without the merge, adding
+        # the description would cost the pass-through every other field relies on.
+        + (if ($desc|length)>0
+           then {json_attributes_template: "{{ dict(value_json, Description=\"\($desc)\") | tojson }}"}
+           else {} end)
       )'
     )"
 
@@ -187,7 +215,9 @@ emit_discovery_from_json() {
   # (device_class problem) that is ON for any non-OK value. Passthrough only --
   # the text shown is exactly what wmbusmeters emits; the only literal is the
   # OK baseline (wmbusmeters' default_message for the error-flags lookup).
-  if [[ "$(jq -r 'has("status")' <<<"${json_line}" 2>/dev/null || echo false)" == "true" ]]; then
+  local has_status
+  has_status="$(jq -r 'has("status")' <<<"${json_line}" 2>/dev/null || echo false)"
+  if [[ "${has_status}" == "true" ]] && ! field_excluded_for_meter "${id}" "status"; then
     local st_cache st_cfg st_payload bp_cache bp_cfg bp_payload
 
     st_cache="${id}|status|${expire_after}"
@@ -201,6 +231,7 @@ emit_discovery_from_json() {
         --arg dname "${dev_name}" \
         --arg dmdl "${dev_mdl}" \
         --arg dmfr "${dev_mfr}" \
+        --arg desc "$(field_description "${meter}" "status")" \
         --argjson expire "${expire_after}" \
         '{
            name: $name,
@@ -223,7 +254,10 @@ emit_discovery_from_json() {
              model: $dmdl,
              manufacturer: $dmfr
            }
-         }')"
+         }
+         + (if ($desc|length)>0
+            then {json_attributes_template: "{{ dict(value_json, Description=\"\($desc)\") | tojson }}"}
+            else {} end)')"
       if mqtt_pub "${st_cfg}" "${st_payload}" "${DISCOVERY_RETAIN}"; then
         DISCOVERY_SENT_FIELD["${st_cache}"]=1
       else
@@ -271,6 +305,17 @@ emit_discovery_from_json() {
       else
         warn "discovery: failed to publish status problem binary_sensor for id=${id} (will retry on next telegram)"
       fi
+    fi
+  elif [[ "${has_status}" == "true" ]]; then
+    # Excluding "status" has to take both entities of the dedicated pair with
+    # it, otherwise the problem binary_sensor would survive the text sensor it
+    # reports on.
+    local st_excl_cache="${id}|status|excluded"
+    if [[ -z "${DISCOVERY_SENT_FIELD[${st_excl_cache}]+x}" ]]; then
+      mqtt_pub "${DISCOVERY_PREFIX}/sensor/${uniq}/status/config" "" "true" || true
+      mqtt_pub "${DISCOVERY_PREFIX}/binary_sensor/${uniq}/status_problem/config" "" "true" || true
+      DISCOVERY_SENT_FIELD["${st_excl_cache}"]=1
+      log "discovery: field status excluded for id=${id} (sensor and problem binary_sensor cleared)"
     fi
   fi
 }

@@ -87,6 +87,11 @@ COPY rootfs /
 # config.yaml into the container).
 COPY config.yaml /usr/bin/config.yaml
 
+# The add-on icon doubles as the WebUI brand mark. It is copied from the
+# repository root rather than duplicated under rootfs/ so the artwork has a
+# single source: the same file Supervisor reads for the add-on store tile.
+COPY icon.png /usr/share/wmbus-webui/assets/icon.png
+
 COPY docker/entrypoint.sh /usr/bin/docker-entrypoint.sh
 # docker standalone entry point — used when running outside HA supervisor
 

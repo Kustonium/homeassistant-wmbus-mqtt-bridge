@@ -308,11 +308,23 @@ Keine Entität erhält nur die Identität des Zählers (`id`, `name`, `meter`,
 `media`, `timestamp`, `rssi`, `lqi`) — sie steckt bereits im Gerätenamen und in
 den Entitätsattributen.
 
+Jede Entität trägt zusätzlich das Attribut `Description` — den Text, den der
+Treiberautor für dieses Feld geschrieben hat, aus `wmbusmeters --listfields`. Er
+steht neben den dekodierten Telegrammfeldern in den Attributen, es geht also
+nichts verloren, was vorher da war.
+
 Home Assistant wertet `enabled_by_default` nur beim erstmaligen Anlegen einer
 Entität aus, ein Update deaktiviert also nie etwas Bestehendes.
 `entity_category` wird dagegen bei jeder Konfigurationsaktualisierung
 angewendet, sodass numerische Felder ohne Klasse aus einer älteren Version in
 den Abschnitt *Diagnose* wandern.
+
+Dieselbe Regel gilt umgekehrt: eine deaktiviert angelegte Entität bleibt
+deaktiviert, bis du sie auf der Geräteseite aktivierst — auch wenn eine neuere
+Add-on-Version sie inzwischen als normalen Sensor veröffentlichen würde. Das
+Löschen des Geräts hilft nicht, denn Home Assistant stellt entfernte Entitäten
+samt Aktivierungszustand wieder her, sobald derselbe Zähler erneut erkannt wird;
+dieser Eintrag bleibt 30 Tage erhalten. Einmal von Hand aktivieren genügt.
 
 ### Älterer SEARCH-Modus
 
@@ -342,6 +354,7 @@ den Abschnitt *Diagnose* wandern.
 | `type` | str | ja | **Der wmbusmeters-Treibername** (z. B. `hydrodigit`, `amiplus`, `izarv2`) **oder `auto`/`other`**. Ein freier String — wmbusmeters validiert den Treiber beim Dekodieren (bewusst kein Enum, damit neue Treiber nie abgelehnt werden). |
 | `type_other` | str? | bei `type=other` | Eigener Treibername |
 | `key` | str? | bei verschlüsselt | 32-Zeichen-AES-Schlüssel (HEX) |
+| `exclude_fields` | str? | nein | Glob-Muster für Felder, die **keine** Home-Assistant-Entität bekommen sollen — z. B. `consumption_at_history_*, history_*_date`. Durch Kommas oder Leerzeichen getrennt; leer veröffentlicht alle Felder. |
 
 Die Treiberliste der WebUI wird aus dem festgelegten `wmbusmeters`-Build und
 dessen XMQ-Quellen erzeugt. Nutze diesen Katalog statt einer manuellen Liste.
