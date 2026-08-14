@@ -89,7 +89,8 @@ flowchart LR
 3. **Otwórz WebUI** (Info → OPEN WEB UI).
 4. Wejdź w **ODBIERANE / SZUKAJ**, znajdź swój licznik wśród wykrytych
    kandydatów i kliknij **Dodaj** (modal: ID, sterownik, nazwa, opcjonalny klucz
-   AES). Po zapisie pipeline przeładowuje się sam (bez restartu kontenera).
+   AES oraz wybór publikowanych pól — patrz niżej). Po zapisie pipeline
+   przeładowuje się sam (bez restartu kontenera).
 
 Pełny przebieg w [§6](#6-typowy-workflow-od-pustki-do-działającego-licznika).
 
@@ -204,6 +205,12 @@ flowchart TD
 
 1. **Start** z `meters: []` → tryb LISTEN, w logach `No meters configured -> LISTEN MODE`.
 2. **Dodaj** kandydata (bez AES — od razu; z AES — wpisz 32-znakowy klucz HEX).
+   W tym samym modalu masz listę wszystkich pól, jakie driver potrafi zwrócić —
+   każde z opisem z wmbusmeters i checkboxem. Odznacz to, czego nie chcesz jako
+   encji, albo wpisz wzorce w polu **Pola do pominięcia**, np.
+   `consumption_at_history_*`. Zostaw puste i publikowane jest wszystko, jak
+   dotąd. Później zmienisz to przez **Driver…** przy dodanym liczniku — pamiętaj,
+   że odznaczenie pola usuwa jego encję razem z zapisaną historią.
 3. Zapis trafia do `options.json`, pipeline DECODE przeładowuje się **bez pełnego
    restartu kontenera**.
 4. Po **następnym telegramie** tego licznika pojawia się on jako **Online** na

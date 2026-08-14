@@ -86,7 +86,8 @@ flowchart LR
    add-on prejde do **režimu LISTEN** a iba počúva).
 3. **Otvor WebUI** (Info → OPEN WEB UI).
 4. Choď na **PRÍJEM / HĽADANIE**, nájdi svoj merač medzi detegovanými kandidátmi a
-   klikni **Pridať** (modal: ID, ovládač, názov, voliteľný AES kľúč). Po uložení sa
+   klikni **Pridať** (modal: ID, ovládač, názov, voliteľný AES kľúč a výber
+   publikovaných polí — pozri nižšie). Po uložení sa
    pipeline sama prenačíta (bez reštartu kontajnera).
 
 Celý postup v [§6](#6-typický-postup-od-prázdna-k-funkčnému-meraču).
@@ -199,6 +200,12 @@ flowchart TD
 
 1. **Štart** s `meters: []` → režim LISTEN, log ukáže `No meters configured -> LISTEN MODE`.
 2. **Pridaj** kandidáta (bez AES — hneď; AES — zadaj 32-znakový HEX kľúč).
+   V tom istom modáli je zoznam všetkých polí, ktoré ovládač vie vrátiť — každé s
+   popisom z wmbusmeters a zaškrtávacím políčkom. Odškrtni, čo nechceš ako
+   entitu, alebo zadaj vzory ako `consumption_at_history_*` do poľa **Polia na
+   vynechanie**. Ak necháš prázdne, publikuje sa všetko ako doteraz. Neskôr to
+   zmeníš cez **Driver…** pri pridanom merači — pozor, odškrtnuté pole príde o
+   entitu aj o zaznamenanú históriu.
 3. Uloženie ide do `options.json` a DECODE pipeline sa prenačíta **bez plného reštartu
    kontajnera**.
 4. Po **ďalšom telegrame** tohto merača (od desiatok sekúnd po pár minút, podľa merača)

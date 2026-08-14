@@ -86,7 +86,8 @@ flowchart LR
    the add-on enters **LISTEN mode** and only listens).
 3. **Open the WebUI** (Info → OPEN WEB UI).
 4. Go to **RECEIVING / SEARCH**, find your meter among the detected candidates and
-   click **Add** (modal: ID, driver, name, optional AES key). After saving, the
+   click **Add** (modal: ID, driver, name, optional AES key, and which fields to
+   publish — see below). After saving, the
    pipeline reloads itself (no container restart).
 
 Full walkthrough in [§6](#6-typical-workflow-from-empty-to-a-working-meter).
@@ -203,6 +204,12 @@ flowchart TD
 
 1. **Start** with `meters: []` → LISTEN mode, log shows `No meters configured -> LISTEN MODE`.
 2. **Add** a candidate (no AES — straight away; AES — enter the 32-char HEX key).
+   The same modal lists every field the driver can report, each with the
+   description wmbusmeters ships for it and a checkbox. Uncheck what you do not
+   want as an entity, or type patterns such as `consumption_at_history_*` in
+   **Fields to skip**. Leave it alone and every field is published, as before.
+   You can change this later from **Driver…** on an existing meter — note that
+   unchecking a field removes its entity together with its recorded history.
 3. The save goes to `options.json` and the DECODE pipeline reloads **without a full
    container restart**.
 4. After the **next telegram** from that meter it appears as **Online** on METERS,

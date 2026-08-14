@@ -87,7 +87,8 @@ flowchart LR
    `meters: []` geht das Add-on in den **LISTEN-Modus** und hört nur zu).
 3. **Öffne die WebUI** (Info → OPEN WEB UI).
 4. Gehe zu **EMPFANG / SUCHE**, finde deinen Zähler unter den erkannten Kandidaten
-   und klicke **Hinzufügen** (Modal: ID, Treiber, Name, optionaler AES-Schlüssel).
+   und klicke **Hinzufügen** (Modal: ID, Treiber, Name, optionaler AES-Schlüssel
+   und die Auswahl der zu veröffentlichenden Felder — siehe unten).
    Nach dem Speichern lädt sich die Pipeline selbst neu (kein Container-Neustart).
 
 Vollständige Anleitung in [§6](#6-typischer-ablauf-von-leer-zu-einem-laufenden-zähler).
@@ -206,6 +207,12 @@ flowchart TD
 
 1. **Start** mit `meters: []` → LISTEN-Modus, Log zeigt `No meters configured -> LISTEN MODE`.
 2. **Hinzufügen** eines Kandidaten (ohne AES — sofort; AES — den 32-Zeichen-HEX-Schlüssel eingeben).
+   Dasselbe Modal listet jedes Feld, das der Treiber melden kann, jeweils mit der
+   Beschreibung aus wmbusmeters und einer Checkbox. Hake ab, was keine Entität
+   werden soll, oder trage Muster wie `consumption_at_history_*` unter **Felder
+   überspringen** ein. Lässt du es leer, wird wie bisher alles veröffentlicht.
+   Später änderst du das über **Driver…** am vorhandenen Zähler — beachte: ein
+   abgewähltes Feld verliert seine Entität samt aufgezeichnetem Verlauf.
 3. Das Speichern landet in `options.json` und die DECODE-Pipeline lädt **ohne
    vollständigen Container-Neustart** neu.
 4. Nach dem **nächsten Telegramm** dieses Zählers erscheint er als **Online** auf

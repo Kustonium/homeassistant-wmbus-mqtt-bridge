@@ -83,6 +83,8 @@ ESP32 / Gateway / Bridge
 - **Wejście STDIN dla wmbusmeters** — telegramy przekazywane przez `stdin:hex`, czego oryginalny add-on nie obsługuje.
 - **Pełne dekodowanie przez wmbusmeters** — projekt nie zastępuje wmbusmeters, lecz wykorzystuje go w całości.
 - **MQTT + Home Assistant Discovery** — dane publikowane w MQTT i automatycznie rejestrowane w HA.
+- **Wybór publikowanych pól** — w modalu licznika (**Dodaj licznik** / **Driver…**) jest tabela wszystkich pól, jakie driver potrafi zwrócić, każde z opisem z `wmbusmeters` i checkboxem; obok pole na wzorce (`consumption_at_history_*`). Odznaczone pole nie dostaje encji — a jeśli encja już istniała, zostaje usunięta razem z historią.
+- **Opis pola przy encji** — każda encja niesie atrybut `Description` z opisem napisanym przez autora drivera, obok pól zdekodowanego telegramu.
 - **Encje diagnostyczne statusu** — gdy licznik raportuje pole `status`, powstaje sensor z tekstem przekazanym przez wybrany driver `wmbusmeters` oraz `binary_sensor` (`device_class: problem`) włączający się przy każdym stanie innym niż `OK`. Publikowane są **wszystkie** pola drivera: te z jednostką zużycia lub rozpoznaną `device_class` jako zwykłe sensory, cała reszta (liczby bez klasy, teksty, pola `null`) jako encje diagnostyczne wyłączone domyślnie — włączasz w HA tylko te, których potrzebujesz.
 - **Tryb LISTEN (nasłuch)** — gdy lista `meters` jest pusta, add-on wypisuje w logach wszystkie słyszane liczniki wraz z sugerowanym driverem.
 - **Filtrowanie po wartości** — gdy nasłuch słyszy wiele cudzych liczników, WebUI filtruje już wyświetlone wartości według odczytu z fizycznego licznika i tolerancji.
@@ -365,6 +367,8 @@ ESP32 / Gateway / Bridge
 - STDIN support for wmbusmeters (`stdin:hex`)
 - Full decoding handled by upstream wmbusmeters
 - MQTT output with Home Assistant Discovery
+- Field selection: the meter modal (**Add meter** / **Driver…**) lists every field the driver can report, each with the description from `wmbusmeters` and a checkbox, next to a box for patterns (`consumption_at_history_*`). An unchecked field gets no entity — and if one already existed, it is removed together with its history.
+- Field descriptions on the entity: each entity carries a `Description` attribute written by the driver author, alongside the decoded telegram fields.
 - Status diagnostic entities: when a meter reports a `status` field, a text sensor with the value supplied by the selected `wmbusmeters` driver plus a `binary_sensor` (`device_class: problem`) that turns on for any non-`OK` state. **Every** driver field is published: those with a consumption unit or a recognised `device_class` as plain sensors, everything else (unclassified numbers, text, `null` fields) as diagnostic entities disabled by default, so you enable only the ones you need
 - LISTEN mode: when `meters` list is empty, logs all detected meter IDs and suggested drivers
 - Value filtering: when LISTEN hears many neighbours' meters, the WebUI filters already displayed values by the physical meter reading and tolerance
