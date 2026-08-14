@@ -303,10 +303,22 @@ Only the meter's identity (`id`, `name`, `meter`, `media`, `timestamp`, `rssi`,
 `lqi`) never becomes an entity — it is already in the device name and in the
 entity attributes.
 
+Every entity also carries a `Description` attribute — the text the driver author
+wrote for that field, taken from `wmbusmeters --listfields`. It sits next to the
+decoded telegram fields in the entity's attributes, so nothing that was there
+before is lost.
+
 Home Assistant reads `enabled_by_default` only when it first adds an entity, so
 an upgrade never disables what you already have. `entity_category` is re-applied
 on every config update, so unclassified numeric fields created by an older
 version do move into the device's *Diagnostics* section.
+
+The same rule works the other way round: an entity that was created disabled
+stays disabled until you enable it on the device page — even if a later add-on
+version would now publish it as a normal sensor. Deleting the device does not
+help, because Home Assistant restores removed entities (including their
+enabled/disabled state) as soon as the same meter is rediscovered; it keeps that
+record for 30 days. Enable it by hand once and it stays enabled.
 
 ### Legacy SEARCH mode
 
@@ -334,6 +346,7 @@ version do move into the device's *Diagnostics* section.
 | `type` | str | yes | **The wmbusmeters driver name** (e.g. `hydrodigit`, `amiplus`, `izarv2`) **or `auto`/`other`**. A free string — wmbusmeters validates the driver at decode time (deliberately not an enum, so new drivers are never rejected). |
 | `type_other` | str? | when `type=other` | Custom driver name |
 | `key` | str? | when encrypted | 32-char AES key (HEX) |
+| `exclude_fields` | str? | no | Glob patterns, comma- or space-separated, for decoded fields that should get **no** Home Assistant entity — e.g. `consumption_at_history_*, history_*_date`. Empty publishes every field. |
 
 The WebUI driver list is generated from the pinned `wmbusmeters` build and its
 XMQ sources. Use that catalog instead of a manually maintained list in this guide.

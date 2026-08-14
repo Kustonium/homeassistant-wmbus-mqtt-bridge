@@ -71,6 +71,9 @@
     loading: true,
     error: "",
     modal: null,
+    // Per-driver field catalog from api/driver-fields, keyed by lowercase
+    // driver name: {loading, fields:[{name, description}], error}.
+    driverFields: {},
     // Candidate "export for issue report" modal: {id, loading, report, error}.
     reportModal: null,
     // Driver catalog (assets/drivers.json, baked at image build time from the
@@ -900,7 +903,8 @@
       <div class="app-shell">
         <aside class="sidebar">
           <div class="brand">
-            <div class="brand-mark">WB</div>
+            <img class="brand-mark" src="assets/icon.png" alt="" aria-hidden="true"
+                 onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'brand-mark brand-mark-text',textContent:'WB'}))">
             <div>
               <div class="brand-title">wMBus MQTT Bridge</div>
               <div class="brand-sub">v${escapeHtml(meta.version || "dev")} ${dev}</div>
@@ -2857,6 +2861,134 @@
       clearEditCompareDom();
     }
   };
+  // exclude_fields lives in state for the same reason the AES key does: a live
+  // SSE render rebuilds the modal DOM, and an input that only existed in the
+  // DOM would lose what the user is typing.
+  // --- exclude_fields helpers -------------------------------------------
+  // The stored value is a whitespace/comma separated list of glob patterns.
+  // The field table below distinguishes two ways a field can be excluded:
+  // by its exact name (a checkbox can toggle that) and by a glob someone
+  // typed (only editing the pattern can change that), so the table never
+  // silently rewrites a pattern the user wrote by hand.
+  function excludeTokens(text) {
+    return String(text || "").replace(/,/g, " ").split(/\s+/).filter(Boolean);
+  }
+
+  function tokenIsGlob(token) {
+    return /[*?]/.test(token);
+  }
+
+  function tokenMatches(token, name) {
+    const lowerName = String(name || "").toLowerCase();
+    const lowerToken = String(token || "").toLowerCase();
+    if (!tokenIsGlob(lowerToken)) return lowerToken === lowerName;
+    const rx = new RegExp("^" + lowerToken
+      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*/g, ".*")
+      .replace(/\?/g, ".") + "$");
+    return rx.test(lowerName);
+  }
+
+  // Returns "" (published), "name" (excluded by an exact entry) or "glob".
+  function fieldExclusionKind(name, text) {
+    let kind = "";
+    for (const token of excludeTokens(text)) {
+      if (!tokenMatches(token, name)) continue;
+      if (tokenIsGlob(token)) kind = kind || "glob";
+      else return "name";
+    }
+    return kind;
+  }
+
+  function toggleExcludedName(text, token) {
+    const tokens = excludeTokens(text);
+    const kept = tokens.filter(existing => existing.toLowerCase() !== String(token).toLowerCase());
+    if (kept.length !== tokens.length) return kept.join(" ");
+    return tokens.concat([token]).join(" ");
+  }
+
+  // wmbusmeters prints templated names for repeated fields, e.g.
+  // total_volume_subunit{subunit_counter}_m3. That is not a literal field name
+  // and the placeholder braces are not accepted by the backend validator, so a
+  // checkbox on such a row contributes the equivalent glob instead.
+  function fieldPattern(name) {
+    return String(name || "").replace(/\{[^}]*\}/g, "*");
+  }
+
+  window.__modalExcludeSet = function (value) {
+    if (state.modal) state.modal.excludeFields = String(value == null ? "" : value);
+  };
+  window.__editModalExcludeSet = function (value) {
+    if (state.editModal) state.editModal.excludeFields = String(value == null ? "" : value);
+  };
+
+  // Catalog of every field a driver can report, from wmbusmeters --listfields.
+  // It is the driver's own list, so it also covers fields this meter has not
+  // sent yet — unlike the entities, which only exist once a telegram carried
+  // the field.
+  function loadDriverFields(driver) {
+    const key = String(driver || "").trim().toLowerCase();
+    if (!key || key === "auto" || key === "other") return;
+    if (state.driverFields[key] && !state.driverFields[key].error) return;
+    state.driverFields[key] = {loading: true, fields: [], error: ""};
+    render();
+    fetch(`api/driver-fields?driver=${encodeURIComponent(key)}`, {cache: "no-store"})
+      .then(r => r.json())
+      .then(payload => {
+        state.driverFields[key] = payload && payload.ok
+          ? {loading: false, fields: payload.fields || [], error: ""}
+          : {loading: false, fields: [], error: (payload && payload.message) || "error"};
+        render();
+      })
+      .catch(error => {
+        state.driverFields[key] = {loading: false, fields: [], error: String(error.message || error)};
+        render();
+      });
+  }
+
+  function driverFieldsSection(driver, excludeText, scope) {
+    const key = String(driver || "").trim().toLowerCase();
+    if (!key || key === "auto" || key === "other") {
+      return `<div style="font-size:11px;color:#7d909c;">${escapeHtml(t("driver_fields_pick_driver", "Choose a specific driver to list its fields."))}</div>`;
+    }
+    const entry = state.driverFields[key];
+    if (!entry) {
+      return `<button class="btn" type="button" data-action="load-driver-fields" data-driver="${escapeHtml(key)}">${escapeHtml(t("driver_fields_show", "Show driver fields"))}</button>`;
+    }
+    if (entry.loading) {
+      return `<div style="font-size:11px;color:#7d909c;">${escapeHtml(t("driver_fields_loading", "Loading fields…"))}</div>`;
+    }
+    if (entry.error) {
+      return `<div style="font-size:11px;color:#f3a4a4;">${escapeHtml(entry.error)}</div>
+        <button class="btn" type="button" data-action="load-driver-fields" data-driver="${escapeHtml(key)}">${escapeHtml(t("retry", "Retry"))}</button>`;
+    }
+    const rows = entry.fields.map(field => {
+      const pattern = fieldPattern(field.name);
+      const templated = pattern !== field.name;
+      // A templated row has no literal name to match, so it counts as excluded
+      // only when its own glob is present verbatim; a hand-written pattern
+      // still greys out ordinary rows.
+      const kind = templated
+        ? (excludeTokens(excludeText).some(tk => tk.toLowerCase() === pattern.toLowerCase()) ? "name" : "")
+        : fieldExclusionKind(field.name, excludeText);
+      const published = kind === "";
+      const byGlob = kind === "glob";
+      return `
+        <tr style="${byGlob ? "opacity:0.55;" : ""}">
+          <td style="padding:2px 6px;">
+            <input type="checkbox" ${published ? "checked" : ""} ${byGlob ? "disabled" : ""}
+              data-action="toggle-driver-field" data-name="${escapeHtml(pattern)}" data-scope="${escapeHtml(scope)}">
+          </td>
+          <td class="mono" style="padding:2px 6px;white-space:nowrap;">${escapeHtml(field.name)}</td>
+          <td style="padding:2px 6px;color:#9eafba;">${escapeHtml(field.description || "")}${byGlob ? ` <span style="color:#f3c84b;">${escapeHtml(t("driver_fields_by_pattern", "(excluded by a pattern)"))}</span>` : ""}</td>
+        </tr>`;
+    }).join("");
+    return `
+      <div style="max-height:260px;overflow:auto;border:1px solid #24333d;border-radius:6px;">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">${rows}</table>
+      </div>
+      <div style="font-size:10px;color:#4a6070;margin-top:3px;">${escapeHtml(t("driver_fields_table_hint", "Unchecked fields get no entity. Rows dimmed by a pattern can only be changed in the field above."))}</div>`;
+  }
 
   function renderEditDriverModal() {
     const em = state.editModal || {};
@@ -2892,6 +3024,12 @@
               <span id="edit-aes-key-count" style="font-size:11px;font-weight:700;min-width:40px;text-align:right;color:${cntColor};">${escapeHtml(cnt)}</span>
             </div>`;
             })()}
+            <label for="edit-meter-exclude-fields" style="margin-top:8px;">${escapeHtml(t("exclude_fields_label", "Fields to skip"))}</label>
+            <input id="edit-meter-exclude-fields" autocomplete="off" value="${escapeHtml(em.excludeFields || "")}"
+              placeholder="${escapeHtml(t("exclude_fields_placeholder", "e.g. consumption_at_history_*, history_*_date"))}"
+              oninput="window.__editModalExcludeSet(this.value)">
+            <div style="font-size:10px;color:#4a6070;margin-top:3px;">${escapeHtml(t("exclude_fields_hint", "Patterns for fields that get no Home Assistant entity. * matches any text; separate with commas. Removing a field also deletes its existing entity and its history."))}</div>
+            <div style="margin-top:8px;">${driverFieldsSection(em.driver, em.excludeFields, "edit")}</div>
             <div style="margin-top:12px;display:flex;gap:8px;align-items:center;">
               <button id="edit-driver-compare" class="btn" type="button" data-action="compare-driver" data-id="${escapeHtml(em.id || "")}"${editKeyPartial ? " disabled" : ""}>${escapeHtml(t("compare_btn", "Compare"))}</button>
               <span style="font-size:11px;color:#9eafba;">${escapeHtml(t("compare_hint", "Choose a driver above, enter the AES key if needed, then compare. Left column = saved/auto driver; right column = selected driver."))}</span>
@@ -3048,6 +3186,18 @@
                   </div>
                   <div style="font-size:10px;color:#4a6070;margin-top:3px;">${escapeHtml(t("no_aes_key_note", 'key: "" = no key'))} · zero-key: <span class="mono">0000…0000</span></div>
                   ${modal.aesRequired ? `<div style="font-size:11px;color:#f3c84b;margin-top:6px;">🔐 ${escapeHtml(t("add_aes_warning", "This candidate is encrypted — without the 32-hex AES key it will NOT decode (this is not a bug). You can add it now and enter the key later via the Driver… button. Ask your building manager, the utility company or the meter installer for the key."))}</div>` : ""}
+                </div>
+                <div class="field">
+                  <label for="meter-exclude-fields">
+                    ${escapeHtml(t("exclude_fields_label", "Fields to skip"))}
+                    <span style="font-size:10px;color:#607a88;font-weight:400;margin-left:6px;">${escapeHtml(t("exclude_fields_hint_short", "optional — leave empty to publish everything"))}</span>
+                  </label>
+                  <input id="meter-exclude-fields" name="exclude_fields" autocomplete="off"
+                    value="${escapeHtml(modal.excludeFields || "")}"
+                    placeholder="${escapeHtml(t("exclude_fields_placeholder", "e.g. consumption_at_history_*, history_*_date"))}"
+                    oninput="window.__modalExcludeSet(this.value)">
+                  <div style="font-size:10px;color:#4a6070;margin-top:3px;">${escapeHtml(t("exclude_fields_hint", "Patterns for fields that get no Home Assistant entity. * matches any text; separate with commas. Removing a field also deletes its existing entity and its history."))}</div>
+                  <div style="margin-top:8px;">${driverFieldsSection(modal.driver, modal.excludeFields, "add")}</div>
                 </div>
                 <div class="field">
                   <div style="display:flex;gap:8px;align-items:center;">
@@ -3241,10 +3391,37 @@
       return;
     }
 
+    if (action === "load-driver-fields") {
+      loadDriverFields(target.dataset.driver || "");
+      return;
+    }
+
+    if (action === "toggle-driver-field") {
+      const name = target.dataset.name || "";
+      if (!name) return;
+      if (target.dataset.scope === "edit") {
+        if (state.editModal) {
+          state.editModal.excludeFields = toggleExcludedName(state.editModal.excludeFields, name);
+        }
+      } else if (state.modal) {
+        state.modal.excludeFields = toggleExcludedName(state.modal.excludeFields, name);
+      }
+      render();
+      return;
+    }
+
     if (action === "open-edit-driver") {
       const id = target.dataset.id || "";
       if (!id) return;
-      state.editModal = {id, driver: target.dataset.driver || "auto"};
+      // Prefill the pattern from the saved options entry — the whole options
+      // payload is already in state, so no extra request is needed.
+      const savedMeter = ((state.data && state.data.options && state.data.options.meters) || [])
+        .find(m => m && normalizeMeterId(m.meter_id) === normalizeMeterId(id));
+      state.editModal = {
+        id,
+        driver: target.dataset.driver || "auto",
+        excludeFields: (savedMeter && savedMeter.exclude_fields) || "",
+      };
       if (state.drivers === null) {
         fetch("assets/drivers.json", {cache: "no-store"})
           .then(r => (r.ok ? r.json() : []))
@@ -3337,7 +3514,12 @@
       // leaves the modal (the backend would reject it anyway).
       if (key && key.length !== 32) return;
       try {
-        await postApi("update-meter", key ? {meter_id: id, driver, key} : {meter_id: id, driver});
+        // exclude_fields is always sent, empty included — that is how the
+        // pattern gets cleared. The key is only sent when set, because an
+        // empty key means "keep the configured one".
+        const updatePayload = {meter_id: id, driver, exclude_fields: String(em.excludeFields || "").trim()};
+        if (key) updatePayload.key = key;
+        await postApi("update-meter", updatePayload);
         state.editModal = null;
         triggerSoftReload(`${t("driver_changed_msg", "Driver changed.")} ${t("reloading_pipeline", "Applying meter changes…")}`);
       } catch (error) {

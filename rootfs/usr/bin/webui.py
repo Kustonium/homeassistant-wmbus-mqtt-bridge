@@ -11,6 +11,7 @@ Interactive Home Assistant add-on dashboard:
 """
 from __future__ import annotations
 
+import fnmatch
 import html
 import json
 import mimetypes
@@ -762,7 +763,95 @@ def update_options_for_search(expected: str, tolerance: str, enabled: bool = Tru
 
 
 
-def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str = "") -> tuple[bool, str]:
+# Field catalog per driver, from `wmbusmeters --listfields=<driver>`. The output
+# is one field per line: the name right-aligned in a column, two spaces, then the
+# description written by the driver author. The decoder binary is pinned by the
+# Dockerfile, so a driver's catalog cannot change while the container runs and a
+# process-lifetime cache is enough.
+DRIVER_FIELDS_CACHE: dict[str, list[dict]] = {}
+
+
+def driver_fields(driver: str) -> tuple[bool, list[dict], str]:
+    """Return (ok, [{"name":…, "description":…}], error) for one driver."""
+    driver = (driver or "").strip()
+    if not re.match(r"^[A-Za-z0-9_]+$", driver):
+        return False, [], f"Invalid driver: {driver}"
+    if driver in DRIVER_FIELDS_CACHE:
+        return True, DRIVER_FIELDS_CACHE[driver], ""
+    try:
+        proc = subprocess.run(
+            [WMBUSMETERS_BIN, f"--listfields={driver}"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except FileNotFoundError:
+        return False, [], "wmbusmeters binary not available"
+    except subprocess.TimeoutExpired:
+        return False, [], "wmbusmeters --listfields timed out"
+    fields: list[dict] = []
+    for line in (proc.stdout or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Name and description are separated by a run of spaces; a description
+        # may contain single spaces, so split on the first double space only.
+        parts = re.split(r"\s{2,}", stripped, maxsplit=1)
+        name = parts[0].strip()
+        if not name:
+            continue
+        fields.append({
+            "name": name,
+            "description": parts[1].strip() if len(parts) > 1 else "",
+        })
+    if not fields:
+        # An unknown driver prints nothing useful; do not cache that.
+        return False, [], (proc.stderr or "").strip() or f"No fields reported for driver {driver}"
+    DRIVER_FIELDS_CACHE[driver] = fields
+    return True, fields, ""
+
+
+# Glob patterns for exclude_fields. Field names are [a-z0-9_], the pattern
+# syntax adds * and ?, and the separators are commas/spaces. Anything else is
+# rejected rather than stored: the value ends up word-split in bridge.sh, and a
+# tidy charset keeps options.json readable and the matcher predictable.
+EXCLUDE_FIELDS_RE = re.compile(r"^[A-Za-z0-9_*?,.\- ]*$")
+
+
+def _clean_exclude_fields(value: str) -> tuple[bool, str, str]:
+    """Return (ok, cleaned, error). Empty means "publish every field".
+
+    Besides normalising separators, this drops entries that another entry
+    already covers: a plain field name is redundant next to a glob that matches
+    it. The field table writes exact names while a human writes globs, so the
+    two mix easily — and a name kept beside its glob is not just noise, it
+    outlives the glob. Removing `history_*_date` would otherwise leave
+    `history_reference_date` excluded on its own, which reads as the UI
+    ignoring the click. Globs are never dropped, including by wider globs:
+    losing a pattern someone typed is worse than keeping a redundant one.
+    """
+    tokens = (value or "").replace(",", " ").split()
+    cleaned = " ".join(tokens)
+    if not EXCLUDE_FIELDS_RE.match(cleaned):
+        return False, "", (
+            "Invalid exclude_fields — allowed: letters, digits, _ . - * ? "
+            "separated by commas or spaces."
+        )
+    globs = [t for t in tokens if "*" in t or "?" in t]
+    kept: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        low = token.lower()
+        if low in seen:
+            continue
+        is_glob = "*" in token or "?" in token
+        if not is_glob and any(fnmatch.fnmatchcase(low, g.lower()) for g in globs):
+            continue
+        seen.add(low)
+        kept.append(token)
+    return True, " ".join(kept), ""
+
+
+def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str = "",
+                         exclude_fields: str = "") -> tuple[bool, str]:
     """Add a meter entry to addon options via HA Supervisor API.
 
     Writing directly to /data/options.json does NOT persist across restarts —
@@ -816,6 +905,8 @@ def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str =
         "type_other": "",
         "key": key,
     }
+    if exclude_fields:
+        entry["exclude_fields"] = exclude_fields
     meters.append(entry)
     options["meters"] = meters
 
@@ -993,7 +1084,8 @@ def remove_meter_from_options(meter_id: str) -> tuple[bool, str]:
     return True, msg
 
 
-def update_meter_in_options(meter_id: str, driver: str, key: str | None = None) -> tuple[bool, str]:
+def update_meter_in_options(meter_id: str, driver: str, key: str | None = None,
+                            exclude_fields: str | None = None) -> tuple[bool, str]:
     """Change the driver (and optionally the AES key) of an existing meter.
 
     Same Supervisor-first persistence as add/remove_meter_from_options. The
@@ -1036,6 +1128,14 @@ def update_meter_in_options(meter_id: str, driver: str, key: str | None = None) 
     entry["type_other"] = ""
     if key:
         entry["key"] = key
+    # None means the caller did not touch the field; an empty string is an
+    # explicit "publish every field again", so the key is dropped rather than
+    # stored empty.
+    if exclude_fields is not None:
+        if exclude_fields:
+            entry["exclude_fields"] = exclude_fields
+        else:
+            entry.pop("exclude_fields", None)
     options["meters"] = meters
 
     token = os.environ.get("SUPERVISOR_TOKEN", "")
@@ -2582,7 +2682,7 @@ class Handler(BaseHTTPRequestHandler):
             '/api/search-control', '/api/restart-bridge', '/api/reload-pipeline',
             '/api/preview-candidate', '/api/cancel-preview',
             '/api/ignore', '/api/unignore', '/api/factory-reset',
-            '/api/compare-driver', '/api/save-config',
+            '/api/compare-driver', '/api/save-config', '/api/driver-fields',
         )
         if any(path.endswith(suffix) for suffix in api_suffixes):
             return path
@@ -2613,7 +2713,16 @@ class Handler(BaseHTTPRequestHandler):
             driver = (params.get('driver') or [''])[0].strip()
             # Empty/absent key keeps the currently configured key.
             key = (params.get('key') or [''])[0].strip()
-            ok, msg = update_meter_in_options(meter_id, driver, key or None)
+            # Absent parameter = leave the pattern alone (older front-end);
+            # present but empty = clear it.
+            if 'exclude_fields' in params:
+                ok_ex, exclude_fields, err = _clean_exclude_fields((params.get('exclude_fields') or [''])[0])
+                if not ok_ex:
+                    self._send_json(400, {"ok": False, "message": err})
+                    return
+            else:
+                exclude_fields = None
+            ok, msg = update_meter_in_options(meter_id, driver, key or None, exclude_fields)
             self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
             return
         if path.endswith('/api/factory-reset'):
@@ -2702,11 +2811,16 @@ class Handler(BaseHTTPRequestHandler):
             driver = (params.get('driver') or ['auto'])[0].strip()
             key = (params.get('key') or [''])[0].strip()
             meter_name = (params.get('meter_name') or [''])[0].strip()
+            ok_ex, exclude_fields, err = _clean_exclude_fields((params.get('exclude_fields') or [''])[0])
+            if not ok_ex:
+                self._send_json(400, {"ok": False, "message": err})
+                return
             # NB: add_meter_to_options already emits the appropriate
             # webui_add_event (ok / warn / error) with the most accurate
             # context — re-logging here would double-stamp status_events.tsv
             # in the same second.
-            ok, msg = add_meter_to_options(meter_id, driver, key, meter_name=meter_name)
+            ok, msg = add_meter_to_options(meter_id, driver, key, meter_name=meter_name,
+                                           exclude_fields=exclude_fields)
             # When a previewed candidate is added permanently, drop the
             # preview meter file so the LISTEN instance doesn't keep
             # decoding the same telegrams that DECODE now handles.
@@ -2832,6 +2946,12 @@ class Handler(BaseHTTPRequestHandler):
             meter_id = (params.get('meter_id') or [''])[0].strip()
             ok, payload = candidate_issue_report(meter_id)
             self._send_json(200 if ok else 404, payload)
+            return
+        if path.endswith('/api/driver-fields'):
+            driver = (params.get('driver') or [''])[0].strip()
+            ok, fields, err = driver_fields(driver)
+            self._send_json(200 if ok else 400,
+                            {"ok": ok, "driver": driver, "fields": fields, "message": err})
             return
         if path.endswith('/healthz'):
             self._send(200, b'ok\n', 'text/plain; charset=utf-8')

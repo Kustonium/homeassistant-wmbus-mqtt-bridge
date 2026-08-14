@@ -1,3 +1,109 @@
+## 1.5.46
+
+### Added
+- expose the driver's field description as an entity attribute (d12b909)
+- pick fields to publish from the driver's own field catalog (44dc591)
+- edit exclude_fields from the WebUI meter modals (5f2c452)
+- use the add-on icon as the WebUI brand mark (5fba20d)
+- let a meter exclude fields from Home Assistant Discovery (5dd37b7)
+- add the add-on logo shown above the name (b040350)
+- entities carry the driver's description of their field as a `Description`
+  attribute. `wmbusmeters --listfields=<driver>` prints one line per field with the
+  text its author wrote; the bridge loads that catalog once per driver — the
+  decoder binary is pinned, so it cannot change while the container runs — and
+  matches it against the decoded field name with a glob, because the catalog names
+  repeated fields with a placeholder (`consumption_at_history_{storage_counter-7counter}_m3`).
+  An entity has exactly one `json_attributes_topic`, already pointed at the state
+  topic so the whole decoded telegram reaches the attributes. The description is
+  therefore merged in through a `json_attributes_template`
+  (`dict(value_json, Description="…") | tojson`) rather than replacing that
+  pass-through — replacing it would have cost every other field. A field the
+  catalog does not describe keeps the plain pass-through with no template, and if
+  the decoder cannot be queried the descriptions are simply absent. Quotes and
+  backslashes are stripped from the text before it is embedded in the Jinja
+  literal. Requested on the forum alongside the field list.
+- the meter modals list every field the driver can report, with the description
+  wmbusmeters ships for it, and a checkbox per field. The catalog comes from
+  `wmbusmeters --listfields=<driver>` through a new `api/driver-fields` endpoint,
+  cached per driver for the life of the process because the decoder binary is
+  pinned. It covers fields the meter has not sent yet, which the entity list
+  cannot: entities exist only once a telegram carried the field.
+  Unchecking a field adds its name to `exclude_fields`; a field already covered by
+  a hand-written pattern is greyed out with its checkbox disabled, so the table
+  never rewrites a pattern someone typed. Templated names such as
+  `total_volume_subunit{subunit_counter}_m3` contribute the equivalent glob
+  (`total_volume_subunit*_m3`) — the braces are a placeholder for a repeated
+  field, not a literal name, and the backend validator rejects them.
+  Saving also drops entries another entry already covers: a plain field name is
+  redundant next to a glob that matches it, and mixing the two is the normal
+  outcome of clicking rows while a pattern is typed in the box. Keeping both is
+  not merely untidy — the name outlives the glob, so removing `history_*_date`
+  would leave `history_reference_date` excluded on its own and the click would
+  look ignored. Globs are never dropped, not even by wider globs: losing a
+  pattern someone wrote by hand is worse than storing a redundant one.
+- the add-on icon is now the WebUI brand mark. The sidebar drew a green square with
+  the letters `WB`, a placeholder from before the project had artwork. `icon.png` is
+  copied into the WebUI assets by the `Dockerfile` rather than duplicated under
+  `rootfs/`, so the tile in the add-on store and the mark in the panel stay the same
+  file. If the asset cannot be loaded the `WB` square comes back, so an older
+  container shows a brand mark instead of a broken image.
+- per-meter `exclude_fields`: glob patterns for decoded fields that should get no
+  Home Assistant entity, comma- or space-separated (e.g.
+  `consumption_at_history_*, history_*_date`). Empty publishes every field, which is
+  what every earlier version did, so an upgrade changes nothing on its own. Prompted
+  by a forum observation on the 1.5.45 behaviour: publishing every driver field is
+  right for most meters, but a driver like `evo868` reports twelve monthly history
+  readings plus twelve matching dates on every telegram, and a household with a
+  dozen such meters drowns in entities. One pattern now replaces twenty-four of
+  them. Excluding `status` also removes its problem `binary_sensor`, since a problem
+  flag without the status it reports on is worse than neither. An excluded field is
+  removed rather than merely skipped: the bridge publishes an empty retained config
+  for it once, so entities created before the pattern was added disappear instead of
+  lingering until they expire — with the consequence that the entity's recorder
+  history goes with it. The patterns are rebuilt by `refresh_meter_files()`, which
+  is also the soft-reload path, so editing a meter takes effect without restarting
+  the container. The patterns are entered in the WebUI, in the **Add meter** modal
+  and in **Driver…** for a meter that already exists, so the option lives next to
+  the meters it applies to; the add-on Configuration tab still works but needs a
+  restart, because Supervisor only writes `options.json` on add-on start.
+- add-on logo (`logo.png`, 1482x160). Home Assistant draws `logo.png` at the top of
+  the add-on page, above the name — with the file missing, the page showed the name
+  alone while add-ons like InfluxDB show their wordmark. Supervisor reads it from the
+  directory that holds `config.yaml`, the same place as `icon.png`. It is built from
+  the icon's own palette and motifs — navy panel, water-meter dial, wifi arcs —
+  rather than repeating the wordmark that the icon already contains. The panel is
+  opaque on purpose: a transparent logo with white lettering disappears on the light
+  Home Assistant theme.
+  The proportions follow the frontend rather than the ~250x100 the documentation
+  suggests. `supervisor-app-info.ts` renders the file with
+  `img.logo { max-width: 100%; max-height: 40px }`, so height is the binding limit
+  and the only thing that decides how large the name looks is the share of the file's
+  height taken by the lettering. For reference the InfluxDB add-on logo is 300x69
+  with content touching both edges, its wordmark filling 74% of the height — about
+  29 px on screen. Two earlier attempts here spent that height on padding and a
+  second text line and drew roughly 10 px. The type size is now fitted so the cap
+  height is 60% of the canvas, giving about 24 px on screen; the file is wide
+  (9.4:1) because the name is 17 characters against InfluxDB's 8. No behaviour
+  change.
+
+### Fixed
+- parse the field catalog without a GNU sed extension (8decf21)
+- drop exclude_fields entries another entry already covers (bb3adef)
+- give the logo mark clearance inside the panel (df84b0e)
+- fit the logo wordmark to the height the frontend allows (e5cd306)
+- size the logo for how the add-on page renders it (d05dd2b)
+- the `Description` attribute never appeared. The catalog parser split
+  `--listfields` output with `sed -E 's/[[:space:]]{2,}/	/'`, which relies on GNU
+  sed turning `	` in the replacement into a tab. The add-on image is Alpine and
+  ships busybox sed, so the field names parsed into nonsense, nothing matched, and
+  every entity silently kept the plain pass-through. Parsing is now done with bash
+  parameter expansion, which depends on no sed dialect at all. The gap was in the
+  tests as much as in the code: they injected `FIELD_CATALOG` directly and never
+  ran `load_field_catalog`, so the only untested step was the one that broke. A
+  case now feeds a stub reproducing the real column layout — padded names,
+  descriptions with single spaces, a templated name and a field with no
+  description — through the parser and the glob lookup.
+
 ## 1.5.45
 
 ### Added

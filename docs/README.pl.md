@@ -303,10 +303,21 @@ przez driver i dzieli je według tego, co mierzą:
 Encji nie dostaje wyłącznie tożsamość licznika (`id`, `name`, `meter`, `media`,
 `timestamp`, `rssi`, `lqi`) — jest już w nazwie urządzenia i w atrybutach encji.
 
+Każda encja niesie też atrybut `Description` — opis pola napisany przez autora
+drivera, pobrany z `wmbusmeters --listfields`. Stoi obok pól zdekodowanego
+telegramu w atrybutach encji, więc nic z tego, co było wcześniej, nie ginie.
+
 Home Assistant czyta `enabled_by_default` tylko przy pierwszym dodaniu encji,
 więc aktualizacja nigdy nie wyłącza tego, co już masz. `entity_category` jest
 natomiast stosowana przy każdej aktualizacji konfiguracji, więc pola liczbowe
 bez klasy założone przez starszą wersję przenoszą się do sekcji *Diagnostyka*.
+
+Ta sama zasada działa w drugą stronę: encja utworzona jako wyłączona pozostanie
+wyłączona, dopóki nie włączysz jej na stronie urządzenia — nawet jeśli nowsza
+wersja dodatku publikowałaby ją już jako zwykły sensor. Skasowanie urządzenia
+nic tu nie da, bo Home Assistant przywraca usunięte encje razem ze stanem
+włączenia, gdy tylko ten sam licznik zostanie ponownie wykryty; trzyma ten wpis
+przez 30 dni. Włącz ją raz ręcznie, a zostanie włączona.
 
 ### Starszy tryb SEARCH
 
@@ -334,6 +345,7 @@ bez klasy założone przez starszą wersję przenoszą się do sekcji *Diagnosty
 | `type` | str | tak | **Nazwa sterownika wmbusmeters** (np. `hydrodigit`, `amiplus`, `izarv2`) **lub `auto`/`other`**. Dowolny string — wmbusmeters waliduje sterownik przy dekodowaniu (świadomie nie enum, żeby nowe sterowniki nie były odrzucane). |
 | `type_other` | str? | gdy `type=other` | Niestandardowa nazwa sterownika |
 | `key` | str? | gdy szyfrowany | 32-znakowy klucz AES (HEX) |
+| `exclude_fields` | str? | nie | Wzorce (globy) pól, które mają **nie** dostać encji w Home Assistant — np. `consumption_at_history_*, history_*_date`. Oddzielane przecinkami lub spacjami; puste publikuje wszystkie pola. |
 
 Lista driverów w WebUI jest generowana z przypiętego buildu `wmbusmeters` i jego
 źródeł XMQ. Korzystaj z tego katalogu zamiast ręcznej listy w dokumentacji.

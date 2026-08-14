@@ -106,6 +106,14 @@ button {
   width: 42px;
   height: 42px;
   border-radius: 8px;
+  object-fit: contain;
+  display: block;
+}
+
+/* Fallback when assets/icon.png cannot be loaded — an image element that fails
+   is swapped for this div, so the sidebar keeps a brand mark instead of a
+   broken-image glyph. */
+.brand-mark-text {
   display: grid;
   place-items: center;
   background: #0d8f80;
