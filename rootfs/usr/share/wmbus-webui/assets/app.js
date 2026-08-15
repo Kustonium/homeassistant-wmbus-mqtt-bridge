@@ -199,7 +199,7 @@
   function mediaIcon(typeOrMedia, driver) {
     const mc = mediaClass(typeOrMedia, driver);
     const icon  = {electricity:"⚡", heat:"🔥", warm_water:"🚱", water:"🚰", other:"·"}[mc] || "·";
-    const color = {electricity:"#60b4f0", heat:"#f07840", warm_water:"#f09040", water:"#40c0e0", other:"#607a88"}[mc] || "#607a88";
+    const color = {electricity:"#60b4f0", heat:"#f07840", warm_water:"#f09040", water:"#40c0e0", other:"var(--muted)"}[mc] || "var(--muted)";
     return {icon, color, mc};
   }
 
@@ -325,11 +325,11 @@
         <span style="color:#6f8796;">${escapeHtml(part.label)}</span>
         <strong style="color:#cfe9f7;font-weight:700;">${escapeHtml(formatFlowValue(part.value))}</strong>
       </span>
-    `).join(`<span style="color:#4a6070;">+</span>`);
+    `).join(`<span style="color:var(--muted);">+</span>`);
     return `
       <div class="mono" style="margin-top:5px;display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:10px;line-height:1.35;">
         ${chips}
-        <span style="color:#4a6070;">=</span>
+        <span style="color:var(--muted);">=</span>
         <span style="display:inline-flex;align-items:center;gap:3px;padding:2px 5px;border:1px solid #1c6b50;border-radius:4px;background:#082017;color:#4df08d;font-weight:700;">
           <span>${escapeHtml(totalLabel)}</span>
           ${totalValue ? `<strong style="color:#d8ffe8;font-weight:700;">${escapeHtml(totalValue)}</strong>` : ""}
@@ -371,7 +371,7 @@
     return `
       <span style="font-weight:700;color:${valueColor};">${escapeHtml(valueStr)}</span>${unit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(unit)}</span>` : ""}
       ${tariffFlowHtml(row)}
-      ${row.value_key ? `<div class="mono" style="font-size:10px;color:#4a6070;">${escapeHtml(row.value_key)}</div>` : ""}
+      ${row.value_key ? `<div class="mono" style="font-size:10px;color:var(--muted);">${escapeHtml(row.value_key)}</div>` : ""}
       ${keyProblemPill(String(row.key_problem || ""))}
     `;
   }
@@ -399,7 +399,7 @@
   // honest-witness reports it neutrally instead of crying wolf — which also
   // removes the night/weekend false alarm without hardcoding quiet hours.
   function meterRhythmStatus(ageS, avgIntervalS) {
-    if (!isFinite(ageS)) return {label: t("rhythm_never", "no telegram yet"), color: "#607a88"};
+    if (!isFinite(ageS)) return {label: t("rhythm_never", "no telegram yet"), color: "var(--muted)"};
     let iv = Number(avgIntervalS) > 0 ? Number(avgIntervalS) : 300;
     if (iv < 8) iv = 8;  // floor: avoid an absurdly tight threshold
     const ratio = ageS / iv;
@@ -598,22 +598,22 @@
       ? t("pending_preview_confirmed", "Added to configuration — waiting for first official reading")
       : t("pending_waiting_first_official", "Waiting for first telegram");
     const previewCell = previewVal
-      ? `<span style="font-weight:700;color:#4df08d;">${escapeHtml(previewVal)}</span>${previewUnit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(previewUnit)}</span>` : ""}<div style="font-size:10px;color:#8ea4b1;">${escapeHtml(t("cached_preview_value", "Cached preview value"))}</div>${previewKey ? `<div class="mono" style="font-size:10px;color:#4a6070;">${escapeHtml(previewKey)}</div>` : ""}`
+      ? `<span style="font-weight:700;color:#4df08d;">${escapeHtml(previewVal)}</span>${previewUnit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(previewUnit)}</span>` : ""}<div style="font-size:10px;color:#8ea4b1;">${escapeHtml(t("cached_preview_value", "Cached preview value"))}</div>${previewKey ? `<div class="mono" style="font-size:10px;color:var(--muted);">${escapeHtml(previewKey)}</div>` : ""}`
       : previewState === "decoded_without_numeric_value"
         ? `<span style="font-size:11px;color:#9eafba;">${escapeHtml(t("preview_no_value", "no value in telegram"))}</span><div style="font-size:10px;color:#8ea4b1;">${escapeHtml(t("cached_preview_value", "Cached preview value"))}</div>`
-        : `<span style="color:#4a6070;">—</span>`;
+        : `<span style="color:var(--muted);">—</span>`;
 
     return `
       <tr>
         <td><strong>${escapeHtml(mid)}</strong><div style="font-size:10px;color:#8ea4b1;margin-top:2px;">${escapeHtml(stateText)}</div></td>
         <td style="color:#9eafba;font-size:12px;">${escapeHtml(driver)}</td>
-        <td>${mfrCompact ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>` : `<span style="color:#4a6070;">—</span>`}</td>
+        <td>${mfrCompact ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>` : `<span style="color:var(--muted);">—</span>`}</td>
         <td>${encBadge(effectiveEnc, note)}</td>
         <td>${previewCell}</td>
         <td>${fmtTime(row.last_seen)}</td>
         <td>${escapeHtml(String(row.seen_15m || 0))}</td>
         <td>${escapeHtml(String(row.seen_60m || 0))}</td>
-        <td style="color:#607a88;font-size:12px;">${escapeHtml(fmtInterval(row.avg_interval_s))}</td>
+        <td style="color:var(--muted);font-size:12px;">${escapeHtml(fmtInterval(row.avg_interval_s))}</td>
         <td>${hasKey
           ? `<span class="pill ok">${escapeHtml(t("aes_key_set", "AES key set"))}</span>`
           : `<span class="pill muted">${escapeHtml(t("no_key", "No key"))}</span>`}
@@ -994,7 +994,7 @@
     // Rate source badge
     const rateSource = model.rate_source || "bridge";
     const srcIcon  = rateSource === "esp" ? "📡" : "⚙";
-    const srcColor = rateSource === "esp" ? "#00bcd4" : "#607a88";
+    const srcColor = rateSource === "esp" ? "#00bcd4" : "var(--muted)";
     // In decode mode raw_per_min is computed from meters TSV (decoded telegrams),
     // not from candidates TSV (which is stale). Label reflects this.
     const inDecodeMode = Number(model.meter_count || 0) > 0;
@@ -1588,7 +1588,7 @@
   function sparkline15min(history) {
     const rows = asArray(history);
     if (!rows.length) {
-      return `<div style="font-size:11px;color:#607a88;">${escapeHtml(t("sparkline_no_data", "No data yet — wait for the first minute boundary"))}</div>`;
+      return `<div style="font-size:11px;color:var(--muted);">${escapeHtml(t("sparkline_no_data", "No data yet — wait for the first minute boundary"))}</div>`;
     }
     const max = Math.max(1, ...rows.map(r => Number(r.count || 0)));
     const W = 280, H = 56, gap = 2;
@@ -1604,7 +1604,7 @@
       <svg class="sparkline" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;max-width:${W}px;height:${H}px;display:block;">
         ${bars}
       </svg>
-      <div style="display:flex;justify-content:space-between;font-size:10px;color:#607a88;margin-top:2px;">
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:2px;">
         <span>−${rows.length} min</span>
         <span>${escapeHtml(t("sparkline_axis_now", "now"))}</span>
       </div>
@@ -1642,7 +1642,7 @@
             ${escapeHtml(t("rate_session_avg_label", "session avg"))}: <strong style="color:#cbd9e1;">${escapeHtml(String(avg))}</strong> ${escapeHtml(t("rate_tel_min", "tel / min"))}
           </div>
           <div style="font-size:10px;color:#4d6875;margin-top:4px;">
-            ${escapeHtml(t("rate_source_label", "Rate source"))}: <span style="color:${source === "esp" ? "#00bcd4" : "#607a88"};font-weight:700;">${srcIcon} ${escapeHtml(source)}</span>
+            ${escapeHtml(t("rate_source_label", "Rate source"))}: <span style="color:${source === "esp" ? "#00bcd4" : "var(--muted)"};font-weight:700;">${srcIcon} ${escapeHtml(source)}</span>
           </div>
         </div>
       </div>
@@ -1772,7 +1772,7 @@
     const excludeText = (savedMeter && savedMeter.exclude_fields) || "";
     let inner;
     if (!fields || typeof fields !== "object") {
-      inner = `<span style="color:#607a88;">${escapeHtml(t("published_fields_none", "No decoded telegram this session yet."))}</span>`;
+      inner = `<span style="color:var(--muted);">${escapeHtml(t("published_fields_none", "No decoded telegram this session yet."))}</span>`;
     } else {
       const entries = Object.entries(fields)
         .filter(([k]) => k !== "_")
@@ -1792,7 +1792,7 @@
               const byGlob = kind === "glob";
               let cell;
               if (meta) {
-                cell = `<span style="color:#4a6070;" title="${escapeHtml(t("published_fields_meta_hint", "Meter identity — always in the attributes, never its own entity."))}">—</span>`;
+                cell = `<span style="color:var(--muted);" title="${escapeHtml(t("published_fields_meta_hint", "Meter identity — always in the attributes, never its own entity."))}">—</span>`;
               } else {
                 cell = `<input type="checkbox" ${kind === "" ? "checked" : ""} ${byGlob ? "disabled" : ""}
                   data-action="toggle-meter-field" data-id="${escapeHtml(meterId)}"
@@ -1802,12 +1802,12 @@
               return `<tr${byGlob ? ' style="opacity:0.55;"' : ""}>
                 <td style="text-align:center;">${cell}</td>
                 <td class="mono" style="font-size:11px;">${escapeHtml(k)}</td>
-                <td class="mono" style="font-size:11px;">${escapeHtml(String(v))}${unit ? ` <span style="color:#607a88;">${escapeHtml(unit)}</span>` : ""}</td>
+                <td class="mono" style="font-size:11px;">${escapeHtml(String(v))}${unit ? ` <span style="color:var(--muted);">${escapeHtml(unit)}</span>` : ""}</td>
               </tr>`;
             }).join("")}
           </tbody>
         </table>
-        <div style="font-size:10px;color:#4a6070;margin-top:4px;">${escapeHtml(t("published_fields_toggle_hint", "Unchecking removes the entity and its recorded history. Rows dimmed by a pattern are changed in the meter's Driver… dialog."))}</div>`;
+        <div style="font-size:10px;color:var(--muted);margin-top:4px;">${escapeHtml(t("published_fields_toggle_hint", "Unchecking removes the entity and its recorded history. Rows dimmed by a pattern are changed in the meter's Driver… dialog."))}</div>`;
     }
     return `
       <tr><td colspan="${colspan}" style="background:#0b141b;border-top:1px solid #1d2f3c;padding:10px 14px;">
@@ -1850,7 +1850,7 @@
                 const mfrCompact = compactManufacturer(mfrRaw);
                 const mfrCell    = mfrCompact
                   ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>`
-                  : `<span style="color:#4a6070;">—</span>`;
+                  : `<span style="color:var(--muted);">—</span>`;
                 return `
                   <tr>
                     <td><strong>${escapeHtml(id)}</strong>${aesLockBadge(row)}</td>
@@ -1864,7 +1864,7 @@
                     <td style="white-space:nowrap;">
                       <span style="color:${statusColor};font-size:11px;font-weight:600;">${escapeHtml(statusLabel)}</span>
                       <span style="margin-left:5px;">${signalBars(seen15m)}</span>
-                      <div style="font-size:10px;color:#607a88;">${escapeHtml(fmtInterval(row.avg_interval_s))}</div>
+                      <div style="font-size:10px;color:var(--muted);">${escapeHtml(fmtInterval(row.avg_interval_s))}</div>
                       ${espReceptionBadges(row)}
                     </td>
                     ${
@@ -1965,19 +1965,19 @@
                                       : enc;
                 const aesRequired   = effectiveEnc === "encrypted" || effectiveEnc === "aes_required" || effectiveEnc === "aes";
                 const previewCell   = previewVal
-                  ? `<span style="font-weight:700;color:#4df08d;">${escapeHtml(previewVal)}</span>${previewUnit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(previewUnit)}</span>` : ""}${previewKey ? `<div class="mono" style="font-size:10px;color:#4a6070;">${escapeHtml(previewKey)}</div>` : ""}`
+                  ? `<span style="font-weight:700;color:#4df08d;">${escapeHtml(previewVal)}</span>${previewUnit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(previewUnit)}</span>` : ""}${previewKey ? `<div class="mono" style="font-size:10px;color:var(--muted);">${escapeHtml(previewKey)}</div>` : ""}`
                   : previewState === "decoded_without_numeric_value"
                       ? `<span style="font-size:11px;color:#9eafba;">${escapeHtml(t("preview_no_value", "no value in telegram"))}</span>`
                   : previewState === "no_decode_result"
-                      ? `<span style="font-size:11px;color:#607a88;">${escapeHtml(t("preview_no_decode_result", "no decode result"))}</span>`
+                      ? `<span style="font-size:11px;color:var(--muted);">${escapeHtml(t("preview_no_decode_result", "no decode result"))}</span>`
                   : (!aesRequired
                       ? `<span style="font-size:11px;color:#f3c84b;">${escapeHtml(t("preview_pending", "decoding…"))}</span>`
-                      : `<span style="color:#4a6070;">—</span>`);
+                      : `<span style="color:var(--muted);">—</span>`);
                 const mfrRaw     = String(row.manufacturer || "").trim();
                 const mfrCompact = compactManufacturer(mfrRaw);
                 const mfrCell    = mfrCompact
                   ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>`
-                  : `<span style="color:#4a6070;">—</span>`;
+                  : `<span style="color:var(--muted);">—</span>`;
                 return groupDivider(_arr[_i - 1], row) + `
                   <tr data-value="${escapeHtml(previewVal)}">
                     <td><strong>${escapeHtml(id)}</strong></td>
@@ -1990,7 +1990,7 @@
                     <td>${fmtTime(row.last_seen)}</td>
                     <td>${escapeHtml(String(seen15mAdj))}</td>
                     <td>${escapeHtml(String(seen60mAdj))}</td>
-                    <td style="color:#607a88;font-size:12px;">${escapeHtml(fmtInterval(row.avg_interval_s))}${espReceptionBadges(row)}</td>
+                    <td style="color:var(--muted);font-size:12px;">${escapeHtml(fmtInterval(row.avg_interval_s))}${espReceptionBadges(row)}</td>
                     ${
                       withActions
                         ? `<td><div class="actions">
@@ -2024,7 +2024,7 @@
           </h3>
           <span>${rows.length}</span>
         </div>
-        <p style="font-size:11px;color:#607a88;margin:0 0 10px;">${escapeHtml(sectionText)}</p>
+        <p style="font-size:11px;color:var(--muted);margin:0 0 10px;">${escapeHtml(sectionText)}</p>
         <div class="table-wrap">
           <table>
             <thead>
@@ -2081,7 +2081,7 @@
           <input id="discover-search-value" type="text" inputmode="decimal" placeholder="e.g. 23.91"
             style="background:#0a1217;border:1px solid #2a4555;color:#e8f1f8;border-radius:4px;padding:5px 8px;font-size:12px;width:120px;font-family:monospace;"
             oninput="window.__discoverFilterByValue && window.__discoverFilterByValue()">
-          <span style="font-size:12px;color:#607a88;">±</span>
+          <span style="font-size:12px;color:var(--muted);">±</span>
           <input id="discover-search-tolerance" type="text" inputmode="decimal" value="0.05"
             style="background:#0a1217;border:1px solid #2a4555;color:#e8f1f8;border-radius:4px;padding:5px 8px;font-size:12px;width:70px;font-family:monospace;"
             oninput="window.__discoverFilterByValue && window.__discoverFilterByValue()">
@@ -2104,11 +2104,11 @@
           <h2>${escapeHtml(t("configured_meters_panel_title", "Configured meters on air"))}</h2>
           <span id="discover-configured-count" data-default="${rows.length}">${rows.length}</span>
         </div>
-        <p style="font-size:11px;color:#607a88;margin:0 0 10px;">${escapeHtml(t("configured_meters_panel_sub", "These IDs are already in your options.json — the decode instance (primary wmbusmeters) keeps their reception stats. The 15m/60m counters start fresh when a meter is added."))}</p>
+        <p style="font-size:11px;color:var(--muted);margin:0 0 10px;">${escapeHtml(t("configured_meters_panel_sub", "These IDs are already in your options.json — the decode instance (primary wmbusmeters) keeps their reception stats. The 15m/60m counters start fresh when a meter is added."))}</p>
         <div style="display:flex;align-items:center;gap:10px;margin:0 0 10px;flex-wrap:wrap;">
           <button class="btn danger" type="button" data-action="remove-selected-meters" ${selCount ? "" : "disabled"}
             style="${selCount ? "" : "opacity:.5;cursor:not-allowed;"}white-space:nowrap;">🗑 ${escapeHtml(t("remove_selected", "Remove selected"))}${selCount ? ` (${selCount})` : ""}</button>
-          <span style="font-size:11px;color:#607a88;">${escapeHtml(t("remove_selected_hint", "Tick the meters you want to remove from the configuration."))}</span>
+          <span style="font-size:11px;color:var(--muted);">${escapeHtml(t("remove_selected_hint", "Tick the meters you want to remove from the configuration."))}</span>
         </div>
         <div class="table-wrap">
           <table>
@@ -2149,7 +2149,7 @@
                 const mfrCompact = compactManufacturer(mfrRaw);
                 const mfrCell    = mfrCompact
                   ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>`
-                  : `<span style="color:#4a6070;">—</span>`;
+                  : `<span style="color:var(--muted);">—</span>`;
                 return `
                   <tr data-value="${escapeHtml(dataVal)}">
                     <td style="text-align:center;"><input type="checkbox" data-action="toggle-select-meter" data-id="${escapeHtml(id)}" ${state.selectedRemoval.has(id) ? "checked" : ""} style="cursor:pointer;"></td>
@@ -2164,7 +2164,7 @@
                     <td>${fmtTime(row.last_seen)}</td>
                     <td>${escapeHtml(String(seen15mAdj))}</td>
                     <td>${escapeHtml(String(seen60mAdj))}</td>
-                    <td style="color:#607a88;font-size:12px;">${escapeHtml(fmtInterval(row.avg_interval_s))}${espReceptionBadges(row)}</td>
+                    <td style="color:var(--muted);font-size:12px;">${escapeHtml(fmtInterval(row.avg_interval_s))}${espReceptionBadges(row)}</td>
                     <td><div class="actions">
                       ${row.preview_active === "true" ? `<button class="btn" data-action="cancel-preview" data-id="${escapeHtml(id)}">${escapeHtml(t("cancel_preview", "Cancel preview"))}</button>` : ""}
                       <button class="btn" data-action="open-edit-driver" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(row.driver || "auto")}">${escapeHtml(t("change_driver_btn", "Driver…"))}</button>
@@ -2415,7 +2415,7 @@
           <tbody>
             ${visibleRows.map(row => {
               const evtype     = row.evtype || "unknown";
-              const color      = ESP_COLORS[evtype] || "#607a88";
+              const color      = ESP_COLORS[evtype] || "var(--muted)";
               const icon       = ESP_ICONS[evtype]  || "·";
               const epoch      = Number(row.epoch || 0);
               const timeStr    = epoch ? new Date(epoch * 1000).toLocaleString() : "-";
@@ -2745,7 +2745,7 @@
           <pre class="mono" style="max-height:30vh;overflow:auto;white-space:pre-wrap;word-break:break-all;background:#0b141b;border:1px solid #1d2f3c;border-radius:6px;padding:8px;font-size:10px;">${escapeHtml(m.sample)}</pre>
         </details>`).join("") : "";
       body = `${checks}${samples}
-        <p style="font-size:11px;color:#607a88;margin:10px 0 0;">${escapeHtml(t("doctor_rediscover_hint", "Force re-discovery clears the discovery cache (pipeline soft reload); configs republish as each meter's next telegram arrives."))}</p>`;
+        <p style="font-size:11px;color:var(--muted);margin:10px 0 0;">${escapeHtml(t("doctor_rediscover_hint", "Force re-discovery clears the discovery cache (pipeline soft reload); configs republish as each meter's next telegram arrives."))}</p>`;
     }
     return `
       <div class="modal-backdrop">
@@ -2840,7 +2840,7 @@
         <input id="${customId}" value="${escapeHtml(customVal)}" oninput="${customJs}" placeholder="${escapeHtml(t("driver_custom_placeholder", "driver name (letters, digits, _)"))}">
       </div>
       <input type="hidden" id="${hiddenId}"${hiddenName ? ` name="${hiddenName}"` : ""} value="${escapeHtml(hiddenVal)}">
-      ${state.drivers === null ? `<div style="font-size:10px;color:#607a88;margin-top:4px;">${escapeHtml(t("webui_loading", "Loading…"))}</div>` : ""}`;
+      ${state.drivers === null ? `<div style="font-size:10px;color:var(--muted);margin-top:4px;">${escapeHtml(t("webui_loading", "Loading…"))}</div>` : ""}`;
   }
 
   // State-side sink for driverPickerHtml (see comment there) and the
@@ -2946,6 +2946,20 @@
   window.__editModalExcludeSet = function (value) {
     if (state.editModal) state.editModal.excludeFields = String(value == null ? "" : value);
   };
+  // Same live-state treatment for the formulas: an SSE-driven re-render mid-typing
+  // must not throw the half-written formula away.
+  window.__modalCalcSet = function (value) {
+    if (state.modal) state.modal.calculatedFields = String(value == null ? "" : value);
+  };
+  window.__editModalCalcSet = function (value) {
+    if (state.editModal) state.editModal.calculatedFields = String(value == null ? "" : value);
+  };
+  window.__modalStaticSet = function (value) {
+    if (state.modal) state.modal.staticFields = String(value == null ? "" : value);
+  };
+  window.__editModalStaticSet = function (value) {
+    if (state.editModal) state.editModal.staticFields = String(value == null ? "" : value);
+  };
 
   // Catalog of every field a driver can report, from wmbusmeters --listfields.
   // It is the driver's own list, so it also covers fields this meter has not
@@ -2969,6 +2983,37 @@
         state.driverFields[key] = {loading: false, fields: [], error: String(error.message || error)};
         render();
       });
+  }
+
+
+  // Preset chips for the two free-text field options. The key before "=" is the
+  // name the field gets in Home Assistant, so it cannot be guessed for the user
+  // - but it can be offered. A click appends the template and puts the caret
+  // after it, which leaves exactly the value to type.
+  //
+  // The calculated presets are whole formulas rather than bare names: the
+  // arithmetic is unit-aware, so a starting point that already balances its
+  // units teaches more than an empty "name=" would. Field names differ per
+  // driver, and the driver field table below the input lists the real ones.
+  const FIELD_PRESETS = {
+    static: ["location=", "apartment=", "floor=", "riser="],
+    calc: [
+      "difftemp_c=flow_temperature_c - return_temperature_c",
+      "net_m3=total_m3 - backflow_m3",
+      "half_m3=total_m3 / 2 counter",
+    ],
+  };
+
+  function presetRow(kind, scope) {
+    const chips = (FIELD_PRESETS[kind] || []).map(text => `
+      <button class="btn" type="button" style="padding:2px 8px;font-size:11px;"
+        data-action="append-field-preset" data-kind="${escapeHtml(kind)}"
+        data-scope="${escapeHtml(scope)}" data-text="${escapeHtml(text)}"
+        title="${escapeHtml(text)}">+ ${escapeHtml(text.split("=")[0])}</button>`).join("");
+    return `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;align-items:center;">
+      <span style="font-size:10px;color:var(--muted);">${escapeHtml(t("field_presets_hint", "Templates — click to insert:"))}</span>
+      ${chips}
+    </div>`;
   }
 
   function driverFieldsSection(driver, excludeText, scope) {
@@ -3027,7 +3072,7 @@
       <div style="max-height:260px;overflow:auto;border:1px solid #24333d;border-radius:6px;">
         <table style="width:100%;border-collapse:collapse;font-size:11px;">${rows}</table>
       </div>
-      <div style="font-size:10px;color:#4a6070;margin-top:3px;">${escapeHtml(t("driver_fields_table_hint", "Unchecked fields get no entity. Rows dimmed by a pattern can only be changed in the field above."))}</div>`;
+      <div style="font-size:10px;color:var(--muted);margin-top:3px;">${escapeHtml(t("driver_fields_table_hint", "Unchecked fields get no entity. Rows dimmed by a pattern can only be changed in the field above."))}</div>`;
   }
 
   function renderEditDriverModal() {
@@ -3068,7 +3113,19 @@
             <input id="edit-meter-exclude-fields" autocomplete="off" value="${escapeHtml(em.excludeFields || "")}"
               placeholder="${escapeHtml(t("exclude_fields_placeholder", "e.g. consumption_at_history_*, history_*_date"))}"
               oninput="window.__editModalExcludeSet(this.value)">
-            <div style="font-size:10px;color:#4a6070;margin-top:3px;">${escapeHtml(t("exclude_fields_hint", "Patterns for fields that get no Home Assistant entity. * matches any text; separate with commas. Removing a field also deletes its existing entity and its history."))}</div>
+            <div style="font-size:10px;color:var(--muted);margin-top:3px;">${escapeHtml(t("exclude_fields_hint", "Patterns for fields that get no Home Assistant entity. * matches any text; separate with commas. Removing a field also deletes its existing entity and its history."))}</div>
+            <label for="edit-meter-calculated-fields" style="margin-top:8px;">${escapeHtml(t("calculated_fields_label", "Calculated fields"))}</label>
+            <input id="edit-meter-calculated-fields" autocomplete="off" value="${escapeHtml(em.calculatedFields || "")}"
+              placeholder="${escapeHtml(t("calculated_fields_placeholder", "e.g. difftemp_c=flow_temperature_c - return_temperature_c"))}"
+              oninput="window.__editModalCalcSet(this.value)">
+            ${presetRow("calc", "edit")}
+            <div style="font-size:10px;color:var(--muted);margin-top:3px;">${escapeHtml(t("calculated_fields_hint", "wmbusmeters computes these from the telegram and they become entities like any other field. One name=formula per entry, separated by semicolons. The arithmetic is unit-aware: total_m3 / 2 counter works, total_m3 * 2 does not."))}</div>
+            <label for="edit-meter-static-fields" style="margin-top:8px;">${escapeHtml(t("static_fields_label", "Constant fields"))}</label>
+            <input id="edit-meter-static-fields" autocomplete="off" value="${escapeHtml(em.staticFields || "")}"
+              placeholder="${escapeHtml(t("static_fields_placeholder", "e.g. location=kitchen; apartment=12"))}"
+              oninput="window.__editModalStaticSet(this.value)">
+            ${presetRow("static", "edit")}
+            <div style="font-size:10px;color:var(--muted);margin-top:3px;">${escapeHtml(t("static_fields_hint", "Fixed values attached to this meter, one name=value per entry, separated by semicolons. The decoder copies them into the telegram as text, so they arrive as attributes and as diagnostic entities - a label, not a measurement."))}</div>
             <div style="margin-top:8px;">${driverFieldsSection(em.driver, em.excludeFields, "edit")}</div>
             <div style="margin-top:12px;display:flex;gap:8px;align-items:center;">
               <button id="edit-driver-compare" class="btn" type="button" data-action="compare-driver" data-id="${escapeHtml(em.id || "")}"${editKeyPartial ? " disabled" : ""}>${escapeHtml(t("compare_btn", "Compare"))}</button>
@@ -3215,7 +3272,7 @@
                 <div class="field">
                   <label for="meter-key">
                     ${escapeHtml(t("webui_aes_key", "AES key"))}
-                    <span style="font-size:10px;color:#607a88;font-weight:400;margin-left:6px;">${escapeHtml(t("key_hint_short", "32 hex chars, or leave empty"))}</span>
+                    <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:6px;">${escapeHtml(t("key_hint_short", "32 hex chars, or leave empty"))}</span>
                   </label>
                   <div style="display:flex;gap:8px;align-items:center;">
                     <input id="meter-key" name="key" autocomplete="off" value="${escapeHtml(modalKey)}" maxlength="32"
@@ -3224,19 +3281,39 @@
                       oninput="${escapeHtml(keyValidateJs)}">
                     <span id="aes-key-count" style="font-size:11px;font-weight:700;min-width:40px;text-align:right;color:${modalKeyCountColor};">${escapeHtml(modalKeyCount)}</span>
                   </div>
-                  <div style="font-size:10px;color:#4a6070;margin-top:3px;">${escapeHtml(t("no_aes_key_note", 'key: "" = no key'))} · zero-key: <span class="mono">0000…0000</span></div>
+                  <div style="font-size:10px;color:var(--muted);margin-top:3px;">${escapeHtml(t("no_aes_key_note", 'key: "" = no key'))} · zero-key: <span class="mono">0000…0000</span></div>
                   ${modal.aesRequired ? `<div style="font-size:11px;color:#f3c84b;margin-top:6px;">🔐 ${escapeHtml(t("add_aes_warning", "This candidate is encrypted — without the 32-hex AES key it will NOT decode (this is not a bug). You can add it now and enter the key later via the Driver… button. Ask your building manager, the utility company or the meter installer for the key."))}</div>` : ""}
                 </div>
                 <div class="field">
                   <label for="meter-exclude-fields">
                     ${escapeHtml(t("exclude_fields_label", "Fields to skip"))}
-                    <span style="font-size:10px;color:#607a88;font-weight:400;margin-left:6px;">${escapeHtml(t("exclude_fields_hint_short", "optional — leave empty to publish everything"))}</span>
+                    <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:6px;">${escapeHtml(t("exclude_fields_hint_short", "optional — leave empty to publish everything"))}</span>
                   </label>
                   <input id="meter-exclude-fields" name="exclude_fields" autocomplete="off"
                     value="${escapeHtml(modal.excludeFields || "")}"
                     placeholder="${escapeHtml(t("exclude_fields_placeholder", "e.g. consumption_at_history_*, history_*_date"))}"
                     oninput="window.__modalExcludeSet(this.value)">
-                  <div style="font-size:10px;color:#4a6070;margin-top:3px;">${escapeHtml(t("exclude_fields_hint", "Patterns for fields that get no Home Assistant entity. * matches any text; separate with commas. Removing a field also deletes its existing entity and its history."))}</div>
+                  <div style="font-size:10px;color:var(--muted);margin-top:3px;">${escapeHtml(t("exclude_fields_hint", "Patterns for fields that get no Home Assistant entity. * matches any text; separate with commas. Removing a field also deletes its existing entity and its history."))}</div>
+                  <label for="meter-calculated-fields" style="margin-top:8px;">
+                    ${escapeHtml(t("calculated_fields_label", "Calculated fields"))}
+                    <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:6px;">${escapeHtml(t("calculated_fields_hint_short", "optional — the decoder computes them"))}</span>
+                  </label>
+                  <input id="meter-calculated-fields" name="calculated_fields" autocomplete="off"
+                    value="${escapeHtml(modal.calculatedFields || "")}"
+                    placeholder="${escapeHtml(t("calculated_fields_placeholder", "e.g. difftemp_c=flow_temperature_c - return_temperature_c"))}"
+                    oninput="window.__modalCalcSet(this.value)">
+                  ${presetRow("calc", "add")}
+                  <div style="font-size:10px;color:var(--muted);margin-top:3px;">${escapeHtml(t("calculated_fields_hint", "wmbusmeters computes these from the telegram and they become entities like any other field. One name=formula per entry, separated by semicolons. The arithmetic is unit-aware: total_m3 / 2 counter works, total_m3 * 2 does not."))}</div>
+                  <label for="meter-static-fields" style="margin-top:8px;">
+                    ${escapeHtml(t("static_fields_label", "Constant fields"))}
+                    <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:6px;">${escapeHtml(t("static_fields_hint_short", "optional — a label, not a measurement"))}</span>
+                  </label>
+                  <input id="meter-static-fields" name="static_fields" autocomplete="off"
+                    value="${escapeHtml(modal.staticFields || "")}"
+                    placeholder="${escapeHtml(t("static_fields_placeholder", "e.g. location=kitchen; apartment=12"))}"
+                    oninput="window.__modalStaticSet(this.value)">
+                  ${presetRow("static", "add")}
+                  <div style="font-size:10px;color:var(--muted);margin-top:3px;">${escapeHtml(t("static_fields_hint", "Fixed values attached to this meter, one name=value per entry, separated by semicolons. The decoder copies them into the telegram as text, so they arrive as attributes and as diagnostic entities - a label, not a measurement."))}</div>
                   <div style="margin-top:8px;">${driverFieldsSection(modal.driver, modal.excludeFields, "add")}</div>
                 </div>
                 <div class="field">
@@ -3466,6 +3543,37 @@
       return;
     }
 
+    if (action === "append-field-preset") {
+      const text = target.dataset.text || "";
+      const kind = target.dataset.kind === "calc" ? "calc" : "static";
+      const edit = target.dataset.scope === "edit";
+      const holder = edit ? state.editModal : state.modal;
+      if (!text || !holder) return;
+      const key = kind === "calc" ? "calculatedFields" : "staticFields";
+      const current = String(holder[key] || "").trim();
+      // Entries are semicolon separated, so a second click extends the list
+      // instead of replacing what is already there - but the same field name
+      // twice is a mess the user would have to clean up by hand, so a chip for
+      // a name that is already in the box only moves the caret there.
+      const name = text.split("=")[0];
+      const present = current.split(";").some(e => e.trim().split("=")[0].trim() === name);
+      if (!present) holder[key] = current ? `${current}; ${text}` : text;
+      render();
+      // After the re-render, put the caret where the value goes - that is the
+      // whole point of the chip: the user types only their own text.
+      const id = `${edit ? "edit-meter-" : "meter-"}${kind === "calc" ? "calculated" : "static"}-fields`;
+      // setTimeout, not requestAnimationFrame: rAF does not fire while the tab
+      // is not compositing (a background tab, or a hidden pane), and then the
+      // caret would silently never move.
+      setTimeout(() => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      }, 0);
+      return;
+    }
+
     if (action === "toggle-driver-field") {
       const name = target.dataset.name || "";
       if (!name) return;
@@ -3491,6 +3599,8 @@
         id,
         driver: target.dataset.driver || "auto",
         excludeFields: (savedMeter && savedMeter.exclude_fields) || "",
+        calculatedFields: (savedMeter && savedMeter.calculated_fields) || "",
+        staticFields: (savedMeter && savedMeter.static_fields) || "",
       };
       if (state.drivers === null) {
         fetch("assets/drivers.json", {cache: "no-store"})
@@ -3587,7 +3697,14 @@
         // exclude_fields is always sent, empty included — that is how the
         // pattern gets cleared. The key is only sent when set, because an
         // empty key means "keep the configured one".
-        const updatePayload = {meter_id: id, driver, exclude_fields: String(em.excludeFields || "").trim()};
+        const updatePayload = {
+          meter_id: id,
+          driver,
+          exclude_fields: String(em.excludeFields || "").trim(),
+          // Always sent, empty included: that is how a formula gets removed.
+          calculated_fields: String(em.calculatedFields || "").trim(),
+          static_fields: String(em.staticFields || "").trim(),
+        };
         if (key) updatePayload.key = key;
         await postApi("update-meter", updatePayload);
         state.editModal = null;

@@ -930,6 +930,21 @@ tr:last-child td {
   border-bottom: 1px solid var(--line);
 }
 
+/* Text inputs written directly into a modal body - the change-driver modal does
+   that, unlike the add-meter form, which wraps its fields in .field. Without
+   this they fall back to the browser's default ~20 characters, which is too
+   narrow to read a field pattern or a formula while typing it. Checkboxes are
+   excluded: the driver-field table lives in the same body. */
+.modal-body input:not([type="checkbox"]) {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #15171a;
+  color: var(--text);
+  padding: 6px 10px;
+}
+
 .modal-head h2 {
   margin: 0;
   font-size: 18px;

@@ -405,6 +405,25 @@ encja nie powstaje.
 | `type_other` | str? | gdy `type=other` | Niestandardowa nazwa sterownika |
 | `key` | str? | gdy szyfrowany | 32-znakowy klucz AES (HEX) |
 | `exclude_fields` | str? | nie | Wzorce (globy) pól, które mają **nie** dostać encji w Home Assistant — np. `consumption_at_history_*, history_*_date`. Oddzielane przecinkami lub spacjami; puste publikuje wszystkie pola. |
+| `calculated_fields` | str? | nie | Dodatkowe pola liczone przez **wmbusmeters** z telegramu, rozdzielone średnikami, każde jako `nazwa=formuła` — np. `difftemp_c=flow_temperature_c - return_temperature_c`. Liczy dekoder; wynik jest zwykłym polem i dostaje encję jak każde inne. |
+| `static_fields` | str? | nie | Stałe wartości doczepione do licznika, rozdzielone średnikami, każda jako `nazwa=wartość` — np. `location=kuchnia; apartment=12`. Dekoder wstawia je do telegramu **jako tekst** (`apartment=12` przyjdzie jako `"12"`), więc widać je w atrybutach encji i jako encje diagnostyczne: to etykieta, nie pomiar. |
+
+Przed napisaniem formuły warto wiedzieć dwie rzeczy. Arytmetyka **pilnuje
+jednostek**: `total_m3 / 2 counter` zadziała, a `total_m3 * 2` nie — goła liczba nie
+ma jednostki i dekoder odrzuca taką formułę. Dodawanie pól o tej samej jednostce nie
+wymaga niczego dodatkowego, np.
+`difftemp_c=max_external_temperature_c - min_external_temperature_last_month_c`.
+Formuła, której dekoder nie rozumie, kosztuje wyłącznie to jedno pole: napisze o tym
+w logu, pole po prostu nie powstanie, a reszta licznika dekoduje się normalnie.
+
+Nazwa pola liczonego nie jest dowolna: musi kończyć się jednostką, i to ona
+przelicza wynik. Z tej samej formuły `difftemp_c` da °C, a `difftemp_f` da °F —
+zmierzone na żywym telegramie: 11 °C wróciło jako `11`, `51.8` i `284.15` dla
+nazw `_c`, `_f` i `_k`. Nazwa bez jednostki albo z nieznaną (`mojepole`,
+`kopia_xyz`) jest odrzucana: dekoder pisze *„Could not extract a valid unit from
+calculated field name"*, pole nie powstaje, a licznik dekoduje się dalej. Pól
+stałych ta zasada nie dotyczy — tam każda nazwa jest dobra, bo nic nie jest
+przeliczane.
 
 Lista driverów w WebUI jest generowana z przypiętego buildu `wmbusmeters` i jego
 źródeł XMQ. Korzystaj z tego katalogu zamiast ręcznej listy w dokumentacji.
