@@ -1,3 +1,70 @@
+## 1.5.48
+
+### Added
+- insert field templates with one click (04412ec)
+- attach constant fields to a meter (upstream field_) (ee9ebc2)
+- edit calculated_fields from the meter modals (b89c15e)
+- pass the decoder's calculate_ fields through to the meter file (2fe978e)
+- one-click templates for both field options, and the rule behind the names. The key
+  before `=` is the name the field gets in Home Assistant, so it cannot be guessed for
+  the user — but it can be offered: a chip appends the template and puts the caret
+  after it, leaving only the value to type. A chip whose name is already in the box
+  only moves the caret there rather than duplicating it. The calculated templates are
+  whole formulas, because a starting point that already balances its units teaches
+  more than a bare name.
+  While building them, the decoder settled a question worth documenting: for a
+  CALCULATED field the name is not free-form. It must end in a unit, and that unit
+  converts the result — from one formula, `difftemp_c` returns 11 and `difftemp_f`
+  returns 51.8 for the same 11 °C source. A name with no unit or an unknown one is
+  refused with "Could not extract a valid unit from calculated field name", the field
+  is not created, and the meter keeps decoding. Constant fields carry no such rule:
+  any name is accepted, since nothing is converted.
+  A constant left at its inserted template (`location=` with no value) is dropped on
+  save instead of refusing it: clicking several chips and filling some in is how they
+  are meant to be used, and rejecting the save would also discard the driver and key
+  edited in the same modal. An empty formula still errors — that is a typo, not an
+  unused template — and a malformed field name is still refused in both.
+- `static_fields` per meter: constant values attached to a meter, which upstream has
+  always supported as `field_<name>=<value>` in a meter file and which this add-on,
+  like the formulas, used to erase on every reload. Useful for the label a decoded
+  telegram cannot carry — a location, an apartment number, a riser. Verified against
+  the pinned decoder before implementing: it copies the value into the JSON **as
+  text**, so `apartment=12` arrives as `"12"`, and a value may contain spaces. That
+  makes such a field a diagnostic entity and an attribute on every entity of that
+  meter, which is the honest description of what it is: a label, not a measurement.
+  Same entry shape as the formulas (`name=value`, semicolon separated) and the same
+  guarantees: the shape is validated, a malformed entry is skipped with a warning
+  naming the meter, and no entry can inject a second key into the generated file.
+  Editable from both meter modals in all five languages.
+- `calculated_fields` per meter: extra fields the DECODER computes from the telegram,
+  such as a flow/return temperature difference. Nothing here does arithmetic — the
+  formula engine is upstream's and always was. `wmbusmeters` accepts
+  `calculate_<name>=<formula>` in a meter config file and publishes the result as an
+  ordinary JSON field, which then becomes a Home Assistant entity through the normal
+  Discovery path, unit and device class included. What blocked it was this add-on:
+  `refresh_meter_files` deletes and rewrites every `meter-*` file on start and on
+  every soft reload, writing only `name`, `id`, `key` and `driver`, so a hand-added
+  `calculate_` line survived seconds. It is now carried through from the add-on
+  configuration instead. Entries are semicolon separated, `name=formula` each, because
+  a formula contains both spaces and commas. Only the shape is validated here —
+  whether the formula makes sense stays the decoder's judgement, and it reports a bad
+  one itself rather than being second-guessed by a worse copy of its grammar. A
+  malformed entry is skipped with a warning naming the meter, and cannot inject a
+  second key into the generated file. Verified end to end against a real telegram
+  from the replay corpus (Kamstrup KWM2231, `kamwater`, id 53119425): the generated
+  meter file went through the pinned decoder with `--useconfig`, exactly as
+  `bridge.sh` runs it, and the JSON came back carrying
+  `"difftemp_c":7` next to the decoded fields. Two behaviours found while doing so
+  and now documented: the arithmetic is unit-aware, so `total_m3 * 2` is rejected
+  while `total_m3 / 2 counter` is not, and a formula the decoder cannot parse costs
+  only that field — it is reported in the log and the rest of the meter decodes
+  normally.
+
+### Fixed
+- drop unfilled constant-field templates instead of refusing the save (dde1182)
+- raise the contrast of small hint text (ec7fc26)
+- make modal text inputs use the full width (eb93614)
+
 ## 1.5.47
 
 ### Added

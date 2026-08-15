@@ -394,6 +394,24 @@ entita.
 | `type_other` | str? | pri `type=other` | Vlastný názov ovládača |
 | `key` | str? | pri šifrovaní | 32-znakový AES kľúč (HEX) |
 | `exclude_fields` | str? | nie | Vzory (globy) polí, ktoré **nemajú** dostať entitu v Home Assistante — napr. `consumption_at_history_*, history_*_date`. Oddelené čiarkami alebo medzerami; prázdne publikuje všetky polia. |
+| `calculated_fields` | str? | nie | Ďalšie polia, ktoré **wmbusmeters** počíta z telegramu, oddelené bodkočiarkami, každé ako `názov=vzorec` — napr. `difftemp_c=flow_temperature_c - return_temperature_c`. Počíta dekodér; výsledok je bežné pole a stane sa entitou ako každé iné. |
+| `static_fields` | str? | nie | Pevné hodnoty pripojené k meraču, oddelené bodkočiarkami, každá ako `názov=hodnota` — napr. `location=kuchyna; apartment=12`. Dekodér ich vkladá do telegramu **ako text** (`apartment=12` príde ako `"12"`), takže ich vidno v atribútoch entít a ako diagnostické entity: štítok, nie meranie. |
+
+Pred písaním vzorca sa hodí vedieť dve veci. Aritmetika **stráži jednotky**:
+`total_m3 / 2 counter` funguje, `total_m3 * 2` nie — holé číslo nemá jednotku a
+dekodér taký vzorec odmietne. Sčítanie polí s rovnakou jednotkou nepotrebuje nič
+navyše, napr.
+`difftemp_c=max_external_temperature_c - min_external_temperature_last_month_c`.
+Vzorec, ktorému dekodér nerozumie, stojí len to jedno pole: napíše to do logu, pole
+jednoducho nevznikne a zvyšok merača sa dekóduje normálne.
+
+Názov počítaného poľa nie je ľubovoľný: musí končiť jednotkou a tá prepočíta
+výsledok. Z toho istého vzorca dá `difftemp_c` °C a `difftemp_f` °F — zmerané na
+skutočnom telegrame: 11 °C sa vrátilo ako `11`, `51.8` a `284.15` pre názvy
+`_c`, `_f` a `_k`. Názov bez jednotky alebo s neznámou (`mojepole`, `kopia_xyz`)
+je odmietnutý: dekodér napíše *"Could not extract a valid unit from calculated
+field name"*, pole nevznikne a merač dekóduje ďalej. Konštantných polí sa to
+netýka — tam je prípustný akýkoľvek názov, pretože sa nič neprevádza.
 
 Zoznam ovládačov vo WebUI sa generuje z pripnutého zostavenia `wmbusmeters` a
 jeho XMQ zdrojov. Používajte tento katalóg namiesto ručne udržiavaného zoznamu

@@ -395,6 +395,24 @@ Když volbu necháte vypnutou, nic nepřijde, nepřidá se žádné pole a nevzn
 | `type_other` | str? | při `type=other` | Vlastní název ovladače |
 | `key` | str? | při šifrování | 32znakový AES klíč (HEX) |
 | `exclude_fields` | str? | ne | Vzory (globy) polí, která **nemají** dostat entitu v Home Assistantu — např. `consumption_at_history_*, history_*_date`. Oddělené čárkami nebo mezerami; prázdné publikuje všechna pole. |
+| `calculated_fields` | str? | ne | Další pole, která **wmbusmeters** počítá z telegramu, oddělená středníky, každé jako `název=vzorec` — např. `difftemp_c=flow_temperature_c - return_temperature_c`. Počítá dekodér; výsledek je běžné pole a stane se entitou jako každé jiné. |
+| `static_fields` | str? | ne | Pevné hodnoty připojené k měřiči, oddělené středníky, každá jako `název=hodnota` — např. `location=kuchyne; apartment=12`. Dekodér je vkládá do telegramu **jako text** (`apartment=12` přijde jako `"12"`), takže je vidět v atributech entit a jako diagnostické entity: štítek, ne měření. |
+
+Před psaním vzorce se hodí vědět dvě věci. Aritmetika **hlídá jednotky**:
+`total_m3 / 2 counter` funguje, `total_m3 * 2` ne — holé číslo nemá jednotku a
+dekodér takový vzorec odmítne. Sčítání polí se stejnou jednotkou nepotřebuje nic
+navíc, např.
+`difftemp_c=max_external_temperature_c - min_external_temperature_last_month_c`.
+Vzorec, kterému dekodér nerozumí, stojí jen ono jedno pole: napíše to do logu, pole
+prostě nevznikne a zbytek měřiče se dekóduje normálně.
+
+Název počítaného pole není libovolný: musí končit jednotkou a ta převádí
+výsledek. Ze stejného vzorce dá `difftemp_c` °C a `difftemp_f` °F — změřeno na
+skutečném telegramu: 11 °C se vrátilo jako `11`, `51.8` a `284.15` pro názvy
+`_c`, `_f` a `_k`. Název bez jednotky nebo s neznámou (`mojepole`, `kopie_xyz`)
+je odmítnut: dekodér napíše *"Could not extract a valid unit from calculated
+field name"*, pole nevznikne a měřič dekóduje dál. Konstantních polí se to
+netýká — tam je přípustný jakýkoli název, protože se nic nepřevádí.
 
 Seznam ovladačů ve WebUI se generuje z připnutého sestavení `wmbusmeters` a jeho
 XMQ zdrojů. Používejte tento katalog místo ručně udržovaného seznamu v návodu.

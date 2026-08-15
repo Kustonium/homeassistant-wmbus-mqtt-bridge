@@ -121,7 +121,39 @@ MQTT payload -> optional cleanup/HEX validation -> wmbusmeters stdin:hex
 
 The bridge creates native `wmbusmeters.d/meter-*` files. A configured file
 contains the friendly name, lowercase meter ID, optional 32-character AES key,
-and optional driver. Omitting the driver means upstream auto-detection.
+optional driver, and any `calculate_` fields the user configured. Omitting the
+driver means upstream auto-detection.
+
+Those files are regenerated — deleted and written again — on start and on every
+soft reload, which has a consequence worth stating plainly: **anything upstream
+supports in a meter file but this project does not carry through is not merely
+undocumented here, it is actively erased.** A hand-written line survives until
+the next reload and no longer.
+
+### 3.2.1 The wrapper must not narrow what upstream can do
+
+This project's contribution is the output — entities, Discovery, the WebUI,
+diagnostics — not a smaller decoder. Where upstream offers a capability, the
+add-on's job is to make it reachable and to render its result well, never to
+decide on the user's behalf that it does not exist.
+
+The rule was learned rather than designed. `calculate_` fields, upstream's own
+mechanism for computing a value from the telegram, were unreachable for exactly
+this reason: the regenerated meter file dropped them. The fix added no
+arithmetic here — the formula engine is upstream's — it only stopped discarding
+the user's line. The instinct it corrects is the dangerous one: to route users
+to a workaround elsewhere (a template sensor in Home Assistant) for something
+the decoder already does, and to describe the wrapper's silence as a design
+decision.
+
+One deliberate exception, and it is a security boundary rather than a
+preference: upstream's `shell`, `metershell` and `alarmshell` keys run an
+arbitrary command per telegram. Exposing them through an add-on option field
+would turn a configuration value into code execution, so they stay unexposed
+unless a future gate makes the risk explicit at the point of use. Keys that
+describe polling a physical bus (`pollinterval`, `bus`) are not withheld but
+inapplicable: this path receives frames through `stdin:hex` and has nothing to
+poll.
 
 Decoded output is consumed as line-oriented JSON. Non-JSON diagnostic lines are
 also inspected for known operational failures, such as a missing or invalid AES

@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
 description: "MQTT RAW HEX -> wmbusmeters (stdin:hex) -> MQTT + Home Assistant Discovery"
-version: "1.5.47"
+version: "1.5.48"
 slug: "wmbus_mqtt_bridge"
 stage: experimental
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
@@ -94,3 +94,17 @@ schema:
       # "consumption_at_history_*, history_*_date"). Empty publishes every
       # field, which is the behaviour of every version before this option.
       exclude_fields: str?
+      # Extra fields wmbusmeters computes from the telegram, semicolon
+      # separated, each "name=formula" (e.g.
+      # "difftemp_c=flow_temperature_c-return_temperature_c"). The decoder owns
+      # the arithmetic — see its calculate_ documentation — and the result is a
+      # normal field in the JSON, so it becomes a Home Assistant entity like
+      # any other. Semicolons separate entries because a formula contains both
+      # spaces and commas.
+      calculated_fields: str?
+      # Constant fields attached to this meter, semicolon separated, each
+      # "name=value" (e.g. "location=kitchen; apartment=12"). The decoder copies
+      # them into the JSON as they are — always as strings, so `apartment=12`
+      # arrives as "12" — which makes them diagnostic entities and attributes
+      # on every entity of that meter.
+      static_fields: str?

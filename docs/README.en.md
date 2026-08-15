@@ -406,6 +406,25 @@ created.
 | `type_other` | str? | when `type=other` | Custom driver name |
 | `key` | str? | when encrypted | 32-char AES key (HEX) |
 | `exclude_fields` | str? | no | Glob patterns, comma- or space-separated, for decoded fields that should get **no** Home Assistant entity — e.g. `consumption_at_history_*, history_*_date`. Empty publishes every field. |
+| `calculated_fields` | str? | no | Extra fields **wmbusmeters** computes from the telegram, semicolon separated, each `name=formula` — e.g. `difftemp_c=flow_temperature_c - return_temperature_c`. The decoder does the arithmetic; the result is a normal field and becomes an entity like any other. |
+| `static_fields` | str? | no | Constant values attached to this meter, semicolon separated, each `name=value` — e.g. `location=kitchen; apartment=12`. The decoder copies them into the telegram **as text** (`apartment=12` arrives as `"12"`), so they show up in the entity attributes and as diagnostic entities: a label, not a measurement. |
+
+Two things are worth knowing before writing one. The arithmetic is **unit-aware**:
+`total_m3 / 2 counter` works, while `total_m3 * 2` does not — a bare number carries
+no unit and the decoder rejects the formula. Adding fields that share a unit needs
+nothing special, e.g.
+`difftemp_c=max_external_temperature_c - min_external_temperature_last_month_c`.
+And a formula the decoder cannot parse costs you only that one field: it says so in
+the log, the field is simply absent, and the rest of the meter decodes as usual.
+
+The name of a calculated field is not free-form: it must end in a unit, and that
+unit converts the result. From one and the same formula, `difftemp_c` yields °C
+while `difftemp_f` yields °F — measured on a live telegram, 11 °C came back as
+`11`, `51.8` and `284.15` under the `_c`, `_f` and `_k` names. A name with no unit
+or an unknown one (`mojepole`, `kopia_xyz`) is refused: the decoder says
+*"Could not extract a valid unit from calculated field name"*, that field is not
+created, and the meter keeps decoding. Constant fields have no such rule — any
+name is accepted, because nothing is converted.
 
 The WebUI driver list is generated from the pinned `wmbusmeters` build and its
 XMQ sources. Use that catalog instead of a manually maintained list in this guide.

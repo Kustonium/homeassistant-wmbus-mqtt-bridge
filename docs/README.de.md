@@ -415,6 +415,26 @@ Entität angelegt.
 | `type_other` | str? | bei `type=other` | Eigener Treibername |
 | `key` | str? | bei verschlüsselt | 32-Zeichen-AES-Schlüssel (HEX) |
 | `exclude_fields` | str? | nein | Glob-Muster für Felder, die **keine** Home-Assistant-Entität bekommen sollen — z. B. `consumption_at_history_*, history_*_date`. Durch Kommas oder Leerzeichen getrennt; leer veröffentlicht alle Felder. |
+| `calculated_fields` | str? | nein | Zusätzliche Felder, die **wmbusmeters** aus dem Telegramm berechnet, durch Semikolon getrennt, je `name=formel` — z. B. `difftemp_c=flow_temperature_c - return_temperature_c`. Gerechnet wird im Decoder; das Ergebnis ist ein normales Feld und wird zur Entität wie jedes andere. |
+| `static_fields` | str? | nein | Feste Werte für diesen Zähler, durch Semikolon getrennt, je `name=wert` — z. B. `location=kueche; apartment=12`. Der Decoder schreibt sie **als Text** ins Telegramm (`apartment=12` kommt als `"12"` an), sie erscheinen also in den Entitätsattributen und als Diagnose-Entitäten: ein Etikett, keine Messung. |
+
+Zwei Dinge sind vorher gut zu wissen. Die Arithmetik **achtet auf Einheiten**:
+`total_m3 / 2 counter` funktioniert, `total_m3 * 2` nicht — eine nackte Zahl hat
+keine Einheit, und der Decoder weist die Formel ab. Felder gleicher Einheit zu
+addieren braucht nichts Besonderes, z. B.
+`difftemp_c=max_external_temperature_c - min_external_temperature_last_month_c`.
+Eine Formel, die der Decoder nicht versteht, kostet nur dieses eine Feld: er meldet
+es im Log, das Feld fehlt schlicht, und der Rest des Zählers wird normal dekodiert.
+
+Der Name eines berechneten Feldes ist nicht frei wählbar: er muss auf eine
+Einheit enden, und diese rechnet das Ergebnis um. Aus derselben Formel liefert
+`difftemp_c` °C und `difftemp_f` °F — an einem echten Telegramm gemessen kamen
+11 °C als `11`, `51.8` und `284.15` unter den Namen `_c`, `_f` und `_k` zurück.
+Ein Name ohne Einheit oder mit einer unbekannten (`meinfeld`, `kopie_xyz`) wird
+abgelehnt: der Decoder meldet *"Could not extract a valid unit from calculated
+field name"*, das Feld entsteht nicht, und der Zähler dekodiert weiter. Für
+konstante Felder gilt das nicht — dort ist jeder Name zulässig, da nichts
+umgerechnet wird.
 
 Die Treiberliste der WebUI wird aus dem festgelegten `wmbusmeters`-Build und
 dessen XMQ-Quellen erzeugt. Nutze diesen Katalog statt einer manuellen Liste.
