@@ -231,6 +231,14 @@ Das Telegramm enthält die Seriennummer des Zählers; der AES-Schlüssel wird ni
 beigefügt. Wird ein gespeicherter Schlüssel für die Analyse verwendet, kann die
 entschlüsselte Ausgabe Zählerstände enthalten.
 
+Derselbe Button **Meldung…** steht in jeder Zeile von ZÄHLER, sodass sich ein
+bereits hinzugefügter Zähler — einer, der zwar dekodiert, aber ein Feld falsch
+oder weniger Felder als sein Display meldet — melden lässt, ohne ihn vorher zu
+entfernen. Das ist zugleich der Weg, den Rohframe eines konfigurierten Zählers
+zu sehen: die Meldung beginnt mit dem Telegramm selbst. Der Frame stammt aus
+dem Ringpuffer der zuletzt empfangenen Telegramme und steht nach einem Neustart
+zur Verfügung, sobald der Zähler wieder sendet.
+
 ---
 
 ## 7. Nach Wert filtern — wenn zu viele fremde Zähler zu hören sind
@@ -333,6 +341,51 @@ Löschen des Geräts hilft nicht, denn Home Assistant stellt entfernte Entitäte
 samt Aktivierungszustand wieder her, sobald derselbe Zähler erneut erkannt wird;
 dieser Eintrag bleibt 30 Tage erhalten. Einmal von Hand aktivieren genügt.
 
+### RSSI je Empfangsplatine (optional, auf dem ESP aktiviert)
+
+Der Signalpegel ist kein Bestandteil des Telegramms. Das RAW-Topic überträgt
+reines Hexadezimal, `wmbusmeters` sieht also nie einen RSSI und kann keinen
+melden — die Empfangsplatine muss ihn separat veröffentlichen. Diese
+Veröffentlichung ist **standardmäßig aus** und keine Add-on-Option: Sie
+aktivieren sie im YAML der Firmware, im Abschnitt `wmbus_radio`:
+
+```yaml
+wmbus_radio:
+  publish_rssi: true
+```
+
+Die Platine veröffentlicht dann für jeden dekodierten Zähler:
+
+```text
+wmbus/<platine>/rssi/<zähler_id>    payload: -52
+```
+
+Die Bridge speichert diesen Wert je Zähler **und** je Platine und hängt ihn als
+`rssi_<platine>_dbm` an das dekodierte Telegramm an. Jede Platine erhält damit
+für denselben Zähler ihre eigene Signalstärke-Entität:
+
+```json
+{
+  "rssi_lilygo_dbm": -52,
+  "rssi_xiaoseed_dbm": -50
+}
+```
+
+Das ist Absicht. Zwei Platinen können denselben Zähler hören, und ein einzelner
+zusammengefasster Wert würde einfach zwischen ihnen springen — eine Zahl, die
+wie ein schwankendes Signal aussieht statt wie zwei Empfänger. Deshalb gibt es
+kein gemeinsames `rssi_dbm`.
+
+Gespeichert wird nur ein plausibler Messwert: -125 bis -1 dBm. Die
+„keine Daten"-Sentinels der Firmware werden verworfen statt als Messwert
+veröffentlicht, und ein zwischengespeicherter Wert, der älter als fünf Minuten
+ist, wird nicht an ein frisches Telegramm gehängt — hört eine Platine auf zu
+senden, wird ihre Entität also nicht verfügbar, statt auf der letzten Zahl
+einzufrieren.
+
+Bleibt die Option aus, kommt nichts an, es wird kein Feld ergänzt und keine
+Entität angelegt.
+
 ### Älterer SEARCH-Modus
 
 | Feld | Typ | Default | Beschreibung |
@@ -365,6 +418,18 @@ dieser Eintrag bleibt 30 Tage erhalten. Einmal von Hand aktivieren genügt.
 
 Die Treiberliste der WebUI wird aus dem festgelegten `wmbusmeters`-Build und
 dessen XMQ-Quellen erzeugt. Nutze diesen Katalog statt einer manuellen Liste.
+
+Die Feldtabelle im Treiberpanel des Zählers stammt aus
+`wmbusmeters --listfields` — dem vollständigen Katalog des Treibers, nicht der
+Liste dessen, was dieser Pfad veröffentlicht. Zehn Felder, die jeder Treiber
+gemeinsam hat, werden deshalb ausgegraut angezeigt und lassen sich nicht
+ankreuzen. `id`, `name`, `meter`, `media` und `timestamp` sind die Identität des
+Zählers: Sie bleiben im Gerätenamen und in den Entitätsattributen, statt eigene
+Entitäten zu werden. `timestamp_ut`, `timestamp_lt`, `timestamp_utc`, `device`
+und `rssi_dbm` erreichen hier nie das JSON des Decoders — die drei Zeitstempel
+existieren nur für die Ausgabeformate CSV/`fields`, und die letzten beiden füllt
+ein empfangendes Funkgerät, das der Decoder nicht hat, wenn ihm Telegramme als
+Hex übergeben werden.
 
 ---
 

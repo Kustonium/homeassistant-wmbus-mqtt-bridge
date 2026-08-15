@@ -222,6 +222,14 @@ telegram + výstup `wmbusmeters --analyze`). Telegram obsahuje sériové číslo
 merača. Uložený AES kľúč môže byť použitý na analýzu rovnakého ID, ale samotný
 kľúč sa nikdy neprikladá. Dešifrovaný výstup môže obsahovať odpočty merača.
 
+To isté tlačidlo **Hlásenie…** je v každom riadku pohľadu MERAČE, takže už
+pridaný merač — taký, ktorý sa dekóduje, ale hlási pole nesprávne alebo menej
+polí, než ukazuje jeho displej — nahlásite bez toho, aby ste ho museli odobrať.
+Je to zároveň spôsob, ako si pozrieť surový rámec nakonfigurovaného merača:
+hlásenie začína práve telegramom. Rámec pochádza z kruhového buffera naposledy
+prijatých telegramov, takže po reštarte je k dispozícii hneď, ako merač znova
+vyšle.
+
 ---
 
 ## 7. Filtrovanie podľa hodnoty — keď je počuť priveľa cudzích meračov
@@ -315,6 +323,48 @@ ako bežný senzor. Zmazanie zariadenia nepomôže, pretože Home Assistant
 odstránené entity vrátane stavu zapnutia obnoví, len čo je ten istý merač znovu
 detekovaný; tento záznam si drží 30 dní. Stačí ju raz zapnúť ručne.
 
+### RSSI podľa prijímacej dosky (voliteľné, zapína sa na ESP)
+
+Úroveň signálu nie je súčasťou telegramu. RAW téma nesie čistý hexadecimálny
+zápis, takže `wmbusmeters` žiadne RSSI nevidí a nemá čo hlásiť — musí ho zvlášť
+publikovať prijímacia doska. Táto publikácia je **predvolene vypnutá** a nie je
+voľbou doplnku: zapína sa v YAML firmvéru, v sekcii `wmbus_radio`:
+
+```yaml
+wmbus_radio:
+  publish_rssi: true
+```
+
+Doska potom pre každý dekódovaný merač publikuje:
+
+```text
+wmbus/<doska>/rssi/<id_merača>    payload: -52
+```
+
+Most si hodnotu ukladá zvlášť pre každý merač **a** každú dosku a pripája ju k
+dekódovanému telegramu ako `rssi_<doska>_dbm`. Každá doska tak má pre ten istý
+merač vlastnú entitu sily signálu:
+
+```json
+{
+  "rssi_lilygo_dbm": -52,
+  "rssi_xiaoseed_dbm": -50
+}
+```
+
+Je to zámer. Ten istý merač môžu počuť dve dosky a jediná zlúčená hodnota by
+medzi nimi len preskakovala — číslo by vyzeralo ako kolísajúci signál, nie ako
+dva prijímače. Preto spoločné pole `rssi_dbm` neexistuje.
+
+Most ukladá iba vierohodné meranie: -125 až -1 dBm. Sentinely firmvéru
+označujúce „žiadne dáta" sa zahadzujú namiesto toho, aby sa publikovali ako
+odčítanie, a hodnota staršia než päť minút sa k čerstvému telegramu nepripojí —
+keď niektorá doska prestane publikovať, jej entita sa stane nedostupnou namiesto
+toho, aby zamrzla na poslednom čísle.
+
+Ak voľbu necháte vypnutú, nič nepríde, nepridá sa žiadne pole a nevznikne žiadna
+entita.
+
 ### Starší režim SEARCH
 
 | Pole | Typ | Predvolené | Popis |
@@ -348,6 +398,16 @@ detekovaný; tento záznam si drží 30 dní. Stačí ju raz zapnúť ručne.
 Zoznam ovládačov vo WebUI sa generuje z pripnutého zostavenia `wmbusmeters` a
 jeho XMQ zdrojov. Používajte tento katalóg namiesto ručne udržiavaného zoznamu
 v návode.
+
+Tabuľka polí v paneli ovládača merača pochádza z `wmbusmeters --listfields` — je
+to úplný katalóg ovládača, nie zoznam toho, čo táto cesta publikuje. Desať polí
+spoločných všetkým ovládačom sa preto zobrazuje stlmene a nedá sa zaškrtnúť.
+`id`, `name`, `meter`, `media` a `timestamp` sú identita merača: zostávajú v
+názve zariadenia a v atribútoch entít, namiesto toho, aby dostali vlastné
+entity. `timestamp_ut`, `timestamp_lt`, `timestamp_utc`, `device` a `rssi_dbm` sa
+sem do JSON dekodéra nikdy nedostanú — tri časové pečiatky existujú len pre
+výstupné formáty CSV/`fields` a posledné dve vypĺňa prijímacie rádiové
+zariadenie, ktoré dekodér nemá, keď mu telegramy podávate ako HEX.
 
 ---
 

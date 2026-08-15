@@ -1,3 +1,72 @@
+## 1.5.47
+
+### Added
+- offer the upstream issue report for configured meters (7cd8660)
+- join opt-in per-meter RSSI onto the decoded telegram (08177ee)
+- toggle a field's entity from the METERS field panel (9f43e9a)
+- the upstream issue report is available for configured meters, not only for
+  candidates: METERS now carries the same **Report…** button in every row. Asked for
+  by a user who had added a meter and then had no way to look at its raw frame,
+  and needed by anyone whose meter decodes but reports a field wrongly — until now
+  reporting that meant removing it from the configuration first. A configured meter
+  has no candidate RAW row, so the frame comes from the rolling all-frames buffer
+  matched on the id in little-endian order (`_resolve_raw_for_id`, the same lookup
+  the driver comparison uses, and one that also works for Diehl-style frames whose
+  A-field does not parse). The driver comes from the meter's own configuration, the
+  medium from its last decoded telegram, and the manufacturer is read back out of
+  the analysis. The AES key is still never part of the report.
+- optional signal strength per receiving board. A telegram carries no RSSI — the RAW
+  topic is bare hexadecimal, so `wmbusmeters` never sees a level and cannot report
+  one — which is why the value has to travel out of band. When the firmware YAML
+  enables it (`wmbus_radio: publish_rssi: true`, **off by default**), each board
+  publishes `wmbus/<board>/rssi/<meter_id>`; the bridge caches it per meter *and*
+  per board and joins it onto the decoded telegram as `rssi_<board>_dbm`, so every
+  receiving board gets its own `signal_strength` entity for the same meter. Only
+  plausible measurements (-125 to -1 dBm) are stored — the firmware's "no data"
+  sentinels are dropped — and a cached value older than `RSSI_MAX_AGE_S` (300 s) is
+  not attached, so a board that stops publishing goes unavailable instead of
+  freezing on its last reading. With the option off nothing arrives and no entity
+  is created. Documented in the localized READMEs and in `ARCHITECTURE.md`.
+
+### Changed
+- the merged `rssi_dbm` and `rssi_source` fields are gone; only the per-board fields
+  remain. `rssi_dbm` was kept as a compatibility value meaning "whichever board
+  reported last", which is exactly what makes it unreadable: with two boards hearing
+  the same meter, one entity alternated between their levels and looked like a
+  fluctuating signal rather than two receivers. `clean_legacy_entities()` (formerly
+  `clean_legacy_totalm3`) now also clears the retained `rssi_dbm` config, so the
+  entity disappears from installations that already created it during this dev
+  cycle.
+
+### Fixed
+- translate the decode-mode strings into de/cs/sk (333af33)
+- mark driver fields that can never become entities (7d27997)
+- keep only the per-board RSSI entity (c90b00c)
+- reject the firmware's "no data" sentinels as RSSI readings (3e28fa1)
+- the decode-mode strings existed only in English and Polish, so the German, Czech
+  and Slovak WebUI fell back to English for the whole "candidate data is stale"
+  explanation — the one place where the numbers on screen need a caveat to be read
+  correctly. All five languages now carry the same 547 keys.
+- the driver field table offered ten fields that can never become an entity here.
+  Reported from a live install running `apatorna1`: every field was ticked, yet
+  `timestamp_ut`, `timestamp_lt`, `timestamp_utc`, `device` and `rssi_dbm` never
+  appeared, and unticking `media`/`timestamp` changed nothing. The table is
+  `wmbusmeters --listfields`, which is the driver's whole catalog rather than what
+  this path publishes, and every driver's catalog opens with the same ten universal
+  fields. Three of them are timestamps wmbusmeters deliberately keeps out of JSON
+  (they exist for the CSV/`fields` formats); `device` and `rssi_dbm` are written
+  only when a radio device received the telegram, which never happens when the
+  decoder is fed through `stdin:hex`; the remaining five are the meter's identity,
+  which `emit_discovery_from_json` has always kept out of the entity list because it
+  is the device name and travels in every entity's attributes. Those rows now stay
+  visible but lose their checkbox and state the reason, so the panel no longer
+  promises a publish it cannot perform. The decoder's own `rssi_dbm` is unrelated to
+  the opt-in per-board RSSI this add-on joins on as `rssi_<board>_dbm`.
+
+### Other (review)
+- Document per-ESP RSSI entities (298f8cf)
+- Add per-ESP RSSI entities (e48dd3e)
+
 ## 1.5.46
 
 ### Added

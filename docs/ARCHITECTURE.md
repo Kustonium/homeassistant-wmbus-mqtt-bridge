@@ -472,10 +472,27 @@ The companion firmware can additionally publish:
 | `wmbus/<dev>/diag/summary_15min` and `_60min` | diagnostic mode | longer windows |
 | `wmbus/<dev>/diag/meter_snapshot` | diagnostic mode with highlighted meters | batched per-meter reception |
 | `wmbus/<dev>/diag/meter/<id>/<mode>/window/<trigger>` | diagnostic mode | frequent per-meter reception window |
+| `wmbus/<dev>/rssi/<meter_id>` | opt-in in the firmware YAML | signal level of the last frame that board decoded from this meter |
 
 The bridge stores diagnostics as maps keyed by device, allowing multiple ESPs
 to be compared without one overwriting another. These topics enrich the RAW
 path; they are never required for decoding.
+
+The RSSI topic is the one case where a measurement has to travel out of band:
+the RAW topic carries bare hexadecimal, so the decoder never sees a signal
+level and cannot report one. The bridge caches the value per meter *and* per
+board and joins it onto the decoded telegram as `rssi_<board>_dbm`, one field —
+and therefore one Home Assistant entity — per receiving board. Only real
+measurements between -125 and -1 dBm are stored; the firmware's "no data"
+sentinels are dropped, and a cached value older than five minutes is ignored
+rather than pinned to the meter forever.
+
+Deliberately absent is a single merged RSSI per meter. Two boards hearing the
+same meter would make it alternate between them, which reads as a fluctuating
+signal rather than as two receivers. For the same reason this does not change
+§8: per-board entities let the *user* compare their own boards, while the
+dashboard's coverage verdict still comes from reception windows, because RSSI
+is not comparable across different radio boards and antennas.
 
 ## 10. Design trade-offs and security
 

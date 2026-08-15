@@ -228,6 +228,14 @@ add-on buduje gotowy do wklejenia blok zgłoszenia do projektu wmbusmeters
 seryjny licznika. Klucz AES nigdy nie jest dołączany; jeśli zapisany klucz
 został użyty do analizy, zdekodowany wynik może zawierać odczyty licznika.
 
+Ten sam przycisk **Zgłoszenie…** jest w każdym wierszu widoku LICZNIKI, więc już
+dodany licznik — taki, który dekoduje się, ale podaje pole błędnie albo mniej
+pól, niż pokazuje jego wyświetlacz — zgłosisz bez usuwania go z konfiguracji.
+To jest też sposób na podejrzenie surowej ramki skonfigurowanego licznika:
+zgłoszenie zaczyna się właśnie od telegramu. Ramka pochodzi z bufora ostatnio
+odebranych telegramów, więc po restarcie jest dostępna, gdy tylko licznik znów
+nada.
+
 ---
 
 ## 7. Filtr wartości — gdy słychać za dużo cudzych liczników
@@ -326,6 +334,50 @@ nic tu nie da, bo Home Assistant przywraca usunięte encje razem ze stanem
 włączenia, gdy tylko ten sam licznik zostanie ponownie wykryty; trzyma ten wpis
 przez 30 dni. Włącz ją raz ręcznie, a zostanie włączona.
 
+### RSSI per płytka odbiorcza (opcja włączana po stronie ESP)
+
+Poziom sygnału nie jest częścią telegramu. Temat RAW niesie czysty HEX, więc
+`wmbusmeters` nigdy nie widzi RSSI i nie ma czego zgłosić — płytka odbiorcza
+musi opublikować tę wartość osobno. Publikacja jest **domyślnie wyłączona** i
+nie jest opcją dodatku: włączasz ją w YAML-u firmware'u, w sekcji
+`wmbus_radio`:
+
+```yaml
+wmbus_radio:
+  publish_rssi: true
+```
+
+Płytka publikuje wtedy dla każdego zdekodowanego licznika:
+
+```text
+wmbus/<płytka>/rssi/<id_licznika>    payload: -52
+```
+
+Most trzyma tę wartość osobno dla każdej pary licznik **i** płytka, a następnie
+dołącza ją do zdekodowanego telegramu jako `rssi_<płytka>_dbm`. Każda płytka
+dostaje więc własną encję siły sygnału dla tego samego licznika:
+
+```json
+{
+  "rssi_lilygo_dbm": -52,
+  "rssi_xiaoseed_dbm": -50
+}
+```
+
+Tak ma być. Ten sam licznik może być słyszany przez dwie płytki, a jedna
+scalona wartość po prostu skakałaby między nimi — liczba wyglądałaby na
+wahający się sygnał, a nie na dwa odbiorniki. Dlatego nie ma wspólnego pola
+`rssi_dbm`.
+
+Most zapisuje wyłącznie wiarygodny pomiar: od -125 do -1 dBm. Firmware'owe
+wartości „brak danych" są odrzucane, a nie publikowane jako odczyt; wartość
+starsza niż pięć minut nie zostaje doklejona do świeżego telegramu — jeśli
+któraś płytka przestanie publikować, jej encja staje się niedostępna, zamiast
+zamarznąć na ostatniej liczbie.
+
+Przy wyłączonej opcji nic nie przychodzi, żadne pole nie jest dodawane i żadna
+encja nie powstaje.
+
 ### Starszy tryb SEARCH
 
 | Pole | Typ | Domyślnie | Opis |
@@ -356,6 +408,17 @@ przez 30 dni. Włącz ją raz ręcznie, a zostanie włączona.
 
 Lista driverów w WebUI jest generowana z przypiętego buildu `wmbusmeters` i jego
 źródeł XMQ. Korzystaj z tego katalogu zamiast ręcznej listy w dokumentacji.
+
+Tabela pól w panelu drivera licznika pochodzi z `wmbusmeters --listfields` — to
+pełny katalog drivera, a nie lista tego, co publikuje ta ścieżka. Dziesięć pól
+wspólnych dla wszystkich driverów jest więc pokazanych jako wyszarzone i nie da
+się ich zaznaczyć. `id`, `name`, `meter`, `media` i `timestamp` to tożsamość
+licznika: zostają w nazwie urządzenia i w atrybutach encji, zamiast dostawać
+własne encje. `timestamp_ut`, `timestamp_lt`, `timestamp_utc`, `device` i
+`rssi_dbm` nigdy nie trafiają tutaj do JSON-a dekodera — trzy znaczniki czasu
+istnieją wyłącznie dla formatów CSV/`fields`, a dwa ostatnie wypełnia radiowe
+urządzenie odbiorcze, którego dekoder nie ma, gdy telegramy podaje mu się jako
+HEX.
 
 ---
 

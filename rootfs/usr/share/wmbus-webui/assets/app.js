@@ -1757,9 +1757,19 @@
     `;
   }
 
+  // Keys the bridge never turns into an entity — they identify the meter or the
+  // reception rather than measuring anything. Mirrors the exclusion list in
+  // rootfs/usr/bin/bridge-lib/09-discovery.sh; a checkbox next to them would
+  // promise control that does not exist.
+  const METADATA_FIELDS = new Set(["_", "id", "name", "meter", "media", "timestamp", "device_date_time", "rssi", "lqi"]);
+
   function meterFieldsRow(row, colspan) {
     let fields = null;
     try { fields = JSON.parse(row.last_json || ""); } catch (e) { fields = null; }
+    const meterId = normalizeMeterId(row.id || row.meter_id || "");
+    const savedMeter = ((state.data && state.data.options && state.data.options.meters) || [])
+      .find(m => m && normalizeMeterId(m.meter_id) === meterId);
+    const excludeText = (savedMeter && savedMeter.exclude_fields) || "";
     let inner;
     if (!fields || typeof fields !== "object") {
       inner = `<span style="color:#607a88;">${escapeHtml(t("published_fields_none", "No decoded telegram this session yet."))}</span>`;
@@ -1770,19 +1780,34 @@
       inner = `
         <table style="width:auto;min-width:50%;">
           <thead><tr>
+            <th>${escapeHtml(t("published_fields_publish", "Publish"))}</th>
             <th>${escapeHtml(t("published_fields_field", "Field"))}</th>
             <th>${escapeHtml(t("webui_value", "Value"))}</th>
           </tr></thead>
           <tbody>
             ${entries.map(([k, v]) => {
               const unit = typeof v === "number" ? unitFromKey(k) : "";
-              return `<tr>
+              const meta = METADATA_FIELDS.has(k);
+              const kind = meta ? "" : fieldExclusionKind(k, excludeText);
+              const byGlob = kind === "glob";
+              let cell;
+              if (meta) {
+                cell = `<span style="color:#4a6070;" title="${escapeHtml(t("published_fields_meta_hint", "Meter identity — always in the attributes, never its own entity."))}">—</span>`;
+              } else {
+                cell = `<input type="checkbox" ${kind === "" ? "checked" : ""} ${byGlob ? "disabled" : ""}
+                  data-action="toggle-meter-field" data-id="${escapeHtml(meterId)}"
+                  data-name="${escapeHtml(k)}" data-driver="${escapeHtml(row.driver || "auto")}"
+                  ${byGlob ? `title="${escapeHtml(t("driver_fields_by_pattern", "(excluded by a pattern)"))}"` : ""}>`;
+              }
+              return `<tr${byGlob ? ' style="opacity:0.55;"' : ""}>
+                <td style="text-align:center;">${cell}</td>
                 <td class="mono" style="font-size:11px;">${escapeHtml(k)}</td>
                 <td class="mono" style="font-size:11px;">${escapeHtml(String(v))}${unit ? ` <span style="color:#607a88;">${escapeHtml(unit)}</span>` : ""}</td>
               </tr>`;
             }).join("")}
           </tbody>
-        </table>`;
+        </table>
+        <div style="font-size:10px;color:#4a6070;margin-top:4px;">${escapeHtml(t("published_fields_toggle_hint", "Unchecking removes the entity and its recorded history. Rows dimmed by a pattern are changed in the meter's Driver… dialog."))}</div>`;
     }
     return `
       <tr><td colspan="${colspan}" style="background:#0b141b;border-top:1px solid #1d2f3c;padding:10px 14px;">
@@ -1844,7 +1869,7 @@
                     </td>
                     ${
                       withActions
-                        ? `<td><div class="actions"><button class="btn" data-action="toggle-meter-fields" data-id="${escapeHtml(id)}">${escapeHtml(t("published_fields_btn", "Fields"))} ${state.expandedMeterFields.has(id) ? "▴" : "▾"}</button><button class="btn" data-action="open-edit-driver" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(row.driver || "auto")}">${escapeHtml(t("change_driver_btn", "Driver…"))}</button><button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(id)}">${escapeHtml(t("webui_remove", "Remove"))}</button></div></td>`
+                        ? `<td><div class="actions"><button class="btn" data-action="toggle-meter-fields" data-id="${escapeHtml(id)}">${escapeHtml(t("published_fields_btn", "Fields"))} ${state.expandedMeterFields.has(id) ? "▴" : "▾"}</button><button class="btn" data-action="open-edit-driver" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(row.driver || "auto")}">${escapeHtml(t("change_driver_btn", "Driver…"))}</button><button class="btn" data-action="export-report" data-id="${escapeHtml(id)}" title="${escapeHtml(t("export_report_title", "wmbusmeters issue report"))}">${escapeHtml(t("export_report_btn", "Report…"))}</button><button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(id)}">${escapeHtml(t("webui_remove", "Remove"))}</button></div></td>`
                         : ""
                     }
                   </tr>
@@ -2965,6 +2990,21 @@
     const rows = entry.fields.map(field => {
       const pattern = fieldPattern(field.name);
       const templated = pattern !== field.name;
+      // A field that can never become an entity here (see NON_ENTITY_FIELDS in
+      // webui.py) keeps its row, but loses the checkbox and says why. Ticking
+      // it did nothing, which read as a broken switch.
+      const noEntity = String(field.no_entity || "");
+      if (noEntity) {
+        const why = noEntity === "identity"
+          ? t("driver_fields_identity", "meter identity — already in the device name and in the entity attributes")
+          : t("driver_fields_not_in_json", "the decoder does not send this field on the RAW path");
+        return `
+        <tr style="opacity:0.55;">
+          <td style="padding:2px 6px;"><input type="checkbox" disabled></td>
+          <td class="mono" style="padding:2px 6px;white-space:nowrap;">${escapeHtml(field.name)}</td>
+          <td style="padding:2px 6px;color:#9eafba;">${escapeHtml(field.description || "")} <span style="color:#7d909c;">(${escapeHtml(why)})</span></td>
+        </tr>`;
+      }
       // A templated row has no literal name to match, so it counts as excluded
       // only when its own glob is present verbatim; a hand-written pattern
       // still greys out ordinary rows.
@@ -3391,6 +3431,36 @@
       return;
     }
 
+    if (action === "toggle-meter-field") {
+      const id = target.dataset.id || "";
+      const fieldName = target.dataset.name || "";
+      const driver = target.dataset.driver || "auto";
+      if (!id || !fieldName) return;
+      const saved = ((state.data && state.data.options && state.data.options.meters) || [])
+        .find(m => m && normalizeMeterId(m.meter_id) === normalizeMeterId(id));
+      const next = toggleExcludedName((saved && saved.exclude_fields) || "", fieldName);
+      // update-meter overwrites the driver with whatever it receives, so take it
+      // from the saved options entry rather than from the table row: a row
+      // without a driver would otherwise silently rewrite the meter to "auto".
+      const savedDriver = saved
+        ? (saved.type === "other" && saved.type_other ? saved.type_other : saved.type)
+        : "";
+      const effectiveDriver = savedDriver || driver;
+      // Disable while the round trip is in flight: the row repaints on every
+      // live render, and a second click would compute from a stale value.
+      target.disabled = true;
+      (async () => {
+        try {
+          await postApi("update-meter", {meter_id: id, driver: effectiveDriver, exclude_fields: next});
+          triggerSoftReload(`${t("fields_saved", "Field selection saved.")} ${t("reloading_pipeline", "Applying meter changes…")}`);
+        } catch (error) {
+          toast(error.message, true);
+          render();
+        }
+      })();
+      return;
+    }
+
     if (action === "load-driver-fields") {
       loadDriverFields(target.dataset.driver || "");
       return;
@@ -3540,7 +3610,7 @@
           state.reportModal = {id, report: data.report || "", keyUsed: !!data.key_used};
         } else {
           const msg = data.error === "no_raw_telegram"
-            ? t("export_report_no_raw", "No raw telegram stored for this candidate yet.")
+            ? t("export_report_no_raw", "No raw telegram stored for this meter yet.")
             : (data.error || `HTTP ${resp.status}`);
           state.reportModal = {id, error: msg};
         }
