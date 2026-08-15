@@ -227,6 +227,14 @@ ready-to-paste issue block for the upstream wmbusmeters project (raw telegram +
 number. The AES key is never included; when a configured key is used for the
 analysis, the decrypted output may include meter readings.
 
+The same **Report…** button sits in every row on METERS, so a meter you have
+already added — one that decodes but reports a field wrongly, or reports fewer
+fields than its display shows — can be reported without removing it first. It
+is also the way to see the raw frame of a configured meter: the report opens
+with the telegram itself. The frame comes from the rolling buffer of recently
+received telegrams, so it is available as soon as the meter transmits again
+after a restart.
+
 ---
 
 ## 7. Filter by value — when you hear too many other meters
@@ -327,6 +335,50 @@ help, because Home Assistant restores removed entities (including their
 enabled/disabled state) as soon as the same meter is rediscovered; it keeps that
 record for 30 days. Enable it by hand once and it stays enabled.
 
+### RSSI per receiving board (opt-in, enabled on the ESP)
+
+Signal level is not part of a telegram. The RAW topic carries bare hexadecimal,
+so `wmbusmeters` never sees an RSSI and cannot report one — the receiving board
+has to publish it separately. That publication is **off by default** and is not
+an add-on option: you enable it in the firmware's YAML, in the `wmbus_radio`
+section:
+
+```yaml
+wmbus_radio:
+  publish_rssi: true
+```
+
+The board then publishes, for every meter it decodes:
+
+```text
+wmbus/<board>/rssi/<meter_id>    payload: -52
+```
+
+The bridge caches that value per meter **and** per board, and joins it onto the
+decoded telegram as `rssi_<board>_dbm`. Each board therefore gets its own
+signal-strength entity for the same meter:
+
+```json
+{
+  "rssi_lilygo_dbm": -52,
+  "rssi_xiaoseed_dbm": -50
+}
+```
+
+This is deliberate. Two boards can hear the same meter, and a single merged
+value would simply alternate between them — a number that looks like a
+fluctuating signal instead of two receivers. There is no combined `rssi_dbm`
+for that reason.
+
+What the bridge stores is only a plausible measurement: -125 to -1 dBm. The
+firmware's "no data" sentinels are dropped rather than published as readings,
+and a cached value older than five minutes is not attached to a fresh telegram —
+so if one board stops publishing, its entity goes unavailable instead of
+freezing on its last number.
+
+With the option left off, nothing arrives, no field is added and no entity is
+created.
+
 ### Legacy SEARCH mode
 
 | Field | Type | Default | Description |
@@ -357,6 +409,17 @@ record for 30 days. Enable it by hand once and it stays enabled.
 
 The WebUI driver list is generated from the pinned `wmbusmeters` build and its
 XMQ sources. Use that catalog instead of a manually maintained list in this guide.
+
+The field table in the meter's driver panel comes from
+`wmbusmeters --listfields` — the driver's full catalog, not the list of what
+this path publishes. Ten fields common to every driver are therefore shown
+greyed out and cannot be ticked. `id`, `name`, `meter`, `media` and `timestamp`
+are the meter's identity: they stay in the device name and in the entity
+attributes instead of becoming entities of their own. `timestamp_ut`,
+`timestamp_lt`, `timestamp_utc`, `device` and `rssi_dbm` never reach the
+decoder's JSON here — the three timestamps exist only for the CSV/`fields`
+output formats, and the last two are filled in by a receiving radio device,
+which the decoder does not have when telegrams are fed to it as hex.
 
 ---
 

@@ -7,17 +7,22 @@ declare -A DISCOVERY_CLEANED_LEGACY
 declare -A SEARCH_DISCOVERY_CLEARED_FIELD
 
 
-clean_legacy_totalm3() {
+clean_legacy_entities() {
   local id
   [[ "${DISCOVERY_ENABLED}" == "true" ]] || return 0
   id="$(normalize_meter_id "$1")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
 
+  # rssi_dbm was the first shape of the opt-in RSSI join: one merged value per
+  # meter, whichever board reported last. Per-board rssi_<esp>_dbm replaced it,
+  # so the retained config has to be cleared or Home Assistant keeps showing the
+  # old entity for every meter that ever had one.
   if [[ -z "${DISCOVERY_CLEANED_LEGACY[${id}]+x}" ]]; then
-    if mqtt_pub "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/total_m3/config" "" "true"; then
+    if mqtt_pub "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/total_m3/config" "" "true" \
+      && mqtt_pub "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/rssi_dbm/config" "" "true"; then
       DISCOVERY_CLEANED_LEGACY["${id}"]=1
     else
-      warn "discovery: failed to clear legacy total_m3 for id=${id} (will retry later)"
+      warn "discovery: failed to clear legacy entities for id=${id} (will retry later)"
     fi
   fi
 }
@@ -31,7 +36,7 @@ emit_discovery_from_json() {
   id="$(normalize_meter_id "$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
 
-  clean_legacy_totalm3 "${id}"
+  clean_legacy_entities "${id}"
 
   name="$(jq -r '.name // .id // "wmbus"' <<<"${json_line}" 2>/dev/null || true)"
   meter="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
@@ -351,7 +356,7 @@ clear_search_discovery_from_json() {
   # Clear older retained discovery configs if a previous buggy search run
   # already created HA entities. Use retain=true because MQTT Discovery
   # removal requires an empty retained config payload.
-  clean_legacy_totalm3 "${id}"
+  clean_legacy_entities "${id}"
 
   local uniq="wmbus_${id}"
   while IFS= read -r key; do
@@ -409,7 +414,7 @@ clear_meter_discovery() {
   id="$(normalize_meter_id "$1")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
 
-  clean_legacy_totalm3 "${id}"
+  clean_legacy_entities "${id}"
 
   local topic _rest
   while read -r topic _rest; do

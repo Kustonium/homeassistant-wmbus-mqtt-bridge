@@ -1,6 +1,60 @@
 #!/usr/bin/env bash
 # ESP diagnostic and per-device background subscriber helpers.
 
+# A stored RSSI older than this is ignored rather than attached to a fresh
+# telegram. Normally the row is written moments before the frame it belongs to
+# arrives, so the window is generous; it exists for the case where the firmware
+# stops publishing RSSI while still forwarding telegrams, which would otherwise
+# pin one value to a meter forever.
+RSSI_MAX_AGE_S=300
+
+# Join the last reported RSSI onto a decoded telegram, by meter id. Prints the
+# line unchanged when there is nothing to add, so callers can use it inline.
+# One field per board and nothing else: a single merged rssi_dbm was tried first
+# and removed, because two ESPs hearing the same meter made it alternate between
+# boards, which is a number nobody can act on.
+inject_rssi_into_json() {
+  local id="${1,,}" line="$2"
+  [[ -s "${STATUS_RSSI_FILE}" ]] || { printf '%s' "${line}"; return 0; }
+  local _rid dbm src ts now src_key field result
+  now="$(epoch_now)"
+  result="${line}"
+  while IFS=$'\t' read -r _rid dbm src ts; do
+    [[ "${dbm}" =~ ^-[0-9]+$ && "${ts}" =~ ^[0-9]+$ ]] || continue
+    # Same range as the subscriber: a sentinel that slipped into the file (an
+    # older row, a hand-edited file) must not become a reading either.
+    (( dbm >= -125 && dbm <= -1 )) || continue
+    (( now - ts <= RSSI_MAX_AGE_S )) || continue
+    # MQTT's `+` topic segment becomes a stable JSON/HA field suffix. Keep the
+    # board name recognizable while removing punctuation that cannot belong in
+    # a portable entity id (e.g. "xiao-seed" -> "xiao_seed").
+    src_key="$(printf '%s' "${src}" | tr '[:upper:]' '[:lower:]' \
+      | sed -e 's/[^a-z0-9_]/_/g' -e 's/__*/_/g' -e 's/^_*//' -e 's/_*$//')"
+    [[ -n "${src_key}" ]] || continue
+    field="rssi_${src_key}_dbm"
+    result="$(jq -c --arg k "${field}" --argjson r "${dbm}" '. + {($k): $r}' \
+      <<<"${result}" 2>/dev/null)" || { printf '%s' "${line}"; return 0; }
+  done < <(awk -F'\t' -v id="${id}" '$1 == id {print}' "${STATUS_RSSI_FILE}" 2>/dev/null || true)
+
+  printf '%s' "${result}"
+}
+
+# Atomic upsert keyed by meter id AND ESP device. Unlike the generic TSV helper,
+# this deliberately retains several rows with the same meter id so every board
+# can produce its own Home Assistant RSSI entity.
+_rssi_tsv_upsert() {
+  local file="$1" id="$2" src="$3" row="$4"
+  (
+    flock -x 9
+    local _tmp
+    _tmp="$(mktemp "${file}.tmp.XXXXXX")" || return 1
+    awk -F'\t' -v id="${id}" -v src="${src}" '$1 != id || $3 != src {print}' \
+      "${file}" 2>/dev/null > "${_tmp}" || true
+    printf '%s\n' "${row}" >> "${_tmp}"
+    mv "${_tmp}" "${file}" 2>/dev/null || { rm -f "${_tmp}"; true; }
+  ) 9>"${file}.lock"
+}
+
 start_esp_subscribers() {
 # Track background subscriber PIDs so the soft-reload watcher in bridge.sh can
 # exclude them from its kill — these subscribers must survive pipeline restarts
@@ -89,6 +143,45 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 # the user can spot an ESP-vs-add-on mismatch. Empty target/highlight (the common
 # listen-only case) simply yields no badges.
 STATUS_ESP_METERS_FILE="${BASE}/status_esp_meters.json"
+
+# Background subscriber for per-meter RSSI (wmbus/<dev>/rssi/<meter_id>).
+# OPT-IN on the firmware side: the ESP publishes this topic only when its YAML
+# enables it, so on a default install nothing ever arrives here and the file
+# below simply never appears. The decoder cannot supply RSSI itself — the
+# telegram topic carries bare hex, so wmbusmeters has nothing to report — which
+# is why the value has to travel out of band and be joined back by meter id.
+# The id comes from the topic rather than the payload because the ESP already
+# parses it for its whitelist; no correlation against the frame is needed.
+(
+  while true; do
+    _rssi_t0="$(epoch_now)"
+    while IFS=$'\t' read -r _rssi_topic _rssi_val; do
+      [[ -n "${_rssi_val}" ]] || continue
+      # Topic tail after ".../rssi/" is the meter id.
+      _rssi_id="${_rssi_topic##*/rssi/}"
+      [[ "${_rssi_id}" =~ ^[0-9A-Fa-f]{8}$ ]] || continue
+      _rssi_id="$(normalize_meter_id "${_rssi_id}")"
+      # Device = topic segment between "wmbus/" and "/rssi/".
+      _rssi_dev="${_rssi_topic#wmbus/}"
+      _rssi_dev="${_rssi_dev%%/rssi/*}"
+      # Accept only a plausible measured level. The firmware uses distinct
+      # "no data" sentinels per topic (1 in health, 0 in the window topics,
+      # -127 = RSSI_NOT_MEASURED in the driver), and its own consumers treat
+      # anything <= -126 as unmeasured. Publishing a sentinel as a reading would
+      # be worse than publishing nothing, so the range is enforced here and
+      # again at join time.
+      [[ "${_rssi_val}" =~ ^-[0-9]+$ ]] || continue
+      (( _rssi_val >= -125 && _rssi_val <= -1 )) || continue
+      _rssi_tsv_upsert "${STATUS_RSSI_FILE}" "${_rssi_id}" "${_rssi_dev}" \
+        "$(printf '%s\t%s\t%s\t%s' "${_rssi_id}" "${_rssi_val}" "${_rssi_dev}" "$(epoch_now)")"
+    done < <(
+      ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/rssi/+" -F '%t\t%p' -W 90 2>/dev/null
+    )
+    _sub_reconnect_sleep "${_rssi_t0}"
+  done
+) &
+ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
+
 (
   while true; do
     _sub_t0="$(epoch_now)"
