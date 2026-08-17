@@ -17,6 +17,31 @@
     ["about", "nav_about", "AB"],
   ];
 
+  // Wired M-Bus is behind two independent gates: this one only shows the tab,
+  // the switch inside it actually starts the engine. Users without a bus see
+  // no change at all. The hash route is guarded too — hiding a nav entry while
+  // #/mbus still opens the page would make the gate decorative.
+  function mbusTabVisible() {
+    // The flag has to come from the main payload, not from state.mbus: that one
+    // is fetched only when the tab is opened, so relying on it alone made the
+    // tab permanently invisible - it could never be reached to load its own
+    // visibility. api/app carries mbus_tab_visible for exactly this reason.
+    if (state.mbus && typeof state.mbus.tab_visible === "boolean") {
+      return state.mbus.tab_visible;
+    }
+    return Boolean(state.data?.mbus_tab_visible);
+  }
+
+  function visibleNavItems() {
+    if (!mbusTabVisible()) return navItems;
+    const out = [];
+    for (const item of navItems) {
+      if (item[0] === "logs") out.push(["mbus", "nav_mbus", "MB"]);
+      out.push(item);
+    }
+    return out;
+  }
+
   const textAliases = {
     webui_language: "show",
     webui_restart: "restart_addon",
@@ -76,6 +101,12 @@
     driverFields: {},
     // Candidate "export for issue report" modal: {id, loading, report, error}.
     reportModal: null,
+    // Wired M-Bus panel payload from api/mbus (ports, meters, access state).
+    // null = not fetched yet; fetched lazily when the tab is opened.
+    mbus: null,
+    mbusLoading: false,
+    // Result of the last 0xFE bus probe: {state, reply_hex}.
+    mbusProbe: null,
     // Driver catalog (assets/drivers.json, baked at image build time from the
     // pinned wmbusmeters sources). null = not fetched yet; [] = fetch failed.
     drivers: null,
@@ -433,6 +464,10 @@
   // per-ESP data we fall back to the single best-across-ESP %. Honest-witness:
   // nothing is rendered when there is neither a flag nor any reception data.
   function espReceptionBadges(row) {
+    if (row.source === "mbus") {
+      const alias = String(row.source_label || "M-Bus");
+      return `<div style="margin-top:5px;"><span class="pill ok" title="${escapeHtml(t("source_mbus_hint", "Reading from the wired M-Bus polling instance"))}">🔌 M-Bus · ${escapeHtml(alias)}</span></div>`;
+    }
     const flagged = row.esp_flagged === "true";
     const esps    = Array.isArray(row.reception_esps) ? row.reception_esps : [];
     const bestPct = Number(row.reception_pct);
@@ -818,13 +853,13 @@
   }
 
   function routeTitle(route) {
-    const item = navItems.find(([id]) => id === route);
+    const item = visibleNavItems().find(([id]) => id === route);
     return item ? t(item[1], item[0]) : t("dashboard_title", "Dashboard");
   }
 
   function navHtml(mobile = false) {
     const cls = mobile ? "mobile-nav" : "nav";
-    return `<nav class="${cls}">${navItems
+    return `<nav class="${cls}">${visibleNavItems()
       .map(([id, key, mark]) => {
         const active = id === state.route ? " active" : "";
         const icon = mobile ? "" : `<span class="nav-ico">${mark}</span>`;
@@ -1297,6 +1332,22 @@
       haText = haStatus;
     }
 
+    const mbus = (state.data && state.data.mbus) || {};
+    const wiredMeters = Object.values(mbus.meters || {}).filter((m) => m && m.id).length;
+    const wiredPipeline = mbus.state === "ok" ? `
+      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
+        <div style="font-size:11px;color:var(--muted);font-weight:700;margin-bottom:8px;">${escapeHtml(t("pipeline_wired_active", "WIRED M-BUS · ACTIVE"))}</div>
+        <div class="pipeline">
+          <div class="pipeline-node"><div class="pipeline-icon">🔢</div><div class="pipeline-title">M-Bus</div><div class="pipeline-meta">${dot(true, false, true)} ${wiredMeters} ${escapeHtml(t("pipeline_wired_meters", "meters"))}</div></div>
+          <div class="pipeline-arrow"><span>${escapeHtml(mbus.bus_alias || "M-Bus")}</span></div>
+          <div class="pipeline-node"><div class="pipeline-icon">🔌</div><div class="pipeline-title">${escapeHtml(t("pipeline_serial_master", "serial master"))}</div><div class="pipeline-meta">${dot(true, false, true)} ${escapeHtml(t("pipeline_wired_receiving", "receiving"))}</div></div>
+          <div class="pipeline-arrow"></div>
+          <div class="pipeline-node"><div class="pipeline-icon">⚙</div><div class="pipeline-title">wmbusmeters</div><div class="pipeline-meta">${dot(true, false, true)} ${escapeHtml(t("pipeline_wmbus_polling", "polling"))}</div></div>
+          <div class="pipeline-arrow"></div>
+          <div class="pipeline-node"><div class="pipeline-icon">📨🏠</div><div class="pipeline-title">MQTT + HA</div><div class="pipeline-meta">${dot(!!model.mqtt_ok, !model.mqtt_ok, !!model.mqtt_ok)} ${escapeHtml(model.mqtt_ok ? t("pipeline_mqtt_online", "online") : t("pipeline_mqtt_offline", "offline"))}</div></div>
+        </div>
+      </div>` : "";
+
     return `
       <section class="section">
         <div class="pipeline">
@@ -1336,6 +1387,7 @@
             ${chevron("ha")}
           </button>
         </div>
+        ${wiredPipeline}
         ${pipelineWorkspace(model)}
       </section>
     `;
@@ -1829,7 +1881,7 @@
               <th>${escapeHtml(t("manufacturer_col", "Manufacturer"))}</th>
               <th>${escapeHtml(t("webui_value", "Value"))}</th>
               <th>${escapeHtml(t("webui_last_seen", "Last seen"))}</th>
-              <th>${escapeHtml(t("reception", "Reception"))}${receptionLegendInfo()}</th>
+              <th>${escapeHtml(t("source_reception", "Source / reception"))}${receptionLegendInfo()}</th>
               ${withActions ? "<th></th>" : ""}
             </tr>
           </thead>
@@ -1869,7 +1921,9 @@
                     </td>
                     ${
                       withActions
-                        ? `<td><div class="actions"><button class="btn" data-action="toggle-meter-fields" data-id="${escapeHtml(id)}">${escapeHtml(t("published_fields_btn", "Fields"))} ${state.expandedMeterFields.has(id) ? "▴" : "▾"}</button><button class="btn" data-action="open-edit-driver" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(row.driver || "auto")}">${escapeHtml(t("change_driver_btn", "Driver…"))}</button><button class="btn" data-action="export-report" data-id="${escapeHtml(id)}" title="${escapeHtml(t("export_report_title", "wmbusmeters issue report"))}">${escapeHtml(t("export_report_btn", "Report…"))}</button><button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(id)}">${escapeHtml(t("webui_remove", "Remove"))}</button></div></td>`
+                        ? (row.source === "mbus"
+                          ? `<td><a class="btn" href="#mbus" style="text-decoration:none;">${escapeHtml(t("source_mbus_manage", "Manage in M-Bus"))}</a></td>`
+                          : `<td><div class="actions"><button class="btn" data-action="toggle-meter-fields" data-id="${escapeHtml(id)}">${escapeHtml(t("published_fields_btn", "Fields"))} ${state.expandedMeterFields.has(id) ? "▴" : "▾"}</button><button class="btn" data-action="open-edit-driver" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(row.driver || "auto")}">${escapeHtml(t("change_driver_btn", "Driver…"))}</button><button class="btn" data-action="export-report" data-id="${escapeHtml(id)}" title="${escapeHtml(t("export_report_title", "wmbusmeters issue report"))}">${escapeHtml(t("export_report_btn", "Report…"))}</button><button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(id)}">${escapeHtml(t("webui_remove", "Remove"))}</button></div></td>`)
                         : ""
                     }
                   </tr>
@@ -2617,11 +2671,26 @@
           <div style="flex:0 0 auto;text-align:right;">${input}</div>
         </div>`;
     };
+    // The wired M-Bus options are fenced off in their own bordered block. They
+    // belong to a separate engine that most installations never turn on, and
+    // mixing them into the main list invited the wrong reading — that this is
+    // where you configure a radio dongle. The note says what it is not.
+    const mbusOpts = opts.filter((s) => s.key.startsWith("mbus_"));
+    const mainOpts = opts.filter((s) => !s.key.startsWith("mbus_"));
+    const mbusBlock = mbusOpts.length
+      ? `<div style="margin-top:18px;border:1px solid #2b4256;border-radius:8px;padding:12px 14px;background:#0e1a22;">
+           <h3 style="margin:0 0 4px;font-size:14px;color:#cfe3ee;">🔌 ${escapeHtml(t("cfg_mbus_section", "M-Bus (wired) — separate engine"))}</h3>
+           <p style="font-size:11px;color:#9eafba;margin:0 0 10px;">${escapeHtml(t("cfg_mbus_section_note", "Wired M-Bus only — not for radio dongles."))}</p>
+           ${mbusOpts.map(field).join("")}
+         </div>`
+      : "";
+
     return `
       <section class="section">
         <div class="section-head"><h2>⚙️ ${escapeHtml(t("cfg_title", "Configuration"))}</h2></div>
         <p style="font-size:12px;color:#9eafba;margin:0 0 10px;">${escapeHtml(t("cfg_intro", "Edit the add-on options here — the same options as the Home Assistant Configuration tab, with an explanation of each. Core options take effect after an add-on restart."))}</p>
-        ${opts.map(field).join("")}
+        ${mainOpts.map(field).join("")}
+        ${mbusBlock}
         <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
           <button class="btn primary" data-action="save-config">${escapeHtml(t("cfg_save", "Save options"))}</button>
           <span style="font-size:11px;color:#f3c84b;">⚠️ ${escapeHtml(t("cfg_restart_note", "After saving, restart the add-on (top bar) to apply core options."))}</span>
@@ -2779,12 +2848,16 @@
         </div>
       </section>
       <section class="section">
-        <div class="section-head"><h2>${escapeHtml(t("webui_pipeline", "Pipeline"))}</h2></div>
-        <div class="code">ESP32 / Gateway / Bridge
--> MQTT raw HEX
--> wmbusmeters stdin:hex
--> MQTT decoded JSON
--> Home Assistant Discovery</div>
+        <div class="section-head"><h2>${escapeHtml(t("webui_pipeline", "Pipelines"))}</h2></div>
+        <h3>${escapeHtml(t("about_pipeline_radio", "Wireless wM-Bus"))}</h3>
+        <div class="code">${escapeHtml(t("about_pipeline_radio_flow", "wM-Bus meter → ESP32 / gateway → MQTT raw HEX → wmbusmeters stdin:hex → MQTT decoded JSON + Home Assistant Discovery"))}</div>
+        <h3 style="margin-top:16px;">${escapeHtml(t("about_pipeline_wired", "Wired M-Bus"))}</h3>
+        <div class="code">${escapeHtml(t("about_pipeline_wired_flow", "M-Bus meter → master converter / serial port → separate polling wmbusmeters instance → MQTT decoded JSON + Home Assistant Discovery"))}</div>
+      </section>
+      <section class="section">
+        <div class="section-head"><h2>${escapeHtml(t("about_ai_title", "AI-assisted development"))}</h2></div>
+        <p>${escapeHtml(t("about_ai_p1", "This project uses AI-assisted development and review. Some code, documentation, analysis, comparisons, and refactoring were created or refined with help from AI tools, including OpenAI ChatGPT and Anthropic Claude."))}</p>
+        <p>${escapeHtml(t("about_ai_p2", "Final responsibility for the repository content, testing, licensing, maintenance, and release decisions remains with the repository maintainer. AI assistance was used as a development and review aid, not as an independent copyright holder."))}</p>
       </section>
     `;
   }
@@ -3335,6 +3408,447 @@
     `;
   }
 
+  // ── Wired M-Bus tab ────────────────────────────────────────
+  function ensureDriverCatalog() {
+    if (state.drivers !== null) return;
+    // Mark the request as in flight so repeated M-Bus renders do not start
+    // duplicate downloads before the first response arrives.
+    state.drivers = [];
+    fetch("assets/drivers.json", {cache: "no-store"})
+      .then(r => (r.ok ? r.json() : []))
+      .then(list => {
+        state.drivers = Array.isArray(list) ? list : [];
+        render();
+      })
+      .catch(() => { state.drivers = []; });
+  }
+
+  async function loadMbus(force = false) {
+    if (state.mbusLoading) return;
+    if (state.mbus && !force) return;
+    state.mbusLoading = true;
+    try {
+      // Device nodes can appear after the add-on and WebUI have started.
+      // Never reuse a cached response here: otherwise a newly attached USB
+      // adapter remains invisible until the user performs Ctrl+F5.
+      const response = await fetch("api/mbus", {cache: "no-store"});
+      state.mbus = await response.json();
+      ensureDriverCatalog();
+    } catch (_) {
+      state.mbus = {error: true};
+    } finally {
+      state.mbusLoading = false;
+      render();
+    }
+  }
+
+  async function refreshMbusDevices() {
+    if (state.mbusLoading || state.route !== "mbus" || !state.mbus) return;
+    state.mbusLoading = true;
+    try {
+      const response = await fetch("api/mbus", {cache: "no-store"});
+      const fresh = await response.json();
+      // Refresh only live discovery/runtime fields. Keeping the form values
+      // from state prevents a background USB refresh from discarding edits the
+      // user has not saved yet.
+      state.mbus.devices = asArray(fresh.devices);
+      state.mbus.access = fresh.access || {};
+      state.mbus.runtime = fresh.runtime || {};
+    } catch (_) {
+      // A transient refresh failure must not replace a usable form with an
+      // error page. The next tick or tab entry retries automatically.
+    } finally {
+      state.mbusLoading = false;
+      render();
+    }
+  }
+
+  // Fetched separately from /api/mbus and only on demand: the log is the one
+  // part of this tab that keeps growing, and nobody needs it re-sent with every
+  // panel refresh.
+  async function loadMbusConsole() {
+    try {
+      const response = await fetch("api/mbus/console?limit=200");
+      const data = await response.json();
+      state.mbusConsole = {lines: asArray(data.lines)};
+    } catch (_) {
+      state.mbusConsole = {lines: []};
+    }
+    render();
+  }
+
+  function mbusMetersFromForm() {
+    return Array.from(document.querySelectorAll(".mbus-m-name")).map((input, index) => ({
+      id: input.value.trim(),
+      address: (document.querySelector(`.mbus-m-addr[data-i="${index}"]`)?.value || "").trim(),
+      type: (document.querySelector(`.mbus-m-type[data-i="${index}"]`)?.value || "auto").trim(),
+      poll_interval: (document.querySelector(`.mbus-m-poll[data-i="${index}"]`)?.value || "").trim(),
+    }));
+  }
+
+  function mbusAccessBanner(mbus) {
+    const access = mbus.access || {};
+    // The gate is NOT "no ports listed": Supervisor bind-mounts the host's
+    // whole /dev into every add-on, so ports show up even without uart:true.
+    // Only a failed open on the port the user picked proves anything.
+    if (access.openable === "denied") {
+      const key = access.mode === "addon" ? "mbus_no_access_addon" : "mbus_no_access_docker";
+      return `<div class="banner banner-warn">${escapeHtml(t(key,
+        access.mode === "addon"
+          ? "Reinstall the add-on — this version maps serial ports."
+          : "Add devices: /dev/serial/by-id/… to your compose file and recreate the container."))}</div>`;
+    }
+    if (access.openable === "device_missing") {
+      return `<div class="banner banner-warn">${escapeHtml(t("mbus_device_missing",
+        "The configured port no longer exists."))}</div>`;
+    }
+    if (access.openable === "busy_or_error") {
+      return `<div class="banner banner-warn">${escapeHtml(t("mbus_device_busy",
+        "The port exists but cannot be opened — another program may be using it."))}</div>`;
+    }
+    return "";
+  }
+
+  // Bus health. Access ("can the port be opened") is answered by the banner
+  // above; this answers the other half, which only the bridge can know: does
+  // anything on the wire actually reply, and when it does not, which of the
+  // several causes is it. They share one symptom - nothing arrives - and the
+  // decoder names the cause only in its own log, which is why the state is
+  // carried out through status_mbus.json rather than inferred here.
+  const MBUS_HEALTH = {
+    ok:               {cls: "ok",    key: "mbus_health_ok"},
+    starting:         {cls: "muted", key: "mbus_health_starting"},
+    disabled:         {cls: "muted", key: "mbus_health_disabled"},
+    unknown:          {cls: "muted", key: "mbus_health_unknown"},
+    not_configured:   {cls: "warn",  key: "mbus_health_not_configured"},
+    no_meters:        {cls: "warn",  key: "mbus_health_no_meters"},
+    no_reply:         {cls: "warn",  key: "mbus_health_no_reply"},
+    damaged_frames:   {cls: "warn",  key: "mbus_health_damaged"},
+    not_mbus_traffic: {cls: "bad",   key: "mbus_health_not_mbus"},
+    bus_down:         {cls: "bad",   key: "mbus_health_bus_down"},
+    device_missing:   {cls: "bad",   key: "mbus_health_device_missing"},
+    identity_changed: {cls: "bad",   key: "mbus_health_identity_changed"},
+  };
+
+  function mbusMeterAge(epoch) {
+    const ts = Number(epoch);
+    if (!ts) return t("mbus_never_answered", "never answered");
+    const age = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+    return t("mbus_answered_ago", "last answered {age} ago").replace("{age}", fmtInterval(age));
+  }
+
+  function mbusHealthCard(mbus) {
+    const rt = mbus.runtime || {};
+    const state_ = String(rt.state || "unknown");
+    const meta = MBUS_HEALTH[state_] || MBUS_HEALTH.unknown;
+    const names = Object.keys(rt.meters || {});
+    // Only worth showing once the engine is on: with polling off the state is
+    // "disabled" and the whole card would be a row of dashes.
+    if (!mbus.enabled && state_ !== "identity_changed") return "";
+
+    const rows = names.sort().map((name) => {
+      const m = rt.meters[name] || {};
+      const clash = m.clash_with
+        ? ` <span class="pill bad"><span class="dot"></span>${escapeHtml(
+            t("mbus_clash", "answered with two different ids ({other})").replace("{other}", m.clash_with))}</span>`
+        : "";
+      return `<div class="mbus-meter-state">
+        <span class="name">${escapeHtml(name)}</span>
+        <span class="detail">${escapeHtml(m.id ? `id ${m.id} · ` : "")}${escapeHtml(mbusMeterAge(m.last_ok_epoch))}</span>
+        ${clash}
+      </div>`;
+    }).join("");
+
+    // Every state carries a one-line explanation; an empty string means the
+    // state label already says everything and the paragraph is dropped rather
+    // than rendered blank.
+    const hint = t(meta.key + "_hint", "");
+    const skipped = Number(rt.meters_skipped || 0);
+    const skippedNote = skipped > 0
+      ? `<p class="hint">${escapeHtml(
+          t("mbus_meters_skipped", "{n} configured entr(ies) were rejected and are not polled — see the log.")
+            .replace("{n}", String(skipped)))}</p>`
+      : "";
+
+    return `
+      <div class="card">
+        <h2>${escapeHtml(t("mbus_health_title", "Bus status"))}</h2>
+        <div class="mbus-health-head">
+          <span class="pill ${meta.cls}"><span class="dot"></span>${escapeHtml(t(meta.key, state_))}</span>
+          <span class="detail">${escapeHtml(t("mbus_health_meters", "{n} meter(s) polled")
+            .replace("{n}", String(rt.meters_configured || 0)))}</span>
+        </div>
+        ${hint ? `<p class="hint">${escapeHtml(hint)}</p>` : ""}
+        ${skippedNote}
+        ${rows}
+      </div>`;
+  }
+
+  // Address scan. This is the wired equivalent of the candidate list, which on
+  // a cable does not exist: nothing on a bus transmits on its own, so the only
+  // way to learn an address is to ask for it. It therefore TRANSMITS, which is
+  // why it never starts by itself, is capped per run, and is refused while the
+  // engine holds the bus.
+  function mbusScanCard(mbus) {
+    const scan = state.mbusScan || {};
+    const labels = {
+      not_requested: t("mbus_scan_data_not_requested", "no data request"),
+      no_reply: t("mbus_scan_data_no_reply", "no data reply"),
+      ack: t("mbus_scan_data_ack", "ACK only"),
+      frame_short: t("mbus_scan_data_short", "short frame"),
+      frame_long: t("mbus_scan_data_long", "valid long frame"),
+      not_mbus: t("mbus_scan_data_foreign", "foreign/non-M-Bus data"),
+      checksum: t("mbus_scan_data_checksum", "bad checksum"),
+      incomplete: t("mbus_scan_data_incomplete", "incomplete frame"),
+      multiple: t("mbus_scan_data_multiple", "multiple/colliding frames"),
+    };
+    const rows = (scan.results || scan.found || []).map((f) => `
+      <div class="mbus-meter-state">
+        <span class="name">p${f.address}</span>
+        <span class="detail">${escapeHtml(f.answered ? t("mbus_scan_answered", "present") : t("mbus_scan_silent", "no response"))} · ${escapeHtml(labels[f.data_state] || f.data_state || "")}${f.hex ? ` · <code>${escapeHtml(f.hex.slice(0, 24))}</code>` : ""}</span>
+        ${f.answered ? `<button class="btn" data-action="mbus-scan-add" data-addr="${f.address}">${escapeHtml(t("mbus_scan_add", "Add"))}</button>` : ""}
+      </div>`).join("");
+    const summary = scan.done
+      ? `<p class="hint">${escapeHtml(
+          t("mbus_scan_summary", "Scanned p{first}–p{last}: {n} answered.")
+            .replace("{first}", String(scan.first))
+            .replace("{last}", String(scan.last))
+            .replace("{n}", String((scan.found || []).length)))}</p>`
+      : "";
+    return `
+      <div class="mbus-scan-section">
+        <h2>${escapeHtml(t("mbus_scan_title", "Scan primary addresses"))}</h2>
+        <p class="hint">${escapeHtml(t("mbus_scan_hint", "The diagnostic scan checks whether each address acknowledges and immediately requests its data. It never starts on its own. Valid primaries are p1–p250; p0 is the factory 'unset' value."))}</p>
+        <div class="mbus-scan-controls">
+          <label>${escapeHtml(t("mbus_scan_from", "From"))}
+            <input type="number" id="mbus_scan_first" min="1" max="250" value="${escapeHtml(String(scan.nextFirst ?? 1))}">
+          </label>
+          <label>${escapeHtml(t("mbus_scan_to", "To"))}
+            <input type="number" id="mbus_scan_last" min="1" max="250" value="${escapeHtml(String(scan.nextLast ?? 32))}">
+          </label>
+        </div>
+        <div class="row-actions">
+          <button class="btn primary" data-action="mbus-scan"${mbus.enabled || scan.running ? " disabled" : ""}>${escapeHtml(
+            scan.running ? t("mbus_scan_running", "Scanning…") : t("mbus_scan_button", "Scan this range"))}</button>
+        </div>
+        ${mbus.enabled ? `<p class="hint">${escapeHtml(t("mbus_engine_holds_bus", "Turn polling off first — it is the bus master."))}</p>` : ""}
+        ${summary}
+        ${rows}
+      </div>`;
+  }
+
+  // Read-only console. A writable terminal would mean sending arbitrary bytes
+  // into somebody's metering hardware; watching the stream is what actually
+  // answers "why is this address silent" and "is this even M-Bus".
+  const MBUS_LINE_CLASS = {
+    frame: "ok",
+    telegram: "ok",
+    not_mbus: "bad",
+    bus_down: "bad",
+    checksum: "warn",
+    no_reply: "warn",
+    info: "muted",
+  };
+
+  function mbusConsoleCard() {
+    const con = state.mbusConsole || {};
+    const lines = con.lines || [];
+    const body = lines.length
+      ? lines.map((l) => {
+          // The shape outranks the line kind. A logged frame is kind "frame"
+          // whatever it contains, so colouring by kind alone painted a reply
+          // that is not M-Bus at all the same green as a good telegram.
+          const cls = l.shape === "not_mbus" ? "bad" : (MBUS_LINE_CLASS[l.kind] || "muted");
+          const shape = l.shape ? ` [${l.shape}]` : "";
+          return `<div class="mbus-console-line ${cls}">${escapeHtml(l.text + shape)}</div>`;
+        }).join("")
+      : `<div class="mbus-console-line muted">${escapeHtml(t("mbus_console_empty", "Nothing logged yet. The stream fills once polling runs; turn on logtelegrams to see the raw frames."))}</div>`;
+    // Only shown when the classifier actually saw foreign bytes — offered as
+    // the likely reading of the stream, not asserted as a diagnosis.
+    const foreign = lines.some((l) => l.kind === "not_mbus" || l.shape === "not_mbus");
+    return `
+      <div class="card mbus-console-card">
+        <h2>${escapeHtml(t("mbus_console_title", "Bus console"))}</h2>
+        <p class="hint">${escapeHtml(t("mbus_console_hint", "Read-only. Frame shapes: 68 LL LL 68 is a long frame, 10 a short one, E5 a bare acknowledgement."))}</p>
+        <div class="row-actions">
+          <button class="btn" data-action="mbus-console-refresh">${escapeHtml(t("mbus_console_refresh", "Refresh"))}</button>
+        </div>
+        ${foreign ? `<p class="hint">${escapeHtml(t("mbus_console_foreign", "Bytes are arriving that are not shaped like M-Bus frames. Electricity meters usually speak DLMS/COSEM, which this add-on does not decode."))}</p>` : ""}
+        <div class="mbus-console">${body}</div>
+      </div>`;
+  }
+
+  function mbusDeviceOption(dev, current) {
+    const warnKeys = {
+      esp_native_usb: "mbus_warn_esp",
+      zigbee_coordinator: "mbus_warn_zigbee",
+      wmbus_radio: "mbus_warn_radio",
+      rtl_sdr: "mbus_warn_sdr",
+      dvbt_tuner: "mbus_warn_dvbt",
+    };
+    const notes = [];
+    if (dev.warning && warnKeys[dev.warning]) notes.push(t(warnKeys[dev.warning], dev.warning));
+    if (dev.by_id_ambiguous) notes.push(t("mbus_path_ambiguous", "identical twin device — using the socket path"));
+    if (dev.kind === "onboard") notes.push(t("mbus_onboard_port", "motherboard port"));
+    const suffix = notes.length ? ` — ${notes.join("; ")}` : "";
+    const selected = dev.path === current ? " selected" : "";
+    return `<option value="${escapeHtml(dev.path)}"${selected}>${escapeHtml(dev.path + suffix)}</option>`;
+  }
+
+  function mbusPage() {
+    const mbus = state.mbus || {};
+    if (mbus.error) {
+      return `<div class="card"><p>${escapeHtml(t("mbus_load_failed", "Could not load M-Bus data."))}</p></div>`;
+    }
+    const devices = asArray(mbus.devices);
+    const usb = devices.filter((d) => d.kind === "usb");
+    const onboard = devices.filter((d) => d.kind !== "usb");
+    const ordered = usb.concat(onboard);
+    const meters = asArray(mbus.meters);
+    const probe = state.mbusProbe || null;
+    const probeKeys = {
+      bus_silent: "mbus_probe_silent",
+      bus_alive_clean: "mbus_probe_alive",
+      bus_alive_garbled: "mbus_probe_garbled",
+      device_missing: "mbus_device_missing",
+      denied: "mbus_probe_denied",
+      busy_or_error: "mbus_device_busy",
+    };
+
+    return `<div class="mbus-page">
+      <div class="card banner-untested mbus-hero">
+        <div>
+          <h2>${escapeHtml(t("mbus_title", "M-Bus (wired)"))}</h2>
+          <p>${escapeHtml(t("mbus_subtitle", "Through an M-Bus master converter on a serial port (USB / RS-232 / RS-485)."))}</p>
+        </div>
+        <span class="pill ${mbus.enabled ? "ok" : "muted"}"><span class="dot"></span>${escapeHtml(
+          mbus.enabled ? t("mbus_health_ok", "Traffic healthy") : t("mbus_health_disabled", "Polling off"))}</span>
+        <p class="mbus-untested"><strong>${escapeHtml(t("mbus_untested_title", "Not verified on a real bus."))}</strong>
+          ${escapeHtml(t("mbus_untested_body", "The author has no wired M-Bus hardware. The protocol was tested against a simulator, your meters were not. If something does not work — or works and you want it to keep working — open an issue. That is the only way this gets fixed."))}
+          <a href="https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/issues" target="_blank" rel="noopener">${escapeHtml(t("mbus_untested_link", "Report an issue"))}</a>
+        </p>
+      </div>
+
+      ${mbusAccessBanner(mbus)}
+
+      ${mbusHealthCard(mbus)}
+
+      <div class="card mbus-port-card">
+        <h2>${escapeHtml(t("mbus_port_title", "Port"))}</h2>
+        <p class="hint">${escapeHtml(t("mbus_port_hint", "The add-on never scans ports — probing transmits frames and can disrupt a Zigbee coordinator."))}</p>
+        <div class="mbus-port-grid">
+          <label>${escapeHtml(t("mbus_device_label", "Device"))}
+            <select id="mbus_device">
+              <option value="">${escapeHtml(t("mbus_device_none", "— not selected —"))}</option>
+              ${ordered.map((d) => mbusDeviceOption(d, mbus.device)).join("")}
+            </select>
+          </label>
+          <label>${escapeHtml(t("mbus_alias_label", "Bus alias"))}
+            <input type="text" id="mbus_bus_alias" value="${escapeHtml(mbus.bus_alias || "MAIN")}">
+          </label>
+          <label>${escapeHtml(t("mbus_baud_label", "Baud rate"))}
+            <select id="mbus_baudrate">
+              ${["300", "600", "1200", "2400", "4800", "9600"].map((b) =>
+                `<option value="${b}"${String(mbus.baudrate) === b ? " selected" : ""}>${b}</option>`).join("")}
+            </select>
+          </label>
+          <label>${escapeHtml(t("mbus_parity_note", "Parity is fixed at EVEN — the decoder forces it for M-Bus."))}
+            <span class="mbus-readonly-field">EVEN</span>
+          </label>
+        </div>
+        <p><label><input type="checkbox" id="mbus_donotprobe_all"${mbus.donotprobe_all ? " checked" : ""}>
+          ${escapeHtml(t("mbus_donotprobe_label", "Do not probe other ports (donotprobe=all)"))}</label></p>
+        <p class="hint">${escapeHtml(t("mbus_spec_note", "Written to the decoder as:"))}
+          <code>${escapeHtml(`${mbus.bus_alias || "MAIN"}=${mbus.device || "…"}:mbus:${mbus.baudrate || "2400"}`)}</code></p>
+        <div class="row-actions">
+          <button class="btn primary" data-action="mbus-save-device">${escapeHtml(t("mbus_save_device", "Save port"))}</button>
+          <button class="btn" data-action="mbus-probe">${escapeHtml(t("mbus_probe_button", "Check whether the bus is alive"))}</button>
+        </div>
+        ${probe ? `<p class="hint">${escapeHtml(t(probeKeys[probe.state] || "mbus_probe_unknown", probe.state))}
+          ${probe.reply_hex ? `<code>${escapeHtml(probe.reply_hex.slice(0, 40))}</code>` : ""}</p>` : ""}
+        <p class="hint">${escapeHtml(t("mbus_probe_hint", "The probe sends one broadcast frame (0xFE). With several meters the replies overlap and come back damaged — that is expected, not a fault."))}</p>
+      </div>
+
+      <div class="card mbus-meters-card">
+        <div class="mbus-card-head">
+          <h2>${escapeHtml(t("mbus_meters_title", "Meters on the bus"))}</h2>
+          <label class="mbus-default-poll">${escapeHtml(t("mbus_poll_label", "Default poll interval"))}
+            <input type="text" id="mbus_poll_interval" value="${escapeHtml(mbus.poll_interval || "15m")}">
+          </label>
+        </div>
+        <p class="hint">${escapeHtml(t("mbus_meters_hint", "Address is p1..p250 (primary) or 8 hex characters (secondary). p0 is the factory 'unset' value and is not a valid address."))}</p>
+        <div class="table-wrap"><table class="table mbus-table">
+          <tr><th>${escapeHtml(t("mbus_col_name", "Name"))}</th><th>${escapeHtml(t("mbus_col_address", "Address"))}</th>
+              <th>${escapeHtml(t("mbus_col_driver", "Driver"))}</th><th>${escapeHtml(t("mbus_col_interval", "Interval"))}</th><th></th></tr>
+          ${meters.map((m, index) => `
+            <tr>
+              <td><input type="text" class="mbus-m-name" data-i="${index}" value="${escapeHtml(m.id || "")}"></td>
+              <td><input type="text" class="mbus-m-addr" data-i="${index}" value="${escapeHtml(m.address || "")}"></td>
+              <td><input type="text" class="mbus-m-type" data-i="${index}" list="mbus-driver-options"
+                    value="${escapeHtml(m.type || "auto")}"
+                    title="${escapeHtml(t("mbus_driver_picker_hint", "Choose a driver shipped with this add-on, leave auto, or type a custom driver name."))}"></td>
+              <td><input type="text" class="mbus-m-poll" data-i="${index}" value="${escapeHtml(m.poll_interval || "")}"
+                    placeholder="${escapeHtml(mbus.poll_interval || "15m")}"></td>
+              <td><div class="actions"><button class="btn" data-action="mbus-poll-one" data-i="${index}"${
+                    mbus.enabled || !/^p(?:[1-9]|[1-9]\d|1\d\d|2[0-4]\d|250)$/.test(String(m.address || "")) ? " disabled" : ""}
+                    title="${escapeHtml(mbus.enabled
+                      ? t("mbus_engine_holds_bus", "Turn polling off first — it is the bus master.")
+                      : (!/^p(?:[1-9]|[1-9]\d|1\d\d|2[0-4]\d|250)$/.test(String(m.address || ""))
+                          ? t("mbus_poll_primary_only", "Only a primary address (p1–p250) can be polled from here.")
+                          : ""))}"
+                  >${escapeHtml(t("mbus_poll_once", "Poll once"))}</button>
+                <button class="btn" data-action="mbus-detect-driver" data-i="${index}"${
+                    mbus.enabled || !/^p(?:[1-9]|[1-9]\d|1\d\d|2[0-4]\d|250)$/.test(String(m.address || "")) ? " disabled" : ""}
+                    title="${escapeHtml(t("mbus_detect_driver_hint", "Poll this address and ask the bundled wmbusmeters analyzer for a driver suggestion. Nothing is saved automatically."))}"
+                  >${escapeHtml(t("mbus_detect_driver", "Detect driver"))}</button>
+                <button class="btn danger" data-action="mbus-del-meter" data-i="${index}">${escapeHtml(t("remove", "Remove"))}</button></div></td>
+            </tr>`).join("")}
+        </table></div>
+        <datalist id="mbus-driver-options">
+          <option value="auto"></option>
+          ${(state.drivers || [])
+            .filter((d, index, rows) => {
+              const name = String(d.driver || "").trim().toLowerCase();
+              return name && name !== "auto" && rows.findIndex(
+                other => String(other.driver || "").trim().toLowerCase() === name
+              ) === index;
+            })
+            .map(d => `<option value="${escapeHtml(d.driver || "")}">${escapeHtml(d.type || "")}</option>`).join("")}
+        </datalist>
+        <div class="row-actions">
+          <button class="btn" data-action="mbus-add-meter">${escapeHtml(t("mbus_add_meter", "Add meter"))}</button>
+          <button class="btn primary" data-action="mbus-save-meters">${escapeHtml(t("mbus_save_meters", "Save meters"))}</button>
+        </div>
+        <p class="hint">${escapeHtml(t("mbus_poll_once_diagnostic", "Poll once is diagnostic only: it shows the raw reply but does not decode it, publish it to MQTT/Home Assistant or add the meter to Pipeline."))}</p>
+        ${meters.length && !mbus.enabled ? `<div class="banner banner-warn">${escapeHtml(t("mbus_engine_required_banner", "The meter is saved, but polling is OFF. To make it appear in Pipeline and Home Assistant, enable the engine below, click Apply and restart the add-on."))}</div>` : ""}
+        ${mbusScanCard(mbus)}
+      </div>
+
+      ${mbusConsoleCard(mbus)}
+
+      <div class="card mbus-engine-card">
+        <h2>${escapeHtml(t("mbus_engine_title", "Engine"))}</h2>
+        <div class="mbus-engine-guide">
+          <div class="mbus-engine-mode on">
+            <strong>${escapeHtml(t("mbus_engine_on_title", "For normal operation: ON"))}</strong>
+            <span>${escapeHtml(t("mbus_engine_on_body", "After saving the port and at least one meter, turn the engine on. It polls meters continuously and publishes their readings."))}</span>
+          </div>
+          <div class="mbus-engine-mode off">
+            <strong>${escapeHtml(t("mbus_engine_off_title", "For setup and tests: OFF"))}</strong>
+            <span>${escapeHtml(t("mbus_engine_off_body", "Keep it off while probing, scanning or using Poll once. Those actions are blocked while the engine is the bus master."))}</span>
+          </div>
+        </div>
+        <label class="mbus-engine-switch"><input type="checkbox" id="mbus_enabled"${mbus.enabled ? " checked" : ""}>
+          <span>${escapeHtml(t("mbus_enabled_label", "Enable continuous automatic bus polling"))}</span></label>
+        <p class="mbus-engine-restart">${escapeHtml(t("mbus_engine_restart_note", "After changing this switch, restart the add-on/container. Apply only saves the option; the engine actually starts or stops during restart."))}</p>
+        <p class="hint">${escapeHtml(t("mbus_engine_hint", "This controls only wired M-Bus. The radio path is never stopped."))}</p>
+        <div class="row-actions">
+          <button class="btn primary" data-action="mbus-save-engine">${escapeHtml(t("mbus_save_engine", "Apply"))}</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
   function renderRoute() {
     if (state.loading && !state.data) {
       return `
@@ -3351,6 +3865,21 @@
         return shell(discoverPage());
       case "search":
         return shell(searchPage());
+      case "mbus":
+        // Gate the route, not just the nav entry: #/mbus typed by hand must
+        // not open a page the user has not enabled.
+        if (!mbusTabVisible()) return shell(dashboard());
+        if (!state.mbus) {
+          loadMbus();
+          return shell(`<div class="card"><p>${escapeHtml(t("webui_loading", "Loading..."))}</p></div>`);
+        }
+        // First open fills the console once; after that it refreshes on demand,
+        // so a long log is not re-fetched on every re-render.
+        if (!state.mbusConsole) {
+          state.mbusConsole = {lines: []};
+          loadMbusConsole();
+        }
+        return shell(mbusPage());
       case "logs":
         return shell(logsPage());
       case "esp-logs":
@@ -3415,6 +3944,166 @@
     if (action === "media-filter") {
       state.mediaFilter = target.dataset.filter || "all";
       render();
+      return;
+    }
+
+    // ── Wired M-Bus ─────────────────────────────────────────
+    if (action === "mbus-save-device") {
+      const value = (id) => document.getElementById(id)?.value ?? "";
+      try {
+        const result = await postApi("mbus/device", {
+          device: value("mbus_device"),
+          bus_alias: value("mbus_bus_alias"),
+          baudrate: value("mbus_baudrate"),
+          poll_interval: value("mbus_poll_interval"),
+          donotprobe_all: document.getElementById("mbus_donotprobe_all")?.checked ? "true" : "false",
+        });
+        toast(result.message || t("saved", "Saved"));
+        await loadMbus(true);
+      } catch (error) {
+        toast(error.message, true);
+      }
+      return;
+    }
+
+    if (action === "mbus-probe") {
+      // Transmits on the bus, so it runs only against the port the user
+      // picked — never against the listed ones.
+      state.mbusProbe = null;
+      try {
+        const result = await postApi("mbus/probe", {
+          device: document.getElementById("mbus_device")?.value || "",
+        });
+        state.mbusProbe = {state: result.state, reply_hex: result.reply_hex || ""};
+      } catch (error) {
+        state.mbusProbe = {state: "error", reply_hex: ""};
+        toast(error.message, true);
+      }
+      render();
+      return;
+    }
+
+    if (action === "mbus-scan") {
+      const first = Number(document.getElementById("mbus_scan_first")?.value ?? 1);
+      const last = Number(document.getElementById("mbus_scan_last")?.value ?? 32);
+      state.mbusScan = {running: true, found: [], nextFirst: first, nextLast: last};
+      render();
+      try {
+        const result = await postApi("mbus/scan", {first, last});
+        // The server reports the range it actually swept, which is capped. The
+        // next range is pre-filled from it so continuing the sweep does not
+        // depend on the reader noticing where it stopped.
+        state.mbusScan = {
+          running: false, done: true,
+          found: asArray(result.found),
+          results: asArray(result.results),
+          first: result.first, last: result.last,
+          nextFirst: Math.min(250, Number(result.last) + 1),
+          nextLast: Math.min(250, Number(result.last) + Number(result.chunk || 32)),
+        };
+        if (result.state && result.state !== "ok") toast(result.state, true);
+      } catch (error) {
+        state.mbusScan = {running: false, found: [], nextFirst: first, nextLast: last};
+        toast(error.message, true);
+      }
+      render();
+      return;
+    }
+
+    if (action === "mbus-scan-add") {
+      const addr = Number(target.dataset.addr);
+      state.mbus = state.mbus || {};
+      state.mbus.meters = asArray(state.mbus.meters)
+        .concat([{id: `mbus_p${addr}`, address: `p${addr}`, type: "auto"}]);
+      render();
+      return;
+    }
+
+    if (action === "mbus-poll-one") {
+      const index = Number(target.dataset.i);
+      const address = asArray(state.mbus?.meters)[index]?.address || "";
+      try {
+        const result = await postApi("mbus/poll-one", {address});
+        // The raw reply, not a decoded value: decoding is the decoder's job and
+        // a second implementation of it is exactly what this project avoids.
+        const shown = result.reply_hex
+          ? `${result.state} · ${result.reply_hex.slice(0, 60)}`
+          : result.state;
+        toast(`${address}: ${shown}`);
+        await loadMbusConsole();
+      } catch (error) {
+        toast(error.message, true);
+      }
+      return;
+    }
+
+    if (action === "mbus-detect-driver") {
+      const index = Number(target.dataset.i);
+      // Preserve every unsaved row before toast/render updates the page. Only
+      // the suggested driver is changed; the user still decides whether to
+      // persist it with Save meters.
+      state.mbus.meters = mbusMetersFromForm();
+      const address = state.mbus.meters[index]?.address || "";
+      try {
+        const result = await postApi("mbus/detect-driver", {address});
+        if (result.detected && result.driver) {
+          state.mbus.meters[index].type = result.driver;
+          toast(t("mbus_detect_driver_found", "Suggested driver: {driver}. Review it, then click Save meters.", {driver: result.driver}));
+        } else {
+          toast(t("mbus_detect_driver_none", "No reliable driver suggestion. Keep auto or choose the driver from the meter documentation."), true);
+        }
+      } catch (error) {
+        toast(error.message, true);
+      }
+      return;
+    }
+
+    if (action === "mbus-console-refresh") {
+      await loadMbusConsole();
+      return;
+    }
+
+    if (action === "mbus-add-meter") {
+      state.mbus = state.mbus || {};
+      state.mbus.meters = asArray(state.mbus.meters).concat([{id: "", address: "", type: "auto"}]);
+      render();
+      return;
+    }
+
+    if (action === "mbus-del-meter") {
+      const index = Number(target.dataset.i);
+      state.mbus.meters = asArray(state.mbus.meters).filter((_, i) => i !== index);
+      render();
+      return;
+    }
+
+    if (action === "mbus-save-meters") {
+      const meters = mbusMetersFromForm();
+      try {
+        const result = await postApi("mbus/meters", {meters: JSON.stringify(meters)});
+        toast(result.message || t("saved", "Saved"));
+        await loadMbus(true);
+      } catch (error) {
+        toast(error.message, true);
+      }
+      return;
+    }
+
+    if (action === "mbus-save-engine") {
+      try {
+        const result = await postApi("mbus/device", {
+          device: state.mbus?.device || "",
+          bus_alias: state.mbus?.bus_alias || "MAIN",
+          baudrate: String(state.mbus?.baudrate || "2400"),
+          poll_interval: state.mbus?.poll_interval || "15m",
+          donotprobe_all: state.mbus?.donotprobe_all ? "true" : "false",
+          mbus_enabled: document.getElementById("mbus_enabled")?.checked ? "true" : "false",
+        });
+        toast(result.message || t("saved", "Saved"));
+        await loadMbus(true);
+      } catch (error) {
+        toast(error.message, true);
+      }
       return;
     }
 
@@ -3945,8 +4634,12 @@
     }
   });
 
-  window.addEventListener("hashchange", () => {
+  window.addEventListener("hashchange", async () => {
     state.route = currentRoute();
+    if (state.route === "mbus" && state.mbus) {
+      await loadMbus(true);
+      return;
+    }
     render();
   });
 
@@ -3954,4 +4647,10 @@
   window.setInterval(() => {
     if (!document.hidden && !state.liveConnected) fetchData(currentLang());
   }, 15000);
+  // USB passthrough can change while the page is already open. Poll only the
+  // M-Bus tab and merge only discovery/runtime data, so no full-page reload or
+  // loss of unsaved form input is required.
+  window.setInterval(() => {
+    if (!document.hidden) refreshMbusDevices();
+  }, 5000);
 })();

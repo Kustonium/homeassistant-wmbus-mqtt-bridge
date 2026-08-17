@@ -1,3 +1,124 @@
+## 1.5.49
+
+### Added
+- diagnose replies during address scan (47f43aa)
+- detect wired meter drivers (6b99fe6)
+- guide engine startup and suggest drivers (31b00a3)
+- surface wired meters across dashboard (a1fd3bc)
+- add bounded bus diagnostics (c1d2f40)
+- show why nothing is arriving on the bus (67bf5c9)
+- fence off the M-Bus options in the settings form (b24aed1)
+- poll wired M-Bus meters from a serial bus (7fef93b)
+- the primary-address scan now combines presence detection with an immediate
+  data request. Every scanned address reports both whether it acknowledged and
+  whether its reply is valid, ACK-only, foreign, incomplete, checksum-failed or
+  multiple, removing the need to click Poll once for every test address.
+- wired meters can request a driver suggestion from the analyzer in the bundled
+  `wmbusmeters`. Detection performs one bounded diagnostic poll, fills the field
+  for review and never saves a guess automatically.
+- the ESP8266 wired M-Bus simulator now exposes real upstream `aptmbusna` water
+  and `nemo` electricity telegrams on primary addresses p8 and p9. This verifies
+  driver detection and distinct volume, flow, energy and power units instead of
+  exercising only the original synthetic temperature reply.
+- wired M-Bus: the add-on can now poll meters on a serial bus itself, as a third
+  wmbusmeters instance next to DECODE and LISTEN. Everything downstream is
+  unchanged — the same drivers, units, Discovery and calculated/constant fields —
+  because the entity layer never asked where a decoded telegram came from.
+  Two independent gates, both off by default: one shows the tab, the other starts
+  the engine. With them off the add-on behaves exactly as before, and a machine
+  with no bus sees no change at all.
+  What the tab does differently from a naive port picker, and why:
+  - it **never scans ports**. `detectMBUS` in the decoder only opens a device and
+    declares success, so scanning cannot confirm the right one — while on a typical
+    Home Assistant machine one of those ports is a Zigbee coordinator, and M-Bus
+    polling transmits. `donotprobe=all` is on by default;
+  - it stores the **serial number** of the chosen port, not just its path. A `/dev`
+    node is reused: after replugging boards, `ttyACM0` pointed at different hardware
+    within minutes while every health check still read "ok". If the identity no
+    longer matches, polling refuses to start;
+  - it prefers `by-id`, but **falls back to `by-path`** when two identical adapters
+    claim the same `by-id` link. That link then names one of them and there is no
+    way to tell which — measured with two CH340 cables;
+  - it warns about devices people genuinely mistake for a converter: an RTL-SDR, a
+    DVB-T tuner, a Zigbee coordinator, and the user's own ESP bridge, which appears
+    in the list right next to the real thing;
+  - `rssi_dbm` is stripped on this path. The decoder emits it as `0` on a wire,
+    which would create a "0 dBm signal strength" entity for a meter with no radio;
+  - one **bus probe** (broadcast `0xFE`) answers "is anything on this cable at all"
+    without scanning 250 addresses. With several meters the replies overlap and come
+    back damaged — that is what a broadcast does, and the UI says so rather than
+    reporting a healthy bus as broken.
+  The tab states plainly that it is **not verified on a real bus**: the protocol was
+  tested against an ESP8266 M-Bus slave simulator across silence, late replies,
+  foreign protocol, damaged frames, two meters on one address and a full port
+  loss/recovery cycle — but not against anyone's actual meters. Reporting an issue
+  is the only thing that changes that, and the tab asks for it.
+  Every M-Bus option now carries a name and a description in the add-on
+  configuration UI instead of a bare key, in English and Polish. The first one
+  states what the whole block is not: an RTL-SDR, a DVB-T stick or a wM-Bus radio
+  dongle does not belong here and will not work — radio is received by the ESP and
+  arrives over MQTT exactly as before.
+- the M-Bus tab now shows a **bus-status card**: what the bus is doing, how many
+  meters are polled and rejected, and per meter the last id seen and when it last
+  answered.
+  On a wire, a wrong address, a dead meter, a converter that does not power the
+  line and a meter speaking a different protocol all produce the same symptom —
+  nothing arrives. The decoder does distinguish them, but only in its own log, so
+  the card names the cause: no reply, damaged frames (usually two meters sharing
+  one primary address), traffic that is not M-Bus at all (electricity meters
+  normally speak DLMS/COSEM, which this add-on does not decode), or a port that now
+  resolves to different hardware than the one selected.
+  A meter answering with two different ids is flagged as such. The decoder reports
+  no conflict — it simply emits both telegrams — which would otherwise turn one
+  configured entry into a second device in Home Assistant. "Last answered" is
+  counted from the arrival of a telegram, because there is no timeout on this path:
+  a reply three seconds late for a two-second `pollinterval` is still accepted.
+
+### Fixed
+- wait for slow driver detection replies (35d8390)
+- preserve decoded units and expand simulator coverage (747313c)
+- refresh USB ports and repair option saving (966825d)
+- align engine guidance with process state (9a9b2fe)
+- make the wired tab readable and structured (83ff694)
+- tell the user what to do when polling cannot start (d81d481)
+- make the tab reachable and label every option (e9ed9bf)
+- Poll once and driver detection now share the diagnostic scan's adaptive
+  3.5-second reply window. A slow but valid meter no longer times out before its
+  telegram arrives, while ordinary replies still return after 200 ms of bus idle.
+- generic decoded values retain their real JSON field name instead of the
+  synthetic key `value`, so Pipeline can derive units such as `°C`, `RH%` or
+  `bar`. Current readings are preferred over averages/history: the live wired
+  `piigth` test now selects `temperature_c=23.02` instead of the earlier
+  `average_temperature_1h_c=23.52`, and displays `23.02 °C`.
+- wired M-Bus guidance now distinguishes unsupported utility electricity meters
+  using DLMS/COSEM (IEC 62056) or Modbus RTU/TCP from genuine EN 13757 M-Bus
+  electricity meters, and warns that an RS-485 connector alone does not identify
+  the protocol; the earlier blanket wording was too broad.
+- the wired meter form no longer leaves users to type a driver name blindly. It
+  suggests the driver catalog baked from the exact `wmbusmeters` build in the
+  image, while preserving `auto` and custom names. Catalog entries are
+  de-duplicated case-insensitively, so the special `auto` choice appears once.
+- the M-Bus tab now states that **Poll once** is raw diagnostics only and cannot
+  populate Pipeline, MQTT or Home Assistant. A saved meter with polling disabled
+  shows the exact normal-operation sequence: enable, apply and restart.
+- the wired M-Bus health state was computed and thrown away. It is established in
+  the subshell that reads the decoder's output, so the parent shell never saw it
+  and the WebUI — a different process again — could not reach it at all. The state
+  now travels through `status_mbus.json`, and the function that pretended to return
+  it is gone.
+- the banners in the M-Bus tab were unstyled: the CSS classes they used had never
+  been defined, so every one of those messages rendered as plain body text —
+  including the "not verified on a real bus" notice, which is the one thing on that
+  page that must not read as decoration.
+- a malformed poll interval no longer reaches a meter file. The option is a free
+  string, so the add-on configuration page accepts `15` as readily as `15m`, and a
+  meter that is never polled looks exactly like a dead one. It now falls back to
+  the default with a warning instead of taking an otherwise valid meter out of
+  service.
+- `tests/test_mbus_meter_files.sh` was never run by CI — the test that caught the
+  atomic-write bug during development was not on the static-tests list. It is now,
+  and it covers the status file, the counts and the address clash.
+
 ## 1.5.48
 
 ### Added

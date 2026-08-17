@@ -453,6 +453,102 @@ Hex übergeben werden.
 
 ---
 
+### Drahtgebundener M-Bus (serieller Bus, standardmäßig aus)
+
+Wärme- und Wasserzähler laufen oft über Kabel statt Funk: ein M-Bus-Master-Konverter
+sitzt an einem Zweidrahtbus und meldet sich am Rechner als serielle Schnittstelle
+(USB, RS-232 oder RS-485). Das Add-on kann einen solchen Bus selbst abfragen.
+
+Alles Nachgelagerte bleibt wie beim Funk — dieselben Treiber, Einheiten, Discovery,
+berechnete und konstante Felder. Nur der Transport unterscheidet sich: Zähler werden
+abgefragt statt mitgehört und adressiert statt erkannt.
+
+Nach der ersten gültigen Antwort erscheint ein kabelgebundener Zähler auch unter
+**PANEL** und **ZÄHLER**. Die Quellspalte zeigt `M-Bus · <Bus-Alias>` statt ESP-,
+Funkband- und Empfangskennzeichen, und das Dashboard ergänzt den tatsächlichen
+kabelgebundenen Pfad `Zähler → serieller Master → abfragendes wmbusmeters → MQTT + HA`.
+Dieser Pfad gilt erst nach einem vom Runtime akzeptierten Telegramm als aktiv, nicht
+schon durch das Einschalten der Engine.
+
+**Zwei Schalter, beide standardmäßig aus.** `mbus_tab_visible` zeigt nur den Tab,
+`mbus_enabled` startet die Engine. Sind beide aus, ändert sich für Sie nichts.
+
+| Option | Bedeutung |
+|---|---|
+| `mbus_device` | serielle Schnittstelle; bevorzugt ein `/dev/serial/by-id/…`-Pfad |
+| `mbus_bus_alias` | Busname in der Zählerkonfiguration (`MAIN`) |
+| `mbus_baudrate` | 300–9600, meist 2400 |
+| `mbus_poll_interval` | Standardintervall für jeden Zähler ohne eigenes |
+| `mbus_donotprobe_all` | eingeschaltet lassen — siehe Warnung unten |
+| `mbus_meters[]` | `id`, `address` (`p1`..`p250` oder 8 Hex), `type`, `key`, `poll_interval` |
+
+**Das Add-on scannt bewusst niemals Ports.** Sondieren heißt Senden, und auf einem
+typischen Home-Assistant-Rechner ist eine der seriellen Schnittstellen ein
+Zigbee-Koordinator. Der Decoder kann einen korrekten Konverter ohnehin nicht
+bestätigen — er öffnet das Gerät und meldet Erfolg — deshalb wählen Sie den Port.
+
+Den ausgewählten Bus können Sie anschließend ausdrücklich prüfen: **Prüfen, ob der
+Bus lebt** sendet genau einen Test-Broadcast, **Primäradressen scannen** durchläuft nur
+den gewählten Bereich (`p1`–`p250`, höchstens 32 je Anfrage) und zeigt je Zeile sowohl
+die Adressbestätigung als auch die Diagnose der Datenantwort; **Einmal abfragen**
+fragt eine konfigurierte Primäradresse ab. Während die reguläre Abfrage läuft, werden
+alle drei Aktionen abgewiesen, weil M-Bus nur einen Master hat. **„Einmal abfragen“
+dient nur zur Diagnose:** Die Rohantwort wird angezeigt, aber nicht dekodiert, an
+MQTT/Home Assistant veröffentlicht oder zur Pipeline hinzugefügt. Für den normalen
+Betrieb speichern Sie einen Zähler, aktivieren die Engine, klicken auf **Anwenden**
+und starten das Add-on neu. Die Ausgabe dieser regulären Engine bleibt in der
+schreibgeschützten **Bus-Konsole** sichtbar; beliebige Bytes lassen sich dort nicht
+senden.
+
+Das Feld **Treiber** in der Zählertabelle schlägt alle im aktuellen Image
+enthaltenen Treiber vor und akzeptiert weiterhin eigene Namen. `auto` kann einen
+Zähler erkennen, wählt aber nicht für jede kabelgebundene Antwort garantiert einen
+nützlichen Treiber; liefert die automatische Dekodierung keinen Wert, verwenden Sie
+den in der Zählerdokumentation genannten Treiber.
+**Treiber erkennen** führt eine Diagnoseabfrage aus und übergibt den empfangenen
+Rahmen an den Analysator des mitgelieferten `wmbusmeters`. Ein Vorschlag füllt das
+Feld, wird aber nie automatisch gespeichert: Prüfen Sie ihn und klicken Sie auf
+**Zähler speichern**. Kann der Analysator keinen verlässlichen Vorschlag machen,
+meldet die Oberfläche dies ausdrücklich, statt zu raten.
+Pipeline leitet die angezeigte Einheit aus dem tatsächlichen Namen des dekodierten
+Feldes ab (zum Beispiel `_c` → `°C`, `_rh` → `RH%`), auch bei Treibern ohne
+kumulativen Zählerstand, die den allgemeinen numerischen Fallback verwenden.
+
+**Unter Docker** binden Sie den Konverter explizit ein:
+`devices: ["/dev/serial/by-id/usb-…:/dev/ttyUSB0"]`. Niemals `/dev:/dev`, niemals
+`privileged`.
+
+**Die Registerkarte sagt, warum nichts ankommt.** Am Bus sehen eine falsche Adresse,
+ein toter Zähler, ein Konverter, der die Leitung nicht speist, und ein Zähler mit
+einem anderen Protokoll von außen gleich aus: Es entstehen keine Entitäten. Die
+Bus-Status-Karte benennt den Fall — pro Zähler, samt dem Zeitpunkt der jeweils
+letzten Antwort:
+
+- *Keine Antwort* — der Port ist offen, der adressierte Zähler schweigt. Adresse,
+  Verkabelung oder ein Konverter, der den Bus nicht speist.
+- *Beschädigte Telegramme* — Prüfsummenfehler, meist zwei Zähler auf derselben
+  Primäradresse. Ein Zähler, der mit zwei verschiedenen IDs antwortet, wird eigens
+  markiert: Der Decoder meldet keinen Konflikt, er gibt einfach beides aus, und Sie
+  bekämen sonst aus einem Eintrag ein zweites Gerät in Home Assistant.
+- *Das ist kein M-Bus-Verkehr* — es fließen Bytes, aber keines hat die Form eines
+  M-Bus-Telegramms. Typische Stromzähler des Versorgers mit optischer Schnittstelle
+  oder RS-485 sprechen DLMS/COSEM (IEC 62056), andere Modbus RTU/TCP. Dieses Add-on
+  dekodiert keines dieser Protokolle. Ein echter EN-13757-M-Bus-Stromzähler kann
+  dennoch funktionieren, wenn wmbusmeters einen passenden Treiber besitzt. Ein
+  RS-485-Anschluss allein bedeutet nicht M-Bus.
+- *An diesem Port hängt ein anderes Gerät* — der Port zeigt jetzt auf andere Hardware
+  als die ausgewählte, deshalb wird die Abfrage verweigert, statt in den
+  Zigbee-Koordinator zu funken.
+
+**Nicht an einem echten Bus verifiziert.** Das Protokoll wurde gegen einen Simulator
+getestet, nicht gegen echte Zähler — der Autor besitzt keine drahtgebundene
+M-Bus-Hardware. Funktioniert etwas nicht, melden Sie ein Issue; nur so lässt es sich
+beheben.
+
+Die Ansicht **ÜBER DAS PROJEKT** dokumentiert beide tatsächlichen Datenpfade und
+zeigt den Hinweis zur KI-Unterstützung. Die Repository-Fassung steht in
+[NOTICE.md](../NOTICE.md).
+
 ## 9. Sprache der Oberfläche
 
 5 Sprachen (en/pl/de/cs/sk). Auswahl: `?lang=de` in der URL → Cookie `wmbus_lang`

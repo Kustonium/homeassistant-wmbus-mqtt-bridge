@@ -14,3 +14,96 @@ configuration:
       key:
         name: Klucz AES
         description: Zostaw puste albo wpisz dokładnie 32 znaki hex, np. 00000000000000000000000000000000.
+  mbus_tab_visible:
+    name: "M-Bus (przewodowy) — pokaż zakładkę"
+    description: >-
+      Wszystko poniżej dotyczy M-Busa PRZEWODOWEGO: liczników podłączonych
+      dwużyłową magistralą przez konwerter M-Bus master, który pokazuje się jako
+      port szeregowy (USB, RS-232 albo RS-485). To NIE jest do radia. RTL-SDR,
+      patyczek DVB-T ani radiowy dongiel wM-Bus tu nie zadziałają i nie mają
+      zadziałać — radio odbiera ESP i przysyła przez MQTT, dokładnie jak dotąd.
+      To także NIE jest obsługa typowych liczników energii elektrycznej operatora
+      (OSD) z portem optycznym albo RS-485, które używają DLMS/COSEM (IEC 62056).
+      Nie obsługuje też liczników Modbus RTU/TCP; żadnego z tych protokołów nie
+      dekoduje. Prawdziwy licznik energii z interfejsem M-Bus
+      zgodnym z EN 13757 może działać, jeśli wmbusmeters ma odpowiedni driver.
+      Samo złącze RS-485 nie oznacza M-Bus.
+      Ten przełącznik tylko pokazuje zakładkę M-Bus w WebUI, niczego nie uruchamia.
+      Zostaw wyłączony, jeśli nie masz magistrali po kablu.
+      Niesprawdzone na prawdziwej magistrali — autor nie ma takiego sprzętu.
+      Jeśli coś nie działa, zgłoś issue.
+  mbus_enabled:
+    name: "M-Bus (przewodowy) — odpytuj magistralę"
+    description: >-
+      Uruchamia osobną instancję wmbusmeters, która odpytuje magistralę. Wymaga
+      wcześniejszego wybrania portu; bez niego nie wystartuje i napisze o tym
+      w logu. Ścieżka radiowa nigdy nie jest ruszana.
+  mbus_device:
+    name: "M-Bus (przewodowy) — port szeregowy"
+    description: >-
+      Ścieżka do konwertera, najlepiej stabilna /dev/serial/by-id/… Najprościej
+      wybrać ją z listy w zakładce M-Bus, która przy okazji ostrzega przed
+      urządzeniami, które konwerterem nie są. Dodatek nigdy nie skanuje portów:
+      sondowanie wysyła ramki, a na typowej maszynie z Home Assistant jeden
+      z portów to koordynator Zigbee.
+  mbus_device_serial:
+    name: "M-Bus (przewodowy) — numer seryjny urządzenia"
+    description: >-
+      Wypełniany automatycznie przy wyborze portu w zakładce. Węzeł /dev bywa
+      ponownie użyty przez inne urządzenie po przepięciu, więc jest porównywany
+      przy każdym starcie; przy niezgodności odpytywanie nie rusza. Pusty oznacza,
+      że urządzenie nie podaje numeru seryjnego (typowe dla CH340 i PL2303)
+      i tej kontroli nie da się wykonać.
+  mbus_bus_alias:
+    name: "M-Bus (przewodowy) — nazwa magistrali"
+    description: Nazwa tej magistrali w generowanej konfiguracji liczników. Litery, cyfry i podkreślenie.
+  mbus_baudrate:
+    name: "M-Bus (przewodowy) — prędkość"
+    description: Zwykle 2400. Parzystość jest stała i wynosi EVEN — dekoder wymusza ją dla M-Bus.
+  mbus_poll_interval:
+    name: "M-Bus (przewodowy) — domyślny interwał odpytywania"
+    description: >-
+      Wpisywany każdemu licznikowi, który nie ma własnego, np. 15m, 30s albo 1h.
+      Krótszy interwał to więcej ruchu na magistrali i szybsze zużycie baterii
+      w licznikach bateryjnych.
+  mbus_donotprobe_all:
+    name: "M-Bus (przewodowy) — nie sonduj innych portów"
+    description: >-
+      Zostaw włączone. Po wyłączeniu dekoder może zagadać do innych urządzeń
+      szeregowych, szukając magistrali, co potrafi zakłócić koordynator Zigbee
+      albo Z-Wave siedzący na sąsiednim porcie.
+  mbus_loglevel:
+    name: "M-Bus (przewodowy) — poziom logowania"
+    description: Poziom logów wyłącznie dla instancji magistrali. Niezależny od głównego.
+  mbus_logtelegrams:
+    name: "M-Bus (przewodowy) — loguj surowe ramki"
+    description: Loguje każdą ramkę wymienioną z magistralą. Przydatne, gdy licznik milczy; poza tym gadatliwe.
+  mbus_ignoreduplicates:
+    name: "M-Bus (przewodowy) — ignoruj duplikaty"
+    description: Odrzuca powtórzone identyczne telegramy przed dekodowaniem.
+  mbus_meters:
+    name: "M-Bus (przewodowy) — liczniki na magistrali"
+    description: Liczniki odpytywane po kablu. Najwygodniej zarządzać nimi w zakładce M-Bus w WebUI.
+    fields:
+      id:
+        name: Nazwa
+      address:
+        name: Adres
+        description: >-
+          Adres pierwotny od p1 do p250 albo 8-znakowy adres wtórny. p0 to fabryczna
+          wartość „nieustawiony" i nie jest prawidłowa — magistrala, na której dwa
+          liczniki wciąż ją mają, to dokładnie ten przypadek, który powoduje kolizje.
+      type:
+        name: Driver
+      type_other:
+        name: Własny driver
+      key:
+        name: Klucz AES
+        description: Zostaw puste albo wpisz dokładnie 32 znaki hex. Większość liczników po kablu nie szyfruje.
+      poll_interval:
+        name: Interwał odpytywania
+        description: Nadpisuje domyślny dla tego licznika, np. 1h. Puste = użyj domyślnego.
+      calculated_fields:
+        name: Pola liczone
+      static_fields:
+        name: Pola stałe

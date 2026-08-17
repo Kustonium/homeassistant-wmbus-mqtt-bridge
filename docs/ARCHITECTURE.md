@@ -298,10 +298,114 @@ depends on a Docker restart policy; without one it acts as a stop.
 | `11-listen.sh` | parallel pure-LISTEN process |
 | `12-pipeline.sh` | MQTT publication and pipeline helpers |
 | `13-esp.sh` | ESP, broker, and Home Assistant background subscribers |
+| `14-mbus.sh` | wired M-Bus: third wmbusmeters instance polling a serial bus |
 
 The main script also owns a heartbeat ticker and the restart loop around the
 DECODE pipeline. Background subscribers and LISTEN are long-lived workers, not
 children that should be replaced on every meter change.
+
+### 5.4 Wired M-Bus: a third instance, not a second transport
+
+DECODE and LISTEN are both fed through `stdin:hex` — frames arrive over MQTT and
+the bridge pipes them in. The wired M-Bus instance is structurally different: it
+opens a serial port and *polls*, so it drives itself and owns its own lifecycle.
+
+It reuses the entity layer unchanged. Decoded JSON goes to the same
+`emit_discovery_from_json()` as a radio telegram, because that consumer never asks
+where a line came from. The meter id in the JSON is built by the decoder from the
+address inside the frame, not from the polling address, so it passes the same
+`^[0-9A-Fa-f]{8}$` gate and produces entities the normal way.
+
+An accepted wired telegram also goes through `status_meter_seen()`. This is the
+shared runtime index used by the Dashboard and Meters views; without that call a
+wired meter could publish working MQTT state and HA entities while remaining
+invisible in the WebUI. `status_mbus.json` maps the configured bus entry to the
+frame id, so `webui.py` can retain that row alongside radio-configured ids and mark
+its source as `mbus`. Radio-only ESP, link-mode and reception diagnostics are
+cleared for that row. The dashboard renders a second wired pipeline only after the
+runtime state reaches `ok`, never merely because the option is enabled.
+
+Three consequences of the transport that are not visible from the radio path:
+
+- **`pollinterval` belongs in each meter file, never in `wmbusmeters.conf`.** The
+  global parser does not know the key and answers `No such key: pollinterval`
+  without failing, and `--pollinterval` cannot be combined with `--useconfig`. A
+  meter file without it is never polled, and a meter that is never polled is
+  indistinguishable from a dead one.
+- **The supervisor must not restart on a missing port.** The decoder reports
+  `SpecifiedDeviceNotFound`, waits, and reconnects by itself; restarting would only
+  discard that wait. The loop here restarts on process exit only.
+- **`rssi_dbm` is stripped on this path.** The decoder emits it as `0` on a wire,
+  which would otherwise become a "0 dBm signal strength" entity for a meter that
+  has no radio at all. `device` is kept — on a bus it carries the port alias and is
+  meaningful.
+
+The instance is behind two independent options, both off by default: one controls
+whether the tab is shown, the other whether the engine runs. Disabled, it does not
+start and the radio path is untouched.
+
+#### Bus state travels through a file
+
+On this path the failure modes share a single symptom — nothing arrives — and the
+decoder names the cause only in its own log: `no 0x68 byte found` for a foreign
+protocol, `expected checksum 0xNN but got 0xMM` for a damaged frame or two meters
+answering on one address, `did not send a response!` for silence. None of them
+reaches the JSON.
+
+That state is also unreachable from anywhere else in the process tree. It is
+established in the subshell that reads the decoder's output, so the parent shell
+never observes it, and the WebUI is a different process again. The bridge therefore
+writes `status_mbus.json` — current state, the meters configured and rejected, and
+per meter the last id seen and when it last answered — and the WebUI renders it as
+the bus-status card.
+
+The two halves stay separate on purpose. Whether the port can be *opened* is
+answered in `webui.py` by actually opening it, which is the only thing that proves
+access; whether anything *answers* is answered by the bridge. A stale runtime state
+must never be able to override a live `open()` result.
+
+"Last answered" is counted from the arrival of a telegram, not from the poll that
+asked for it. There is no timeout state here: a reply three seconds late for a
+two-second `pollinterval` is still accepted (measured against a bus simulator), so
+arrival is the only timestamp that means anything.
+
+#### One master, and three ways to look at the wire
+
+M-Bus has a single master. While the engine polls, it *is* that master, and a
+second transmitter overlapping its frames produces exactly the checksum errors the
+tab reports as a fault. Opening the tty a second time does not fail — POSIX allows
+it — so the only thing separating the two is an explicit check, and every action
+that puts bytes on the bus goes through it and is refused with HTTP 409 while
+polling runs.
+
+Three such actions exist, in increasing order of noise:
+
+- the **bus probe** — one broadcast frame (`0xFE`), answering "is anything on this
+  cable at all" without walking 250 addresses;
+- the **diagnostic address scan** — `SND_NKE` checks presence and, for every
+  address that acknowledges, `REQ_UD2` immediately classifies its data reply as
+  valid long/short, ACK-only, foreign, incomplete, checksum-failed, or multiple.
+  It is capped per request and stops after the reply becomes idle, but retains a
+  long window for slow meters. The endpoint reports the range it actually covered,
+  because a silently truncated scan reads as "there is nothing else here";
+- **poll once** — a single `REQ_UD2` to one primary address, using the same
+  adaptive 3.5-second/idle reply window as the scan, whose raw reply is shown as
+  hex. Nothing here decodes it; that is the decoder's job, and a second
+  implementation of it is what this project exists to avoid.
+
+Alongside them the tab keeps a **read-only console** over the instance log. Writable
+would mean sending arbitrary bytes into someone's metering hardware — the same class
+of risk as the shell hooks, which are the one deliberate exception this project makes
+to passing upstream through. Reading is enough, because the log is the only place
+where the raw frame ever appears (`--logtelegrams` writes `telegram=|…|`; the shell
+hooks receive the JSON, the id and the name, never the bytes).
+
+Lines are classified by the shape of their first bytes — `68 LL LL 68` long,
+`10` short, `E5` a bare acknowledgement — and anything matching none of them is
+flagged as not M-Bus. That check is deliberately shallow. It exists so that a serial
+port carrying DLMS/COSEM, which this project does not decode, produces one sentence
+instead of one support thread; it says what the traffic is *not*, and offers what it
+probably is as a reading rather than a verdict.
 
 ## 6. Configuration and lifecycle
 

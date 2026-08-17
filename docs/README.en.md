@@ -442,6 +442,94 @@ which the decoder does not have when telegrams are fed to it as hex.
 
 ---
 
+### Wired M-Bus (serial bus, off by default)
+
+Heat and water meters are often wired rather than radio: an M-Bus master converter
+sits on a two-wire bus and presents itself to the machine as a serial port
+(USB, RS-232 or RS-485). The add-on can poll such a bus itself.
+
+Everything downstream is the same as for radio — same drivers, units, Discovery,
+calculated and constant fields. Only the transport differs: meters are polled
+instead of listened to, and they are addressed rather than discovered.
+
+After the first valid reply, a wired meter also appears in **Dashboard** and
+**Meters**. The source column shows `M-Bus · <bus alias>` instead of ESP, radio-band
+and reception badges, and the Dashboard adds the actual wired path
+`meter → serial master → polling wmbusmeters → MQTT + HA`. This path is shown as
+active only after the runtime has accepted a telegram, not merely after enabling
+the engine.
+
+**Two switches, both off by default.** `mbus_tab_visible` only shows the tab;
+`mbus_enabled` starts the engine. With both off nothing changes for you.
+
+| Option | Meaning |
+|---|---|
+| `mbus_device` | serial port; prefer a `/dev/serial/by-id/…` path |
+| `mbus_bus_alias` | bus name in the meter configuration (`MAIN`) |
+| `mbus_baudrate` | 300–9600, usually 2400 |
+| `mbus_poll_interval` | default interval written into every meter without its own |
+| `mbus_donotprobe_all` | leave on — see the warning below |
+| `mbus_meters[]` | `id`, `address` (`p1`..`p250` or 8 hex), `type`, `key`, `poll_interval` |
+
+**The add-on never scans ports, deliberately.** Probing means transmitting, and on a
+typical Home Assistant machine one of the serial ports is a Zigbee coordinator.
+The decoder cannot confirm a correct converter anyway — it only opens the device
+and reports success — so the port is always chosen by you.
+
+The selected bus can then be checked explicitly: **Check whether the bus is alive**
+sends one test broadcast, **Scan primary addresses** walks only the range you choose
+(`p1`–`p250`, at most 32 per request), shows both address acknowledgement and the
+immediate data-reply diagnosis for every row, and **Poll once** requests one configured
+primary address. All three are refused while regular polling is running because
+M-Bus has one master. **Poll once is diagnostic only:** it displays the raw reply,
+but does not decode it, publish it to MQTT/Home Assistant or add the meter to the
+Pipeline. For normal operation, save a meter, enable the engine, click **Apply**
+and restart the add-on. Decoder output from that regular engine is visible in the
+read-only **Bus console**; it never accepts arbitrary bytes to transmit.
+
+The meter table's **Driver** field suggests every driver shipped in the current
+image while still accepting a custom name. `auto` may identify a meter, but is not
+guaranteed to select a useful driver for every wired response; choose the meter's
+documented driver when automatic decoding produces no values.
+**Detect driver** performs one diagnostic poll and passes the returned frame to
+the analyzer in the bundled `wmbusmeters`. A suggestion fills the field but is
+never saved automatically: review it and click **Save meters**. If the analyzer
+cannot make a reliable suggestion, the UI says so instead of guessing.
+Pipeline derives the displayed unit from the actual decoded field name (for
+example `_c` → `°C` and `_rh` → `RH%`), including drivers whose telegram has no
+cumulative meter reading and therefore uses a generic numeric fallback.
+
+**In Docker** map your converter explicitly:
+`devices: ["/dev/serial/by-id/usb-…:/dev/ttyUSB0"]`. Never `/dev:/dev`, never
+`privileged`.
+
+**The tab says why nothing is arriving.** On a bus, a wrong address, a dead meter,
+a converter that does not power the line and a meter speaking a different protocol
+all look the same from the outside: no entities appear. The bus-status card names
+which one it is, per meter, together with the moment each one last answered:
+
+- *No reply* — the port is open, the addressed meter stays silent. Address, wiring,
+  or a converter that does not feed the bus.
+- *Damaged frames* — checksum errors, most often two meters sharing one primary
+  address. A meter answering with two different ids is flagged as such: the decoder
+  reports no conflict, it simply emits both, and you would otherwise get a second
+  device in Home Assistant out of one entry.
+- *This is not M-Bus traffic* — bytes are flowing, none of them shaped like an M-Bus
+  frame. Typical utility electricity meters with an optical port or RS-485 speak
+  DLMS/COSEM (IEC 62056); others use Modbus RTU/TCP. This add-on decodes neither
+  protocol. This does not exclude a genuine EN 13757 M-Bus electricity meter for
+  which wmbusmeters has a driver. An RS-485 connector alone does not mean M-Bus.
+- *A different device is on that port* — the port now resolves to other hardware
+  than the one you picked, so polling is refused rather than aimed at somebody's
+  Zigbee coordinator.
+
+**Not verified on a real bus.** The protocol was tested against a simulator, not
+against real meters — the author has no wired M-Bus hardware. If something does not
+work, open an issue; that is the only way it gets fixed.
+
+The **About** view documents both actual data paths and displays the project's
+AI-assistance disclosure. The repository copy is [NOTICE.md](../NOTICE.md).
+
 ## 9. Interface language
 
 5 languages (en/pl/de/cs/sk). Selection: `?lang=en` in the URL → cookie
