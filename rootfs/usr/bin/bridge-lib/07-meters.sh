@@ -104,12 +104,24 @@ status_meter_seen() {
         value_key=""
         value=""
       else
-        value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(_kw$|_w$|_m3h$|_l_h$)";"i")) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+        value_key="$(jq -r '
+          to_entries[]
+          | select((.value|type)=="number")
+          | select(.key|test("(_kw$|_w$|_m3h$|_l_h$|_c$|_rh$|_bar$)";"i"))
+          | select(.key|test("(average|last_|previous|history|historic|minimum|maximum|min_|max_)";"i")|not)
+          | .key
+        ' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
         if [[ -n "${value_key}" ]]; then
           value="$(jq -r --arg k "${value_key}" '.[$k] // empty' <<<"${json_line}" 2>/dev/null || true)"
         else
-          value_key="value"
-          value="$(jq -r 'to_entries[] | select((.value|type)=="number") | .value' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+          # Preserve the real JSON field name together with the fallback
+          # numeric value. The WebUI derives units from suffixes such as _c,
+          # _rh and _bar; replacing the key with the synthetic word "value"
+          # displayed a correct number without its unit (e.g. piigth 23.52
+          # instead of 23.52 °C).
+          IFS=$'\t' read -r value_key value < <(
+            jq -r 'to_entries[] | select((.value|type)=="number") | [.key, .value] | @tsv' <<<"${json_line}" 2>/dev/null | head -n 1
+          ) || true
         fi
       fi
     fi

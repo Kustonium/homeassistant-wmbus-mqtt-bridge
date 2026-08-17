@@ -441,6 +441,99 @@ HEX.
 
 ---
 
+### M-Bus przewodowy (magistrala szeregowa, domyślnie wyłączony)
+
+Liczniki ciepła i wody często idą kablem, nie radiem: konwerter M-Bus master siedzi
+na dwużyłowej magistrali i pokazuje się w systemie jako port szeregowy (USB, RS-232
+albo RS-485). Dodatek potrafi taką magistralę odpytywać sam.
+
+Wszystko dalej jest takie samo jak przy radiu — te same drivery, jednostki,
+Discovery, pola liczone i stałe. Różni się tylko transport: liczniki się odpytuje
+zamiast nasłuchiwać, i adresuje zamiast wykrywać.
+
+Po pierwszej prawidłowej odpowiedzi licznik przewodowy pojawia się również w
+**Panelu** i **Licznikach**. Kolumna źródła pokazuje `M-Bus · <alias magistrali>`
+zamiast odznak ESP, pasma radiowego i jakości odbioru, a Panel dodaje rzeczywisty
+potok przewodowy `licznik → master szeregowy → odpytujący wmbusmeters → MQTT + HA`.
+Potok jest oznaczony jako aktywny dopiero po przyjęciu telegramu przez runtime, a
+nie po samym włączeniu silnika.
+
+**Dwa przełączniki, oba domyślnie wyłączone.** `mbus_tab_visible` tylko pokazuje
+zakładkę, `mbus_enabled` uruchamia silnik. Przy obu wyłączonych nic się dla Ciebie
+nie zmienia.
+
+| Opcja | Znaczenie |
+|---|---|
+| `mbus_device` | port szeregowy; najlepiej ścieżka `/dev/serial/by-id/…` |
+| `mbus_bus_alias` | nazwa magistrali w konfiguracji liczników (`MAIN`) |
+| `mbus_baudrate` | 300–9600, zwykle 2400 |
+| `mbus_poll_interval` | domyślny interwał wpisywany każdemu licznikowi bez własnego |
+| `mbus_donotprobe_all` | zostaw włączone — patrz ostrzeżenie niżej |
+| `mbus_meters[]` | `id`, `address` (`p1`..`p250` albo 8 hex), `type`, `key`, `poll_interval` |
+
+**Dodatek nigdy nie skanuje portów, i to jest świadome.** Sondowanie oznacza
+nadawanie, a na typowej maszynie z Home Assistant jeden z portów szeregowych to
+koordynator Zigbee. Dekoder i tak nie potwierdzi właściwego konwertera — otwiera
+urządzenie i melduje sukces — więc port zawsze wskazujesz Ty.
+
+Wybraną magistralę możesz potem sprawdzić jawnie: **Sprawdź, czy magistrala żyje**
+wysyła jeden broadcast testowy, **Skan adresów pierwotnych** przechodzi tylko podany
+zakres (`p1`–`p250`, najwyżej 32 adresy na żądanie) i w każdym wierszu pokazuje
+zarówno potwierdzenie adresu, jak i diagnozę odpowiedzi z danymi, a **Odpytaj raz** pyta jeden
+skonfigurowany adres pierwotny. Wszystkie trzy akcje są odrzucane podczas zwykłego
+odpytywania, bo M-Bus ma jednego mastera. **„Odpytaj raz” służy tylko do
+diagnostyki:** pokazuje surową odpowiedź, ale jej nie dekoduje, nie publikuje do
+MQTT/Home Assistant i nie dodaje licznika do Pipeline. Do normalnej pracy zapisz
+licznik, włącz silnik, kliknij **Zastosuj** i zrestartuj dodatek. Wyjście dekodera
+z tego regularnego silnika widać w **Konsoli magistrali**, która jest tylko do
+odczytu i nie przyjmuje dowolnych bajtów do wysłania.
+
+Pole **Driver** w tabeli liczników podpowiada wszystkie drivery dostarczone w
+bieżącym obrazie, ale nadal przyjmuje własną nazwę. `auto` może rozpoznać licznik,
+lecz nie gwarantuje dobrania użytecznego drivera dla każdej odpowiedzi przewodowej;
+gdy automatyczne dekodowanie nie daje wartości, wybierz driver z dokumentacji
+licznika.
+**Wykryj driver** wykonuje jedno odpytanie diagnostyczne i przekazuje otrzymaną
+ramkę do analizatora we wbudowanym `wmbusmeters`. Sugestia wypełnia pole, ale
+nigdy nie zapisuje się automatycznie: sprawdź ją i kliknij **Zapisz liczniki**.
+Jeżeli analizator nie ma wiarygodnej sugestii, interfejs mówi o tym wprost zamiast
+zgadywać.
+Pipeline wyprowadza jednostkę z rzeczywistej nazwy zdekodowanego pola (na przykład
+`_c` → `°C`, `_rh` → `RH%`), także dla driverów bez sumarycznego odczytu, które
+korzystają z ogólnego numerycznego fallbacku.
+
+**W Dockerze** zmapuj konwerter jawnie:
+`devices: ["/dev/serial/by-id/usb-…:/dev/ttyUSB0"]`. Nigdy `/dev:/dev`, nigdy
+`privileged`.
+
+**Zakładka mówi, dlaczego nic nie przychodzi.** Na magistrali zły adres, martwy
+licznik, konwerter niezasilający linii i licznik mówiący innym protokołem wyglądają
+z zewnątrz tak samo: nie pojawiają się encje. Karta stanu magistrali nazywa, który
+to przypadek — per licznik, razem z chwilą ostatniej odpowiedzi każdego z nich:
+
+- *Brak odpowiedzi* — port jest otwarty, licznik pod tym adresem milczy. Adres,
+  okablowanie albo konwerter, który nie zasila magistrali.
+- *Uszkodzone ramki* — błędy sumy kontrolnej, najczęściej dwa liczniki na jednym
+  adresie pierwotnym. Licznik odpowiadający dwoma różnymi id jest osobno oznaczany:
+  dekoder nie zgłasza konfliktu, po prostu wypuszcza obie odpowiedzi, a Ty inaczej
+  dostaniesz w Home Assistancie drugie urządzenie z jednego wpisu.
+- *To nie jest ruch M-Bus* — bajty płyną, ale żaden nie ma kształtu ramki M-Bus.
+  Typowe liczniki energii elektrycznej operatora (OSD) z portem optycznym albo
+  RS-485 używają DLMS/COSEM (IEC 62056), inne Modbus RTU/TCP. Ten dodatek nie
+  dekoduje żadnego z tych protokołów. Nie wyklucza to prawdziwego licznika energii
+  z interfejsem M-Bus zgodnym z EN 13757, jeśli wmbusmeters ma dla niego driver.
+  Samo złącze RS-485 nie oznacza M-Bus.
+- *Na tym porcie jest inne urządzenie* — port wskazuje teraz inny sprzęt niż
+  wybrany, więc odpytywanie jest odmawiane, zamiast trafić w czyjś koordynator
+  Zigbee.
+
+**Niesprawdzone na prawdziwej magistrali.** Protokół był testowany na symulatorze,
+nie na prawdziwych licznikach — autor nie ma sprzętu M-Bus po kablu. Jeśli coś nie
+działa, zgłoś issue; to jedyna droga, żeby to naprawić.
+
+Widok **O projekcie** dokumentuje oba rzeczywiste potoki danych i wyświetla notę o
+wsparciu AI. Kopia repozytorium znajduje się w [NOTICE.md](../NOTICE.md).
+
 ## 9. Język interfejsu
 
 5 języków (en/pl/de/cs/sk). Wybór: `?lang=pl` w URL → cookie `wmbus_lang` →

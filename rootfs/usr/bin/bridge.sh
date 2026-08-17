@@ -35,6 +35,8 @@ source "${BRIDGE_LIB_DIR}/11-listen.sh"
 source "${BRIDGE_LIB_DIR}/12-pipeline.sh"
 # shellcheck source=bridge-lib/13-esp.sh
 source "${BRIDGE_LIB_DIR}/13-esp.sh"
+# shellcheck source=bridge-lib/14-mbus.sh
+source "${BRIDGE_LIB_DIR}/14-mbus.sh"
 
 # ============================================================
 # wMBus MQTT Bridge (core)
@@ -750,8 +752,10 @@ fi
   fi
 }
 
-# Ensure LISTEN dies when the addon shuts down (docker stop / s6 SIGTERM).
-trap stop_listen_instance EXIT TERM INT
+# Ensure LISTEN and the wired M-Bus instance die when the addon shuts down
+# (docker stop / s6 SIGTERM).
+_stop_extra_instances() { stop_listen_instance; stop_mbus_instance; }
+trap _stop_extra_instances EXIT TERM INT
 
 # ------------------------------------------------------------
 # wait_for_mqtt
@@ -793,6 +797,13 @@ while true; do
   # Parallel LISTEN always starts unconditionally and remains a pure, empty-dir
   # discovery stream. Preview decoding is one-shot and never reloads LISTEN.
   start_listen_instance
+
+  # Wired M-Bus: a separate engine that polls a serial bus instead of being fed
+  # from stdin. Disabled by default; when off it does not start and the radio
+  # path is untouched. Restarted with the pipeline so a soft reload picks up
+  # meters added through the WebUI, exactly like the primary instance.
+  stop_mbus_instance
+  start_mbus_instance
 
   # Republish the canary entity used by the opt-in HA verification (no-op when
   # the option is off). Cheap and idempotent — retained Discovery payload.

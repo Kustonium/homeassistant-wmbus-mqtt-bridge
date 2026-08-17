@@ -113,13 +113,14 @@ Add-on udostępnia interaktywny panel WWW (w Home Assistant jako panel boczny lu
 
 Widoki:
 
-- **Panel** — stan pipeline'u (MQTT, telegramy RAW, dekoder, HA Discovery), statystyki odbioru (w tym tempo telegramy/min na żywo) oraz wykryte płytki ESP.
-- **Liczniki** — skonfigurowane liczniki z bieżącą wartością i statystykami odbioru (15m / 60m).
+- **Panel** — stan potoków radiowego i — po pierwszej prawidłowej odpowiedzi — przewodowego M-Bus, statystyki odbioru oraz wykryte płytki ESP.
+- **Liczniki** — skonfigurowane liczniki radiowe i przewodowe z bieżącą wartością oraz jawnym źródłem odczytu (`ESP` albo `M-Bus · <alias>`).
 - **Odbierane / Szukaj** — kandydaci z trybu LISTEN (ID, driver, medium, szyfrowanie, odbiór). Kandydaci bez wymaganego klucza AES są dekodowani przez jednorazowe procesy podglądu, a bieżąca wartość pojawia się w kolumnie **Wartość** bez trwałego dodawania licznika. Kandydaci wymagający AES są pomijani do czasu podania klucza. Pasek **Filtruj po wartości** zawęża już wyświetlone dane bez uruchamiania dodatkowych driverów.
 - **Logi** — skrócony strumień zdarzeń runtime (pełne logi w zakładce **Log** dodatku HA).
 - **Logi ESP** — diagnostyka z odbiorników ESP (zdarzenia, RSSI, boot, sugestie) oraz wykrycie wielu płytek na podstawie napływających telegramów `wmbus/+/telegram`.
 - **Ustawienia** — aktywna konfiguracja runtime i snapshot `options.json`; globalny restart dodatku jest w górnym pasku WebUI. Opcje skalarne ze schematu add-onu można tu **edytować**, a lista liczników jest zarządzana w widoku **Odbierane / Szukaj**; opcje rdzenne wchodzą w życie po restarcie.
-- **O projekcie** — krótki opis architektury.
+- **M-Bus** — konfiguracja, stan, skan adresów i konsola opcjonalnej magistrali przewodowej.
+- **O projekcie** — rzeczywiste potoki radiowy/przewodowy oraz nota o wsparciu AI; pełna nota jest również w [NOTICE.md](NOTICE.md).
 
 **Porównanie driverów:** w modalu **Dodaj licznik** lub **Driver…** wybierz driver z listy, wpisz klucz AES jeśli licznik jest szyfrowany i kliknij **Porównaj**. Lewa kolumna pokazuje driver zapisany albo auto-detekcję `wmbusmeters`, prawa kolumna pokazuje driver wybrany w polu **Sterownik**. Zielone wiersze to pola dostępne tylko dla wybranego drivera, żółte to różne wartości; więcej pól nie gwarantuje poprawnego drivera — porównaj wartości z wyświetlaczem licznika.
 
@@ -394,13 +395,14 @@ The add-on ships an interactive web panel (a side panel or the **OPEN WEB UI** b
 
 Views:
 
-- **Dashboard** — pipeline status (MQTT, RAW telegrams, decoder, HA Discovery), reception statistics (including a live telegrams-per-minute rate) and detected ESP boards.
-- **Meters** — configured meters with their current value and reception stats (15m / 60m).
+- **Dashboard** — the radio pipeline and, after its first valid reply, the wired M-Bus pipeline, reception statistics and detected ESP boards.
+- **Meters** — configured radio and wired meters with their current value and an explicit source (`ESP` or `M-Bus · <alias>`).
 - **Received / Search** — LISTEN-mode candidates (ID, driver, media, encryption, reception). Candidates without a required AES key are decoded by one-shot preview processes, and their current value appears in the **Value** column without permanent configuration. Candidates requiring AES are skipped until a key is provided. The **Filter by value** bar narrows already displayed data without running extra drivers.
 - **Logs** — a short runtime event stream (full logs are in the add-on **Log** tab).
 - **ESP Logs** — diagnostics from ESP receivers (events, RSSI, boot, suggestions) and multi-board detection based on incoming `wmbus/+/telegram` telegrams.
 - **Settings** — active runtime configuration and `options.json` snapshot; the global add-on restart button is in the WebUI top bar. Scalar options from the add-on schema can be **edited** here, while meters are managed in **Received / Search**; core options take effect after a restart.
-- **About** — a short architecture description.
+- **M-Bus** — configuration, status, address scan and console for the optional wired bus.
+- **About** — the actual radio/wired pipelines and the AI-assistance notice; the full notice is also in [NOTICE.md](NOTICE.md).
 
 **Driver comparison:** in the **Add meter** or **Driver…** modal, choose a driver, enter the AES key if the meter is encrypted, then click **Compare**. The left column shows the saved driver or `wmbusmeters` auto-detection; the right column shows the driver selected in the **Driver** field. Green rows are fields available only with the selected driver, amber rows are different values; more fields do not prove the driver is correct — compare the values with the meter display.
 

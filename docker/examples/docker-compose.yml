@@ -20,4 +20,9 @@ services:
       - "8099:8099"
     volumes:
       - ./config:/config
+    # Wired M-Bus only: map YOUR converter, by its stable by-id path.
+    # Never "/dev:/dev" and never privileged — on a typical home server one of
+    # those ports is a Zigbee coordinator, and the M-Bus engine transmits.
+    # devices:
+    #   - "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0:/dev/ttyUSB0"
     restart: unless-stopped

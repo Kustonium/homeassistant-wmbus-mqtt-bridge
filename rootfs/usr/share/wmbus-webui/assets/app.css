@@ -730,6 +730,15 @@ tr:last-child td {
   border-color: #59606b;
 }
 
+.btn:disabled,
+.btn:disabled:hover {
+  cursor: not-allowed;
+  background: #24272c;
+  border-color: #343941;
+  color: #7f8791;
+  opacity: 1;
+}
+
 .btn.primary {
   background: #0d8f80;
   border-color: #16bca8;
@@ -1318,4 +1327,327 @@ tr:last-child td {
     border-bottom: 1px solid var(--line);
     padding-bottom: 14px;
   }
+}
+
+/* ── Wired M-Bus tab ──────────────────────────────────────────────────────
+   The banner and health classes were referenced by the M-Bus tab before they
+   existed here, so every one of those messages rendered as unstyled body text
+   - including the "not verified on a real bus" notice, which is the one thing
+   on that page that must not read as decoration. */
+.banner {
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.banner-warn {
+  color: #ffe6a3;
+  background: #3e321c;
+  border-color: #7b5d1e;
+}
+
+.banner-bad {
+  color: #ffd0cc;
+  background: #452321;
+  border-color: #8b3933;
+}
+
+.banner-untested {
+  border-left: 3px solid var(--warn);
+}
+
+.mbus-untested {
+  color: var(--muted);
+}
+
+.mbus-untested strong {
+  color: var(--warn);
+}
+
+.mbus-page {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.mbus-page > *,
+.mbus-card-head > *,
+.mbus-port-grid > * {
+  min-width: 0;
+}
+
+.mbus-page > .card {
+  padding: 20px;
+}
+
+.mbus-page h2 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+.mbus-page p {
+  margin: 8px 0;
+}
+
+.mbus-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px 18px;
+}
+
+.mbus-hero .mbus-untested {
+  grid-column: 1 / -1;
+  margin-bottom: 0;
+}
+
+.mbus-port-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.4fr) repeat(3, minmax(150px, 0.7fr));
+  gap: 14px;
+  margin: 16px 0 12px;
+}
+
+.mbus-port-grid label,
+.mbus-scan-controls label,
+.mbus-default-poll {
+  display: grid;
+  gap: 6px;
+  color: var(--quiet);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.mbus-port-grid input,
+.mbus-port-grid select,
+.mbus-scan-controls input,
+.mbus-default-poll input,
+.mbus-table input,
+.mbus-readonly-field {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #15171a;
+  color: var(--text);
+  padding: 8px 10px;
+}
+
+.mbus-readonly-field {
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+  background: #25272b;
+}
+
+.mbus-page .row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mbus-card-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 4px;
+}
+
+.mbus-card-head h2 {
+  margin-bottom: 0;
+}
+
+.mbus-default-poll {
+  grid-template-columns: auto 92px;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.mbus-table {
+  min-width: 920px;
+}
+
+.mbus-meters-card .table-wrap {
+  max-width: 100%;
+}
+
+.mbus-table td {
+  padding: 8px 10px;
+}
+
+.mbus-table input {
+  min-width: 120px;
+}
+
+.mbus-scan-section {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.mbus-scan-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(100px, 160px));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.mbus-health-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mbus-meter-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.mbus-meter-state .name {
+  font-weight: 720;
+}
+
+.mbus-meter-state .detail {
+  color: var(--muted);
+}
+
+.mbus-console {
+  margin-top: 10px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mbus-console-card .mbus-console {
+  min-height: 104px;
+  background: #111317;
+}
+
+.mbus-engine-guide {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.mbus-engine-mode {
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #191b1f;
+}
+
+.mbus-engine-mode strong {
+  color: var(--text);
+}
+
+.mbus-engine-mode span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.mbus-engine-mode.on {
+  border-left: 3px solid var(--good);
+}
+
+.mbus-engine-mode.off {
+  border-left: 3px solid var(--accent);
+}
+
+.mbus-engine-switch {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: fit-content;
+  padding: 11px 13px;
+  border: 1px solid #197d72;
+  border-radius: 8px;
+  background: #203632;
+  color: var(--text);
+  font-weight: 720;
+}
+
+.mbus-engine-switch input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+}
+
+.mbus-engine-restart {
+  padding: 10px 12px;
+  border-left: 3px solid var(--warn);
+  background: #312818;
+  color: #ffe08a;
+  border-radius: 6px;
+}
+
+@media (max-width: 1100px) {
+  .mbus-port-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .mbus-page > .card {
+    padding: 16px;
+  }
+
+  .mbus-hero,
+  .mbus-port-grid,
+  .mbus-scan-controls,
+  .mbus-engine-guide {
+    grid-template-columns: 1fr;
+  }
+
+  .mbus-hero .mbus-untested {
+    grid-column: auto;
+  }
+
+  .mbus-card-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .mbus-default-poll {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mbus-console-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text);
+}
+
+.mbus-console-line.muted {
+  color: var(--muted);
+}
+
+.mbus-console-line.ok {
+  color: var(--good);
+}
+
+.mbus-console-line.warn {
+  color: var(--warn);
+}
+
+.mbus-console-line.bad {
+  color: var(--bad);
 }

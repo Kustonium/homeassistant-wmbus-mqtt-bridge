@@ -14,3 +14,93 @@ configuration:
       key:
         name: AES key
         description: Leave empty or enter exactly 32 hexadecimal characters, for example 00000000000000000000000000000000.
+  mbus_tab_visible:
+    name: "M-Bus (wired) — show the tab"
+    description: >-
+      Everything below belongs to WIRED M-Bus: meters connected by a two-wire bus
+      through an M-Bus master converter that appears as a serial port (USB, RS-232
+      or RS-485). This is NOT for radio. An RTL-SDR, a DVB-T stick or a wM-Bus radio
+      dongle will not work here and is not meant to — radio is received by the ESP
+      and arrives over MQTT, exactly as before. This is also NOT support for typical
+      utility electricity meters with an optical port or RS-485 that speak
+      DLMS/COSEM (IEC 62056), nor for Modbus RTU/TCP meters; this add-on decodes
+      neither protocol. A genuine EN 13757 M-Bus electricity meter may work when
+      wmbusmeters has its driver. An RS-485 connector alone does not mean M-Bus.
+      This switch only shows the M-Bus tab
+      in the WebUI; it starts nothing. Leave it off if you have no wired bus.
+      Not verified on a real bus — the author has no such hardware. Please open an
+      issue if something does not work.
+  mbus_enabled:
+    name: "M-Bus (wired) — poll the bus"
+    description: >-
+      Starts a separate wmbusmeters instance that polls the bus. Requires a port to
+      be selected first; without one it will not start and says so in the log. The
+      radio path is never affected.
+  mbus_device:
+    name: "M-Bus (wired) — serial port"
+    description: >-
+      Path to the converter, preferably a stable /dev/serial/by-id/… one. Easiest
+      picked from the list in the M-Bus tab, which also warns about devices that are
+      not converters. The add-on never scans ports: probing transmits frames, and on
+      a typical Home Assistant machine one of those ports is a Zigbee coordinator.
+  mbus_device_serial:
+    name: "M-Bus (wired) — device serial number"
+    description: >-
+      Filled in automatically when you pick a port in the tab. A /dev node can be
+      reused by different hardware after a replug, so this is compared on every
+      start; if it no longer matches, polling refuses to run. Empty means the device
+      reports no serial number (common for CH340 and PL2303) and the check cannot be
+      made.
+  mbus_bus_alias:
+    name: "M-Bus (wired) — bus name"
+    description: Name used for this bus in the generated meter configuration. Letters, digits and underscore.
+  mbus_baudrate:
+    name: "M-Bus (wired) — baud rate"
+    description: Usually 2400. Parity is fixed at EVEN — the decoder forces it for M-Bus.
+  mbus_poll_interval:
+    name: "M-Bus (wired) — default poll interval"
+    description: >-
+      Written into every meter that has no interval of its own, for example 15m, 30s
+      or 1h. Shorter intervals mean more traffic on the bus and more battery use in
+      battery-powered meters.
+  mbus_donotprobe_all:
+    name: "M-Bus (wired) — do not probe other ports"
+    description: >-
+      Leave this on. With it off the decoder may talk to other serial devices while
+      looking for a bus, which can disrupt a Zigbee or Z-Wave coordinator sitting on
+      a neighbouring port.
+  mbus_loglevel:
+    name: "M-Bus (wired) — log level"
+    description: Log level for the bus instance only. Independent of the main log level.
+  mbus_logtelegrams:
+    name: "M-Bus (wired) — log raw frames"
+    description: Logs every frame exchanged with the bus. Useful when a meter stays silent; verbose otherwise.
+  mbus_ignoreduplicates:
+    name: "M-Bus (wired) — ignore duplicates"
+    description: Drops repeated identical telegrams before decoding.
+  mbus_meters:
+    name: "M-Bus (wired) — meters on the bus"
+    description: Meters polled over the wired bus. Managed most easily in the M-Bus tab of the WebUI.
+    fields:
+      id:
+        name: Name
+      address:
+        name: Address
+        description: >-
+          Primary address p1 to p250, or an 8-character secondary address. p0 is the
+          factory "unset" value and is not valid — a bus where two meters still have
+          it is exactly the case that produces collisions.
+      type:
+        name: Driver
+      type_other:
+        name: Custom driver
+      key:
+        name: AES key
+        description: Leave empty or enter exactly 32 hexadecimal characters. Most wired meters are not encrypted.
+      poll_interval:
+        name: Poll interval
+        description: Overrides the default for this meter, for example 1h. Leave empty to use the default.
+      calculated_fields:
+        name: Calculated fields
+      static_fields:
+        name: Constant fields

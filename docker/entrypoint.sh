@@ -43,6 +43,19 @@ if [[ ! -f "${OPTIONS_JSON}" ]]; then
   "external_mqtt_username": "",
   "external_mqtt_password": "",
 
+  "mbus_tab_visible": false,
+  "mbus_enabled": false,
+  "mbus_device": "",
+  "mbus_device_serial": "",
+  "mbus_bus_alias": "MAIN",
+  "mbus_baudrate": "2400",
+  "mbus_poll_interval": "15m",
+  "mbus_donotprobe_all": true,
+  "mbus_loglevel": "normal",
+  "mbus_logtelegrams": false,
+  "mbus_ignoreduplicates": false,
+  "mbus_meters": [],
+
   "meters": []
 }
 EOFJSON

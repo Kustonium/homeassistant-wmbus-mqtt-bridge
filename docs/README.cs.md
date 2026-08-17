@@ -429,6 +429,94 @@ dekodér nemá, když mu telegramy předáváte jako HEX.
 
 ---
 
+### Drátový M-Bus (sériová sběrnice, ve výchozím stavu vypnuto)
+
+Měřiče tepla a vody často vedou kabelem, ne rádiem: převodník M-Bus master sedí na
+dvoudrátové sběrnici a v systému se hlásí jako sériový port (USB, RS-232 nebo
+RS-485). Doplněk umí takovou sběrnici sám dotazovat.
+
+Vše navazující zůstává stejné jako u rádia — stejné ovladače, jednotky, Discovery,
+počítaná i konstantní pole. Liší se jen transport: měřiče se dotazují místo
+poslouchání a adresují místo objevování.
+
+Po první platné odpovědi se kabelový měřič zobrazí také v **PANELU** a
+**MĚŘIČÍCH**. Sloupec zdroje ukazuje `M-Bus · <alias sběrnice>` místo odznaků ESP,
+rádiového pásma a příjmu a Panel doplní skutečnou kabelovou cestu
+`měřič → sériový master → dotazující wmbusmeters → MQTT + HA`. Cesta je označena
+jako aktivní až po přijetí telegramu runtime, ne pouhým zapnutím enginu.
+
+**Dva přepínače, oba ve výchozím stavu vypnuté.** `mbus_tab_visible` pouze zobrazí
+záložku, `mbus_enabled` spustí engine. Při obou vypnutých se pro vás nic nemění.
+
+| Volba | Význam |
+|---|---|
+| `mbus_device` | sériový port; nejlépe cesta `/dev/serial/by-id/…` |
+| `mbus_bus_alias` | název sběrnice v konfiguraci měřičů (`MAIN`) |
+| `mbus_baudrate` | 300–9600, obvykle 2400 |
+| `mbus_poll_interval` | výchozí interval zapsaný každému měřiči bez vlastního |
+| `mbus_donotprobe_all` | nechte zapnuté — viz varování níže |
+| `mbus_meters[]` | `id`, `address` (`p1`..`p250` nebo 8 hex), `type`, `key`, `poll_interval` |
+
+**Doplněk záměrně nikdy neskenuje porty.** Sondování znamená vysílání a na typickém
+stroji s Home Assistant je jeden ze sériových portů koordinátor Zigbee. Dekodér
+správný převodník stejně nepotvrdí — otevře zařízení a ohlásí úspěch — port proto
+vybíráte vy.
+
+Vybranou sběrnici pak můžete výslovně ověřit: **Ověřit, zda sběrnice žije** odešle
+jeden testovací broadcast, **Sken primárních adres** projde jen zadaný rozsah
+(`p1`–`p250`, nejvýše 32 adres na požadavek) a v každém řádku zobrazí potvrzení
+adresy i diagnostiku datové odpovědi; **Dotázat jednou** osloví jednu
+nakonfigurovanou primární adresu. Za běžícího pravidelného dotazování jsou všechny
+tři akce odmítnuty, protože M-Bus má jediný master. **„Dotázat jednou“ slouží pouze
+k diagnostice:** zobrazí surovou odpověď, ale nedekóduje ji, nepublikuje do
+MQTT/Home Assistant ani nepřidá měřič do Pipeline. Pro běžný provoz měřič uložte,
+zapněte engine, klikněte na **Použít** a restartujte doplněk. Výstup tohoto běžného
+enginu zůstává viditelný v **Konzoli sběrnice**, která je pouze pro čtení a neumí
+odesílat libovolné bajty.
+
+Pole **Ovladač** v tabulce měřičů nabízí všechny ovladače dodané v aktuálním obrazu
+a nadále přijímá vlastní název. `auto` může měřič rozpoznat, ale nezaručuje výběr
+použitelného ovladače pro každou kabelovou odpověď; pokud automatické dekódování
+nevrací hodnotu, vyberte ovladač uvedený v dokumentaci měřiče.
+**Zjistit ovladač** provede jeden diagnostický dotaz a předá přijatý rámec
+analyzátoru v přibaleném `wmbusmeters`. Návrh vyplní pole, ale nikdy se automaticky
+neuloží: zkontrolujte jej a klikněte na **Uložit měřiče**. Pokud analyzátor nemá
+spolehlivý návrh, rozhraní to oznámí místo hádání.
+Pipeline odvozuje zobrazenou jednotku ze skutečného názvu dekódovaného pole
+(například `_c` → `°C`, `_rh` → `RH%`), také u ovladačů bez kumulativního odečtu,
+které používají obecný číselný fallback.
+
+**V Dockeru** namapujte převodník výslovně:
+`devices: ["/dev/serial/by-id/usb-…:/dev/ttyUSB0"]`. Nikdy `/dev:/dev`, nikdy
+`privileged`.
+
+**Záložka řekne, proč nic nechodí.** Na sběrnici vypadají špatná adresa, mrtvý měřič,
+převodník, který nenapájí linku, a měřič mluvící jiným protokolem zvenčí stejně:
+nevzniknou žádné entity. Karta stavu sběrnice pojmenuje, o který případ jde — po
+měřičích, spolu s okamžikem poslední odpovědi každého z nich:
+
+- *Bez odpovědi* — port je otevřený, měřič na této adrese mlčí. Adresa, kabeláž nebo
+  převodník, který sběrnici nenapájí.
+- *Poškozené rámce* — chyby kontrolního součtu, nejčastěji dva měřiče na jedné
+  primární adrese. Měřič odpovídající dvěma různými id je zvlášť označen: dekodér
+  žádný konflikt nehlásí, prostě vydá obě odpovědi, a vy byste jinak z jednoho
+  záznamu dostali v Home Assistantu druhé zařízení.
+- *Toto není provoz M-Bus* — bajty tečou, ale žádný nemá tvar rámce M-Bus.
+  Běžné elektroměry distributora s optickým portem nebo RS-485 používají
+  DLMS/COSEM (IEC 62056), jiné Modbus RTU/TCP. Tento doplněk nedekóduje žádný
+  z těchto protokolů. Skutečný elektroměr M-Bus podle EN 13757 však může fungovat,
+  pokud pro něj wmbusmeters obsahuje ovladač. Samotný konektor RS-485 neznamená
+  M-Bus.
+- *Na tomto portu je jiné zařízení* — port nyní ukazuje na jiný hardware než vybraný,
+  takže je dotazování odmítnuto místo toho, aby mířilo do cizího Zigbee koordinátoru.
+
+**Neověřeno na skutečné sběrnici.** Protokol byl testován proti simulátoru, ne proti
+skutečným měřičům — autor nemá drátový M-Bus hardware. Pokud něco nefunguje, založte
+issue; jinak to nelze opravit.
+
+Zobrazení **O PROJEKTU** dokumentuje obě skutečné datové cesty a zobrazuje oznámení
+o podpoře AI. Kopie v repozitáři je v [NOTICE.md](../NOTICE.md).
+
 ## 9. Jazyk rozhraní
 
 5 jazyků (en/pl/de/cs/sk). Výběr: `?lang=cs` v URL → cookie `wmbus_lang` →
