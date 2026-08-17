@@ -149,8 +149,12 @@ jobs:
           # the icon in its release notes while stable still drew the generic
           # puzzle placeholder. Listing a file that dev does not have is harmless —
           # the -e guard below skips it.
+          # NOTICE.md is on this list because the synced README links to it twice
+          # (the WebUI "About" view points there as well). It was not listed, so
+          # 1.5.49 published a README with two dead links: the file exists in dev,
+          # never arrived here, and the links 404'd on the public repository.
           for item in rootfs Dockerfile docker translations wmbusmeters-mqtt-stdin \
-                      README.md THIRD_PARTY_NOTICES.md docs icon.png logo.png; do
+                      README.md THIRD_PARTY_NOTICES.md NOTICE.md docs icon.png logo.png; do
             if [[ -e "_dev/${item}" ]]; then
               rm -rf "${item}"
               cp -r "_dev/${item}" "${item}"
