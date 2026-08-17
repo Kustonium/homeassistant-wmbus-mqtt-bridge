@@ -1,5 +1,5 @@
 name: "wMBus MQTT Bridge"
-description: "wM-Bus over MQTT (RAW HEX) + optional wired M-Bus -> wmbusmeters -> Home Assistant Discovery"
+description: "MQTT RAW HEX -> wmbusmeters (stdin:hex) -> MQTT + Home Assistant Discovery"
 version: "1.5.49"
 slug: "wmbus_mqtt_bridge"
 stage: experimental
