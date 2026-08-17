@@ -48,6 +48,8 @@ Ten dodatek Home Assistant jest rozszerzeniem oraz forkiem oficjalnego projektu 
 
 Celem projektu jest dekodowanie telegramów Wireless M-Bus (C1 / T1 / S1) w Home Assistant **bez użycia lokalnego dongla radiowego** (USB/RTL-SDR). Zamiast tego wykorzystuje **zewnętrzne odbiorniki** (np. ESP32/gateway/bridge) i **MQTT jako kanał wejściowy**.
 
+Od wersji **1.5.49** dodatek umie dodatkowo **odpytywać przewodową magistralę M-Bus** przez konwerter M-Bus master na porcie szeregowym (USB / RS-232 / RS-485) — jako trzecia instancja `wmbusmeters` obok DECODE i LISTEN. Ta ścieżka jest **opcjonalna, domyślnie wyłączona i nieprzetestowana na prawdziwej magistrali** (autor nie ma takiego sprzętu — protokół sprawdzono na symulatorze). Wyłączona nie uruchamia się i nie dotyka toru radiowego, który pozostaje głównym i to jego dotyczy wszystko poniżej. Szczegóły: [pełna dokumentacja](docs/README.pl.md).
+
 Add-on konsumuje surowe ramki wMBus w formacie HEX z MQTT i jest typowo używany razem z firmware [`esphome-wmbus-bridge-rawonly`](https://github.com/Kustonium/esphome-wmbus-bridge-rawonly) działającym na ESP32 z układem radiowym **CC1101, SX1276 lub SX1262**. Oba projekty tworzą pipeline (ESP odbiera radio → MQTT raw hex → ten add-on dekoduje → HA), ale są **niezależne**: add-on przyjmuje hex z dowolnego źródła publikującego na skonfigurowany `raw_topic`.
 
 > 🌉 **Całościowo: ESP (odbiornik radiowy) + ten add-on (dekoder) tworzą rozproszony _gateway wM-Bus → Home Assistant_.** Radio stoi tam, gdzie jest zasięg, a dekodowanie (deszyfracja i zestaw driverów z przypiętego buildu `wmbusmeters`) działa na HA. W odróżnieniu od **monolitycznych bramek wM-Bus** (radio + dekoder w jednym pudełku) ta architektura nie wymaga lokalnego dongla USB i skaluje się przez dostawianie tanich węzłów ESP. Każdą połowę można też używać samodzielnie: ESP karmi dowolny backend MQTT, a add-on dekoduje hex z dowolnego źródła (rtl-wmbus, inny gateway, narzędzie replay) — współpracują, ale żadna nie zależy od drugiej.
@@ -70,12 +72,22 @@ Ten fork wprowadza alternatywną ścieżkę wejściową opartą o MQTT. Add-on d
 ### Architektura przepływu danych
 
 ```
+Tor radiowy (główny):
 ESP32 / Gateway / Bridge
 → MQTT (surowy telegram wM-Bus w formacie HEX)
 → wmbusmeters (stdin:hex)
 → MQTT (JSON)
 → Home Assistant (MQTT Discovery)
+
+Tor przewodowy (opcjonalny, domyślnie wyłączony):
+Licznik na magistrali M-Bus
+→ konwerter M-Bus master na porcie szeregowym
+→ wmbusmeters (odpytywanie, osobna instancja)
+→ MQTT (JSON)
+→ Home Assistant (MQTT Discovery)
 ```
+
+Oba tory schodzą się w tym samym miejscu: warstwa encji nie pyta, skąd przyszedł zdekodowany telegram, więc jednostki, `device_class`, podział na pomiarowe/diagnostyczne oraz pola liczone i stałe działają tak samo.
 
 ### Kluczowe cechy
 
@@ -86,6 +98,7 @@ ESP32 / Gateway / Bridge
 - **Wybór publikowanych pól** — w modalu licznika (**Dodaj licznik** / **Driver…**) jest tabela wszystkich pól, jakie driver potrafi zwrócić, każde z opisem z `wmbusmeters` i checkboxem; obok pole na wzorce (`consumption_at_history_*`). Odznaczone pole nie dostaje encji — a jeśli encja już istniała, zostaje usunięta razem z historią.
 - **Opis pola przy encji** — każda encja niesie atrybut `Description` z opisem napisanym przez autora drivera, obok pól zdekodowanego telegramu.
 - **Encje diagnostyczne statusu** — gdy licznik raportuje pole `status`, powstaje sensor z tekstem przekazanym przez wybrany driver `wmbusmeters` oraz `binary_sensor` (`device_class: problem`) włączający się przy każdym stanie innym niż `OK`. Publikowane są **wszystkie** pola drivera: te z jednostką zużycia lub rozpoznaną `device_class` jako zwykłe sensory, cała reszta (liczby bez klasy, teksty, pola `null`) jako encje diagnostyczne wyłączone domyślnie — włączasz w HA tylko te, których potrzebujesz.
+- **M-Bus przewodowy (opcjonalny, domyślnie wyłączony)** — dodatek potrafi sam odpytywać magistralę przez konwerter na porcie szeregowym: wybór portu bez skanowania (sondowanie mogłoby zagadać do koordynatora Zigbee), skan adresów pierwotnych z klasyfikacją odpowiedzi, konsola tylko do odczytu i panel stanu, który nazywa przyczynę ciszy zamiast zostawiać „nic nie przychodzi". **Niesprawdzone na prawdziwej magistrali** — protokół testowano na symulatorze.
 - **Tryb LISTEN (nasłuch)** — gdy lista `meters` jest pusta, add-on wypisuje w logach wszystkie słyszane liczniki wraz z sugerowanym driverem.
 - **Filtrowanie po wartości** — gdy nasłuch słyszy wiele cudzych liczników, WebUI filtruje już wyświetlone wartości według odczytu z fizycznego licznika i tolerancji.
 - **Interaktywny panel WebUI** — zarządzanie przez przeglądarkę (panel boczny w HA / port `8099` w Dockerze): lista wykrytych kandydatów, dodawanie licznika przez modal, podgląd wartości bez trwałego dodawania, filtrowanie wartości, porównanie driverów i logi ESP. Interfejs w 5 językach: 🇬🇧 EN · 🇵🇱 PL · 🇩🇪 DE · 🇨🇿 CS · 🇸🇰 SK.
@@ -340,6 +353,8 @@ This Home Assistant add-on is a fork and extension of the official **wmbusmeters
 
 The purpose of this add-on is to decode Wireless M-Bus (C1 / T1 / S1) telegrams in Home Assistant **without a local radio dongle** (USB/RTL-SDR). Instead, it uses **external receivers** (ESP32/gateway/bridge) and **MQTT as the input transport**.
 
+Since **1.5.49** the add-on can additionally **poll a wired M-Bus** through an M-Bus master converter on a serial port (USB / RS-232 / RS-485), as a third `wmbusmeters` instance next to DECODE and LISTEN. That path is **optional, off by default and not verified against a real bus** (the author has no such hardware — the protocol was tested against a simulator). Disabled, it does not start and does not touch the radio path, which remains the primary one and is what everything below describes. Details: [full documentation](docs/README.en.md).
+
 This add-on consumes raw wMBus hex frames from MQTT and is typically paired with the companion firmware [`esphome-wmbus-bridge-rawonly`](https://github.com/Kustonium/esphome-wmbus-bridge-rawonly) running on an ESP32 with a **CC1101, SX1276 or SX1262** radio. The two projects work as a pipeline (ESP receives radio → MQTT raw hex → this add-on parses → HA), but each is **independent**: this add-on accepts hex from any source publishing to the configured `raw_topic`.
 
 > 🌉 **As a whole: the ESP (RF receiver) + this add-on (decoder) form a distributed _wM-Bus → Home Assistant gateway_.** The radio sits where the signal is, while decoding (decryption and the driver set from the pinned `wmbusmeters` build) runs on HA. Unlike **monolithic wM-Bus gateways** (radio + decoder in one box), this architecture needs no local USB dongle and scales by adding cheap ESP nodes. Each half also works standalone: the ESP feeds any MQTT backend, and the add-on decodes hex from any source (rtl-wmbus, another gateway, the replay tool) — they cooperate, but neither depends on the other.
@@ -355,12 +370,22 @@ The original **wmbusmeters-ha-addon** assumes local radio reception and does not
 This fork introduces an MQTT-based input path:
 
 ```
+Radio path (primary):
 ESP32 / Gateway / Bridge
 → MQTT (raw wM-Bus HEX telegram)
 → wmbusmeters (stdin:hex)
 → MQTT (JSON)
 → Home Assistant (MQTT Discovery)
+
+Wired path (optional, off by default):
+Meter on an M-Bus bus
+→ M-Bus master converter on a serial port
+→ wmbusmeters (polling, separate instance)
+→ MQTT (JSON)
+→ Home Assistant (MQTT Discovery)
 ```
+
+Both paths meet at the same place: the entity layer never asks where a decoded telegram came from, so units, `device_class`, the measurement/diagnostic split and calculated/constant fields all behave identically.
 
 ### Key features
 
@@ -371,6 +396,7 @@ ESP32 / Gateway / Bridge
 - Field selection: the meter modal (**Add meter** / **Driver…**) lists every field the driver can report, each with the description from `wmbusmeters` and a checkbox, next to a box for patterns (`consumption_at_history_*`). An unchecked field gets no entity — and if one already existed, it is removed together with its history.
 - Field descriptions on the entity: each entity carries a `Description` attribute written by the driver author, alongside the decoded telegram fields.
 - Status diagnostic entities: when a meter reports a `status` field, a text sensor with the value supplied by the selected `wmbusmeters` driver plus a `binary_sensor` (`device_class: problem`) that turns on for any non-`OK` state. **Every** driver field is published: those with a consumption unit or a recognised `device_class` as plain sensors, everything else (unclassified numbers, text, `null` fields) as diagnostic entities disabled by default, so you enable only the ones you need
+- Wired M-Bus (optional, off by default): the add-on can poll a bus itself through a converter on a serial port — port selection without scanning (probing could talk into a Zigbee coordinator), a primary-address scan that classifies each reply, a read-only console and a status panel that names the cause of silence instead of leaving you with "nothing arrives". **Not verified against a real bus** — the protocol was tested against a simulator.
 - LISTEN mode: when `meters` list is empty, logs all detected meter IDs and suggested drivers
 - Value filtering: when LISTEN hears many neighbours' meters, the WebUI filters already displayed values by the physical meter reading and tolerance
 - Interactive WebUI: browser management panel (HA side panel / port `8099` in Docker) — detected candidates, modal-based meter add, value preview without permanent configuration, value filtering, driver comparison and ESP logs. Available in 5 languages: 🇬🇧 EN · 🇵🇱 PL · 🇩🇪 DE · 🇨🇿 CS · 🇸🇰 SK.

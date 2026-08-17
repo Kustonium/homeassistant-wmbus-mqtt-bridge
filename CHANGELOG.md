@@ -1,3 +1,19 @@
+## 1.5.50
+
+### Fixed
+- the main README described a radio-only add-on. Wired M-Bus shipped in 1.5.49 and was
+  documented in depth in the five user guides and the architecture notes, but the sections
+  a first-time reader actually reads — the statement of purpose, the data-flow diagram and
+  the key-features list — still described a single MQTT input path. Read against the M-Bus
+  tab that the same version installs, the purpose sentence ("decode wM-Bus **without a
+  local radio dongle**, using **external receivers** and **MQTT as the input**") was no
+  longer true as written.
+  Both language halves now name the wired path where the reader meets the project, always
+  with all three qualifiers together: optional, off by default, and not verified against a
+  real bus. The diagram shows both paths and states where they converge — the entity layer
+  never asks where a decoded telegram came from. The add-on description in `config.yaml`
+  says so too.
+
 ## 1.5.49
 
 ### Added
