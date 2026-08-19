@@ -18,10 +18,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install ShellCheck
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck
+      # ShellCheck is preinstalled on the GitHub-hosted Ubuntu image, so the
+      # apt-get that used to live here installed nothing ("already the newest
+      # version") and only added a network dependency. On 2026-08-19 apt hung
+      # and three runs sat in that step for 15 minutes without checking a single
+      # script. Report the version instead, so a runner image that ever drops the
+      # tool fails loudly here rather than silently skipping the linter.
+      - name: Show ShellCheck version
+        run: shellcheck --version
 
       - name: Run ShellCheck
         shell: bash
