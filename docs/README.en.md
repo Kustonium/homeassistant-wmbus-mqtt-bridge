@@ -530,6 +530,20 @@ work, open an issue; that is the only way it gets fixed.
 The **About** view documents both actual data paths and displays the project's
 AI-assistance disclosure. The repository copy is [NOTICE.md](../NOTICE.md).
 
+### Tauron / KPL electricity meters (Poland)
+
+These meters put a non-standard prefix where the wM-Bus standard puts the bytes that
+confirm a decryption succeeded. Upstream `wmbusmeters` reads that as a wrong key and
+discards the whole telegram, reporting *"did you use the correct decryption key?"* even
+though the key is correct. This add-on carries a local workaround for it, applied only
+to meters whose manufacturer flag is `KPL`.
+
+Configure such a meter with the driver **`amiplus`** — automatic detection will not find
+it, because no upstream driver claims this manufacturer.
+
+**Not verified here.** Nobody on this side has such a meter; the workaround rests on a
+user report. If you have one, please open an issue with a raw telegram.
+
 ## 9. Interface language
 
 5 languages (en/pl/de/cs/sk). Selection: `?lang=en` in the URL → cookie

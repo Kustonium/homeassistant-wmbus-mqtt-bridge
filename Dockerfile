@@ -35,8 +35,15 @@ WORKDIR /src
 # A monthly cron (.github/workflows/wmbusmeters-pin-bump.yml) opens a bump PR
 # whenever upstream publishes a new release tag; merging it re-runs these gates.
 ARG WMBUSMETERS_COMMIT=ac4f295369a48ef51cb835e6920b62cbee743bd6
+# Add-on-local patches for upstream behaviour we cannot configure around. Each
+# one retires itself: the script skips a patch as soon as upstream grows its own
+# handling, and FAILS the build if a patch no longer applies, so the monthly pin
+# bump cannot silently ship without it. See patches/README.md.
+COPY patches/ /patches/
+
 RUN git clone https://github.com/wmbusmeters/wmbusmeters.git . \
   && git checkout --detach "${WMBUSMETERS_COMMIT}" \
+  && bash /patches/apply-local-patches.sh . /patches \
   && ./configure \
   && make \
   && install -d /out \

@@ -534,6 +534,20 @@ działa, zgłoś issue; to jedyna droga, żeby to naprawić.
 Widok **O projekcie** dokumentuje oba rzeczywiste potoki danych i wyświetla notę o
 wsparciu AI. Kopia repozytorium znajduje się w [NOTICE.md](../NOTICE.md).
 
+### Liczniki energii Tauron / KPL (Polska)
+
+Te liczniki wstawiają niestandardowy prefiks w miejscu, w którym standard wM-Bus trzyma
+bajty potwierdzające udane odszyfrowanie. Upstreamowy `wmbusmeters` czyta to jako zły
+klucz i odrzuca cały telegram, pisząc *„did you use the correct decryption key?"* mimo że
+klucz jest prawidłowy. Ten dodatek niesie lokalną poprawkę, stosowaną wyłącznie do
+liczników z flagą producenta `KPL`.
+
+Taki licznik skonfiguruj z driverem **`amiplus`** — automatyczne rozpoznanie go nie
+znajdzie, bo żaden driver upstreamu nie zgłasza tego producenta.
+
+**Niesprawdzone u nas.** Nikt po tej stronie nie ma takiego licznika; poprawka opiera się
+na zgłoszeniu użytkownika. Jeśli masz taki licznik, zgłoś issue z surowym telegramem.
+
 ## 9. Język interfejsu
 
 5 języków (en/pl/de/cs/sk). Wybór: `?lang=pl` w URL → cookie `wmbus_lang` →
