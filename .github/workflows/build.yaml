@@ -7,6 +7,11 @@ on:
     paths:
       - 'rootfs/**'
       - 'Dockerfile'
+      # patches/ feeds `COPY patches/ /patches/` in the Dockerfile, so a change
+      # to a patch changes the image. Without this the build would not rerun and
+      # CI would go green while the published image still carried the old
+      # decoder - the silent half of the failure that left 1.5.51 unbuildable.
+      - 'patches/**'
       - 'config.yaml'
       - 'translations/**'
       - '.github/workflows/build.yaml'
@@ -59,7 +64,7 @@ jobs:
           echo "Files changed in this push:"
           echo "${CHANGED}" | sed 's/^/  /'
 
-          PATTERN="^(rootfs/|Dockerfile|config\.yaml|translations/|\.github/workflows/build\.yaml$)"
+          PATTERN="^(rootfs/|Dockerfile|patches/|config\.yaml|translations/|\.github/workflows/build\.yaml$)"
           if echo "${CHANGED}" | grep -qE "${PATTERN}"; then
             echo "image-affecting change — building"
             echo "skip=false" >> "$GITHUB_OUTPUT"
