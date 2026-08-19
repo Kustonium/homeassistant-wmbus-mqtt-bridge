@@ -5,3 +5,9 @@ rootfs/etc/services.d/*/run text eol=lf
 # shell scripts
 *.sh text eol=lf
 
+
+# The patch is consumed by `git apply` inside the Linux build container. A CRLF
+# checkout makes it reject the patch outright, and the image build then fails.
+# -whitespace because a unified diff writes a blank context line as a single
+# space, which `git diff --check` would report as trailing whitespace.
+*.patch text eol=lf -whitespace
