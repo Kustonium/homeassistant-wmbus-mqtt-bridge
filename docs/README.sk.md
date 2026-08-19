@@ -517,6 +517,20 @@ issue; inak sa to nedá opraviť.
 Zobrazenie **O PROJEKTE** dokumentuje obe skutočné dátové cesty a zobrazuje
 oznámenie o podpore AI. Kópia v repozitári je v [NOTICE.md](../NOTICE.md).
 
+### Elektromery Tauron / KPL (Poľsko)
+
+Tieto merače vkladajú neštandardný prefix tam, kde štandard wM-Bus očakáva bajty
+potvrdzujúce úspešné dešifrovanie. Upstreamový `wmbusmeters` to číta ako zlý kľúč a celý
+telegram zahodí s hláškou *"did you use the correct decryption key?"*, hoci kľúč je
+správny. Tento doplnok nesie lokálnu opravu, ktorá sa použije len pri meračoch s výrobcom
+`KPL`.
+
+Takýto merač nastavte s ovládačom **`amiplus`** — automatická detekcia ho nenájde, pretože
+žiadny upstreamový ovládač si tohto výrobcu nenárokuje.
+
+**U nás neoverené.** Nikto na tejto strane taký merač nemá; oprava stojí na hlásení
+používateľa. Ak ho máte, založte prosím issue so surovým telegramom.
+
 ## 9. Jazyk rozhrania
 
 5 jazykov (en/pl/de/cs/sk). Výber: `?lang=sk` v URL → cookie `wmbus_lang` →

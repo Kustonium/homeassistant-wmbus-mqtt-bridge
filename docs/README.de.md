@@ -549,6 +549,22 @@ Die Ansicht **ÜBER DAS PROJEKT** dokumentiert beide tatsächlichen Datenpfade u
 zeigt den Hinweis zur KI-Unterstützung. Die Repository-Fassung steht in
 [NOTICE.md](../NOTICE.md).
 
+### Tauron-/KPL-Stromzähler (Polen)
+
+Diese Zähler setzen ein nicht standardkonformes Präfix an die Stelle, an der der
+wM-Bus-Standard die Bytes zur Bestätigung einer erfolgreichen Entschlüsselung erwartet.
+Das Upstream-`wmbusmeters` liest das als falschen Schlüssel und verwirft das ganze
+Telegramm mit *"did you use the correct decryption key?"*, obwohl der Schlüssel stimmt.
+Dieses Add-on enthält dafür eine lokale Korrektur, die ausschließlich für Zähler mit dem
+Herstellerkürzel `KPL` greift.
+
+Konfiguriere einen solchen Zähler mit dem Treiber **`amiplus`** — die automatische
+Erkennung findet ihn nicht, da kein Upstream-Treiber diesen Hersteller beansprucht.
+
+**Hier nicht verifiziert.** Auf dieser Seite besitzt niemand einen solchen Zähler; die
+Korrektur beruht auf einer Nutzermeldung. Wenn du einen hast, öffne bitte ein Issue mit
+einem Rohtelegramm.
+
 ## 9. Sprache der Oberfläche
 
 5 Sprachen (en/pl/de/cs/sk). Auswahl: `?lang=de` in der URL → Cookie `wmbus_lang`

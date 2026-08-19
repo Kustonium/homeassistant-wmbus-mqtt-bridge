@@ -1,3 +1,30 @@
+## 1.5.51
+
+### Added
+- decode Tauron/KPL meters via a self-retiring patch to the pinned decoder (3eae103)
+- Tauron/KPL electricity meters (Poland) can now be decoded. These meters put a
+  non-standard prefix where the standard puts the two bytes that confirm a
+  decryption succeeded; upstream `wmbusmeters` reads that as a wrong key and drops
+  the whole telegram, reporting *"did you use the correct decryption key?"* while the
+  key is in fact correct. The add-on now carries a local patch to the pinned decoder
+  that rewrites the prefix — only for meters whose manufacturer flag is `KPL`, and
+  only when the exact byte pair matches, so no other meter can be affected.
+  Configure such a meter with the driver `amiplus`: automatic detection cannot find
+  it, because no upstream driver claims this manufacturer.
+  The patch retires itself. It is skipped as soon as upstream grows its own KPL
+  handling, and it fails the build if it stops applying, so the monthly pin bump
+  cannot quietly ship an image without it.
+  A synthetic KPL telegram was constructed to prove the patch does what it claims,
+  and it is committed as a golden fixture: without the patch the decoder emits no
+  JSON for it and the test fails, with the patch it decodes. Measured A/B on two
+  builds of the pinned decoder, and the unpatched run prints the correctly
+  decrypted plaintext on the very line where it blames the key.
+  **Not verified against the meter.** Nobody here owns one and no raw telegram was
+  available; this rests on a user report. What is verified: the patch applies to the
+  pinned commit, compiles, and leaves both upstream's own test suite and this
+  repository's 14 golden decode fixtures passing. If you have such a meter, please
+  open an issue with a raw telegram.
+
 ## 1.5.50
 
 ### Fixed
