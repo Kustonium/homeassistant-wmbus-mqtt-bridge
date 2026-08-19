@@ -1,0 +1,50 @@
+diff --git a/src/wmbus.cc b/src/wmbus.cc
+index 7fb332c1..4146db42 100644
+--- a/src/wmbus.cc
++++ b/src/wmbus.cc
+@@ -1490,6 +1490,22 @@ bool Telegram::potentiallyDecrypt(vector<uchar>::iterator &pos)
+         }
+         // Now the frame from pos and onwards has been decrypted.
+ 
++        // Tauron/KPL workaround, local to this add-on. See patches/README.md.
++        // This meter emits 60 9b where the standard puts the 2f2f decrypt check
++        // bytes. The decryption itself is correct - the payload behind the prefix
++        // parses normally - but the check below reads the mismatch as a wrong key
++        // and drops every field of the telegram. Those two bytes are consumed as
++        // protocol a few lines further down and never reach parseDV(), so
++        // rewriting them cannot destroy data. Guarded by BOTH the manufacturer and
++        // the exact byte pair: no other meter can be affected, and if the pair
++        // turns out not to be constant this simply stops matching.
++        if ((dll_mfct & 0x7fff) == MANUFACTURER_KPL && *(pos+0) == 0x60 && *(pos+1) == 0x9b)
++        {
++            debug("(wmbus) KPL: rewriting non-standard decrypt check bytes 609b -> 2f2f\n");
++            *(pos+0) = 0x2f;
++            *(pos+1) = 0x2f;
++        }
++
+         CHECK(2);
+         uchar a = *(pos+0);
+         uchar b = *(pos+1);
+@@ -1593,6 +1609,22 @@ bool Telegram::potentiallyDecrypt(vector<uchar>::iterator &pos)
+         }
+ 
+         // Now the frame from pos and onwards has been decrypted.
++        // Tauron/KPL workaround, local to this add-on. See patches/README.md.
++        // This meter emits 60 9b where the standard puts the 2f2f decrypt check
++        // bytes. The decryption itself is correct - the payload behind the prefix
++        // parses normally - but the check below reads the mismatch as a wrong key
++        // and drops every field of the telegram. Those two bytes are consumed as
++        // protocol a few lines further down and never reach parseDV(), so
++        // rewriting them cannot destroy data. Guarded by BOTH the manufacturer and
++        // the exact byte pair: no other meter can be affected, and if the pair
++        // turns out not to be constant this simply stops matching.
++        if ((dll_mfct & 0x7fff) == MANUFACTURER_KPL && *(pos+0) == 0x60 && *(pos+1) == 0x9b)
++        {
++            debug("(wmbus) KPL: rewriting non-standard decrypt check bytes 609b -> 2f2f\n");
++            *(pos+0) = 0x2f;
++            *(pos+1) = 0x2f;
++        }
++
+         CHECK(2);
+         uchar a = *(pos+0);
+         uchar b = *(pos+1);
