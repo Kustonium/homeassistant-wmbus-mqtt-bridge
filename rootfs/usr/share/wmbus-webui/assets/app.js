@@ -485,12 +485,34 @@
         const label = shortEsp(e.esp);
         const c = Number(e.count) || 0;
         const cur = byLabel.get(label);
-        if (!cur || c > cur.count) byLabel.set(label, {pct: Number(e.pct), count: c});
+        if (!cur || c > cur.count) byLabel.set(label, {
+          pct: e.pct == null ? null : Number(e.pct),
+          count: c,
+          firstSeen: Number(e.first_seen) || 0,
+          lastSeen: Number(e.last_seen) || 0,
+          countSource: String(e.count_source || ""),
+          lastSeq: Number(e.last_seq) || 0,
+          missing: Number(e.missing) || 0,
+          outOfOrder: Number(e.out_of_order) || 0,
+          bootId: String(e.boot_id || ""),
+        });
       });
       const fmtTel = (n) => n >= 1000 ? `${Math.round(n / 100) / 10}k` : String(n);
-      rxHtml = Array.from(byLabel.entries()).map(([label, v]) =>
-        `<span title="${escapeHtml(t("reception_pct_per_esp", "reception % on this ESP"))}: ${escapeHtml(label)}" style="${pill}${rxPctStyle(v.pct)}">📶 ${escapeHtml(label)} ${v.pct}%${v.count > 0 ? ` · ${fmtTel(v.count)}` : ""}</span>`
-      ).join("");
+      rxHtml = Array.from(byLabel.entries()).map(([label, v]) => {
+        if (v.countSource === "bridge_session" || v.countSource === "esp_rx") {
+          const first = v.firstSeen ? new Date(v.firstSeen * 1000).toLocaleString() : "-";
+          const last = v.lastSeen ? new Date(v.lastSeen * 1000).toLocaleString() : "-";
+          const countLabel = v.countSource === "esp_rx"
+            ? t("esp_rx_session_count", "validated ESP RF receptions in this session")
+            : t("bridge_session_count", "telegrams observed by the bridge in this session");
+          const continuity = v.countSource === "esp_rx"
+            ? `\nseq: ${v.lastSeq} · ${t("missing_rx_events", "missing RX events")}: ${v.missing} · ${t("out_of_order_rx_events", "out of order")}: ${v.outOfOrder}\nboot_id: ${v.bootId}`
+            : "";
+          const title = `${countLabel}: ${v.count}\n${t("first_received", "first received")}: ${first}\n${t("last_received", "last received")}: ${last}${continuity}`;
+          return `<span title="${escapeHtml(title)}" style="${pill}background:#12354a;color:#65c7f2;cursor:help;">📶 ${escapeHtml(label)} · ${fmtTel(v.count)}</span>`;
+        }
+        return `<span title="${escapeHtml(t("reception_pct_per_esp", "reception % on this ESP"))}: ${escapeHtml(label)}" style="${pill}${rxPctStyle(v.pct)}">📶 ${escapeHtml(label)} ${v.pct}%${v.count > 0 ? ` · ${fmtTel(v.count)}` : ""}</span>`;
+      }).join("");
     } else if (bestPct >= 0) {
       rxHtml = `<span title="${escapeHtml(t("reception_pct_title", "reception % over the diagnostic window"))}" style="${pill}${rxPctStyle(bestPct)}">📶 ${bestPct}%</span>`;
     }
@@ -2283,6 +2305,7 @@
     const allMeters = asArray(data.meters);
     const filteredMeters = applyMediaFilter(allMeters, "media");
     const pending = pendingMeters();
+    const rxDownloadEnabled = Boolean(data.options?.esp_rx_api_enabled);
     const candidateCountLabel = `${filteredCandidates.length}${filteredCandidates.length !== allCandidates.length ? `/${allCandidates.length}` : ""} ${t("webui_visible", "visible")}`;
     return `
       ${discoverValueFilterBar(filteredMeters.length + filteredCandidates.length)}
@@ -2291,7 +2314,10 @@
       <section class="section">
         <div class="section-head">
           <h2>${escapeHtml(t("detected_candidates", "Detected candidates"))}</h2>
-          <span id="discover-candidate-count" data-default="${escapeHtml(candidateCountLabel)}">${escapeHtml(candidateCountLabel)}</span>
+          <div class="actions">
+            <span id="discover-candidate-count" data-default="${escapeHtml(candidateCountLabel)}">${escapeHtml(candidateCountLabel)}</span>
+            ${rxDownloadEnabled ? `<a class="btn" href="api/esp-rx?limit=100000&amp;download=1" download>${escapeHtml(t("download_rx_history", "Download RX history"))}</a>` : ""}
+          </div>
         </div>
         ${filterChips()}
         ${candidateTable(filteredCandidates, true)}

@@ -21,6 +21,7 @@ WebUI.
 flowchart LR
     M["wM-Bus meters"] -->|radio telegram| E["ESP receiver"]
     E -->|"RAW HEX: wmbus/device/telegram"| B["MQTT broker"]
+    E -.->|"RX metadata: wmbus/device/rx"| B
     B -->|RAW HEX| W["wmbusmeters stdin:hex"]
     W -->|decoded JSON| R["bridge runtime"]
     R -->|state + Discovery| B
@@ -598,10 +599,19 @@ hexadecimal telegram. With the default topic, the `+` segment identifies the ESP
 device. A background subscriber records last reception and count per device, so
 basic receiver visibility works even when firmware diagnostics are disabled.
 
+Newer companion firmware also publishes schema-1 JSON on
+`wmbus/<dev>/rx` for every validated, whitelist-eligible RAW telegram. A separate,
+continuous subscriber validates and records these events without feeding them to
+the decoder. The payload identifies the ESP boot, carries a source-wide sequence
+number, receiver-task wake time after IRQ, meter ID, link mode, measured RSSI
+when available, and CRC32 plus length of the normalized frame. The wake time is
+not presented as an exact on-air or `RX_DONE` timestamp.
+
 The companion firmware can additionally publish:
 
 | Topic | Frequency / condition | Purpose |
 |---|---|---|
+| `wmbus/<dev>/rx` | each validated, forwarded telegram | structured receive event and source-wide sequence continuity |
 | `wmbus/<dev>/health` | every 60 s | uptime, radio receive count, time since last frame, chip/mode |
 | `wmbus/<dev>/meters` | every 60 s | target/highlight meter flags |
 | `wmbus/<dev>/diag/summary` | diagnostic mode | short receive/drop summary |
@@ -613,6 +623,28 @@ The companion firmware can additionally publish:
 The bridge stores diagnostics as maps keyed by device, allowing multiple ESPs
 to be compared without one overwriting another. These topics enrich the RAW
 path; they are never required for decoding.
+
+When `/rx` data exists, the WebUI uses its per-meter/source session counts and
+shows sequence continuity details in the receiver tooltip. Older firmware keeps
+working through the existing `/telegram`-derived counter. Structured events are
+also appended to a bounded history without RAW payload or AES material. Sequence
+gaps demonstrate a missing event somewhere on the ESP-to-subscriber path; they
+do not by themselves identify MQTT, networking, or the subscriber as the cause.
+
+The add-on option `esp_rx_api_enabled` is an independent, default-off export
+gate. When enabled, the authenticated Ingress WebUI exposes `GET /api/esp-rx`
+with the structured reception summary, source sequence state, and bounded
+history. Query parameters `limit` (1–10000), `since`, and `until` (UTC epoch;
+`until` exclusive) bound the response. The endpoint uses an explicit field
+allow-list and never returns RAW telegrams, AES keys, or MQTT credentials;
+when disabled it returns HTTP 404. Collection and the normal GUI are unaffected
+by this switch.
+
+The Received / Search page shows a **Download RX history** button while that
+gate is enabled. It downloads the same allow-listed payload with the complete
+retained buffer (bounded at 100,000 events) and an UTC-stamped filename. The
+interactive API remains capped at 10,000 events. Downloading is read-only: it
+does not truncate the history, reset counters, or restart either bridge process.
 
 The RSSI topic is the one case where a measurement has to travel out of band:
 the RAW topic carries bare hexadecimal, so the decoder never sees a signal
@@ -692,6 +724,10 @@ for understanding the system.
 | `status_bridge_start.txt` | bridge start epoch |
 | `status_esp_telegram_devices.tsv` | per-ESP RAW reception tracker |
 | `status_esp_meter_device.tsv` | which ESP delivered a given meter's telegrams (band fallback) |
+| `status_esp_meter_reception.tsv`, `esp_rx_history.jsonl` | session counts and bounded history derived from legacy `/telegram` traffic |
+| `status_esp_rx_reception.tsv` | per-meter/source session counts from structured `/rx` events |
+| `status_esp_rx_sequence.tsv` | per-source boot and sequence continuity, including missing and out-of-order events |
+| `esp_rf_rx_history.jsonl` | bounded structured `/rx` history without RAW or AES payloads |
 | `status_esp_health.json`, `status_esp_meters.json` | per-ESP health and meter flags |
 | `status_esp_diag.json` | latest ESP diagnostic summary |
 | `status_esp_meter_snapshot.json`, `status_esp_meter_window.json` | per-ESP, per-meter reception windows |

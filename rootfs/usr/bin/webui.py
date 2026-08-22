@@ -127,6 +127,15 @@ STATUS_MBUS_JSON = BASE / "status_mbus.json"
 # no per-meter diagnostic topic (no highlight_meters on the ESP).
 # Format: meter_id<TAB>device_name<TAB>last_seen_epoch
 STATUS_ESP_METER_DEVICE_FILE = BASE / "status_esp_meter_device.tsv"
+# Session-scoped, bridge-observed reception counts. These rows all start at the
+# same bridge start and therefore replace ESP-self-referential diagnostic counts
+# when available.
+STATUS_ESP_METER_RECEPTION_FILE = BASE / "status_esp_meter_reception.tsv"
+# Same session view populated from structured ESP RF metadata. When rows exist
+# for a meter, these replace /telegram-derived counts for that meter.
+STATUS_ESP_RX_RECEPTION_FILE = BASE / "status_esp_rx_reception.tsv"
+STATUS_ESP_RX_SEQUENCE_FILE = BASE / "status_esp_rx_sequence.tsv"
+ESP_RF_RX_HISTORY_FILE = BASE / "esp_rf_rx_history.jsonl"
 # ESP events TSV and per-event detail files (written by bridge.sh event subscriber)
 STATUS_ESP_EVENTS_FILE = BASE / "status_esp_events.tsv"
 STATUS_ESP_SUGGESTION_FILE = BASE / "status_esp_suggestion.json"
@@ -637,6 +646,61 @@ def read_tsv(path: Path, fields: list[str], limit: int | None = None, reverse: b
         if limit and len(rows) >= limit:
             break
     return rows
+
+
+def esp_rx_api_payload(limit: int = 1000, since: int = 0, until: int = 0,
+                       max_limit: int = 10000) -> dict:
+    """Return bounded, secret-free structured RX evidence for the opt-in API."""
+    from collections import deque
+
+    limit = max(1, min(int(limit), max(1, int(max_limit))))
+    since = max(0, int(since))
+    until = max(0, int(until))
+    reception = read_tsv(
+        STATUS_ESP_RX_RECEPTION_FILE,
+        ["meter_id", "source", "first_seen", "last_seen", "count", "last_topic"],
+    )
+    sequence = read_tsv(
+        STATUS_ESP_RX_SEQUENCE_FILE,
+        ["source", "boot_id", "last_seq", "missing", "out_of_order", "last_seen"],
+    )
+    history: deque[dict] = deque(maxlen=limit)
+    invalid_lines = 0
+    try:
+        with ESP_RF_RX_HISTORY_FILE.open("r", encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                except (TypeError, ValueError):
+                    invalid_lines += 1
+                    continue
+                if not isinstance(event, dict):
+                    invalid_lines += 1
+                    continue
+                event_time = safe_int(event.get("bridge_rx_time", 0))
+                if since and event_time < since:
+                    continue
+                if until and event_time >= until:
+                    continue
+                # Explicit allow-list: additions to the internal history do not
+                # silently widen this external contract.
+                history.append({key: event.get(key) for key in (
+                    "bridge_rx_time", "source", "schema", "boot_id", "seq",
+                    "rx_task_wakeup_us", "meter_id", "mode", "rssi_dbm",
+                    "frame_crc32", "frame_length",
+                )})
+    except OSError:
+        pass
+    return {
+        "ok": True,
+        "schema": 1,
+        "generated_at": int(time.time()),
+        "filters": {"since": since, "until": until, "limit": limit},
+        "reception": reception,
+        "sequence": sequence,
+        "history": list(history),
+        "history_invalid_lines": invalid_lines,
+    }
 
 
 def write_lines_atomic(path: Path, lines: list[str]) -> None:
@@ -2511,6 +2575,64 @@ def state(include_ignored: bool = False) -> dict:
                 if _wcur is None or _wct >= _wcur["count"]:
                     _wper[_wdev] = {"pct": _wpct, "count": _wct}
 
+    # Prefer counts observed directly by this bridge from RAW_TOPIC. They share
+    # one session start across all ESPs, unlike diagnostic count_total values
+    # whose denominators reset independently with each board. Diagnostic
+    # percentages remain only as a fallback for installations upgraded before
+    # the first new RAW telegram arrives.
+    _bridge_reception: dict[str, dict[str, dict]] = {}
+    for _rrow in read_tsv(
+        STATUS_ESP_METER_RECEPTION_FILE,
+        ["id", "device", "first_seen", "last_seen", "count", "last_topic"],
+    ):
+        _rmid = normalize_meter_id(_rrow.get("id"))
+        _rdev = str(_rrow.get("device") or "").strip()
+        _rcount = safe_int(_rrow.get("count", 0))
+        if not _rmid or not _rdev or _rcount <= 0:
+            continue
+        _bridge_reception.setdefault(_rmid, {})[_rdev] = {
+            "pct": None,
+            "count": _rcount,
+            "first_seen": safe_int(_rrow.get("first_seen", 0)),
+            "last_seen": safe_int(_rrow.get("last_seen", 0)),
+            "count_source": "bridge_session",
+        }
+    for _rmid, _rper in _bridge_reception.items():
+        reception_by_esp[_rmid] = _rper
+
+    _esp_rx_sequence = {
+        str(row.get("source") or ""): row
+        for row in read_tsv(
+            STATUS_ESP_RX_SEQUENCE_FILE,
+            ["source", "boot_id", "last_seq", "missing", "out_of_order", "last_seen"],
+        )
+        if str(row.get("source") or "")
+    }
+    _esp_rx_reception: dict[str, dict[str, dict]] = {}
+    for _rrow in read_tsv(
+        STATUS_ESP_RX_RECEPTION_FILE,
+        ["id", "device", "first_seen", "last_seen", "count", "last_topic"],
+    ):
+        _rmid = normalize_meter_id(_rrow.get("id"))
+        _rdev = str(_rrow.get("device") or "").strip()
+        _rcount = safe_int(_rrow.get("count", 0))
+        if not _rmid or not _rdev or _rcount <= 0:
+            continue
+        _seq = _esp_rx_sequence.get(_rdev, {})
+        _esp_rx_reception.setdefault(_rmid, {})[_rdev] = {
+            "pct": None,
+            "count": _rcount,
+            "first_seen": safe_int(_rrow.get("first_seen", 0)),
+            "last_seen": safe_int(_rrow.get("last_seen", 0)),
+            "count_source": "esp_rx",
+            "last_seq": safe_int(_seq.get("last_seq", 0)),
+            "missing": safe_int(_seq.get("missing", 0)),
+            "out_of_order": safe_int(_seq.get("out_of_order", 0)),
+            "boot_id": str(_seq.get("boot_id") or ""),
+        }
+    for _rmid, _rper in _esp_rx_reception.items():
+        reception_by_esp[_rmid] = _rper
+
     # wM-Bus band (T1/C1/S1) per meter, from two sources with different accuracy.
     #
     # EXACT — the ESP publishes the link mode it actually decoded the telegram
@@ -2593,9 +2715,9 @@ def state(include_ignored: bool = False) -> dict:
         if not _per:
             return []
         # Sort most-reading first: by telegram count, then %, then name.
-        return [{"esp": k, "pct": v["pct"], "count": v["count"]}
+        return [{"esp": k, **v}
                 for k, v in sorted(_per.items(),
-                                   key=lambda kv: (-kv[1]["count"], -kv[1]["pct"], kv[0]))]
+                                   key=lambda kv: (-kv[1]["count"], kv[0]))]
 
     for c in candidates:
         c["ignored"] = "true" if c.get("id") in ignored else "false"
@@ -3481,6 +3603,16 @@ class Handler(BaseHTTPRequestHandler):
     def _send_json(self, status: int, payload: dict) -> None:
         self._send(status, json.dumps(payload, ensure_ascii=True, indent=2).encode("utf-8"), "application/json; charset=utf-8")
 
+    def _send_json_download(self, status: int, payload: dict, filename: str) -> None:
+        body = json.dumps(payload, ensure_ascii=True, indent=2).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _send_event_stream(self, lang: str) -> None:
         import time as _time
 
@@ -3581,6 +3713,7 @@ class Handler(BaseHTTPRequestHandler):
             '/api/preview-candidate', '/api/cancel-preview',
             '/api/ignore', '/api/unignore', '/api/factory-reset',
             '/api/compare-driver', '/api/save-config', '/api/driver-fields',
+            '/api/esp-rx',
             '/api/mbus', '/api/mbus/device', '/api/mbus/meters', '/api/mbus/probe',
             '/api/mbus/console', '/api/mbus/scan', '/api/mbus/poll-one',
             '/api/mbus/detect-driver',
@@ -3983,6 +4116,29 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.endswith('/api/status'):
             self._send(200, json.dumps(state(), ensure_ascii=False, indent=2).encode('utf-8'), 'application/json; charset=utf-8')
+            return
+        if path.endswith('/api/esp-rx'):
+            options = read_options()
+            if not isinstance(options, dict) or not bool(options.get('esp_rx_api_enabled', False)):
+                self._send_json(404, {"ok": False, "message": "ESP RX API is disabled."})
+                return
+            try:
+                limit = int((params.get('limit') or ['1000'])[0])
+                since = int((params.get('since') or ['0'])[0])
+                until = int((params.get('until') or ['0'])[0])
+            except ValueError:
+                self._send_json(400, {"ok": False, "message": "limit, since and until must be integers."})
+                return
+            download = (params.get('download') or [''])[0].strip().lower() in ('1', 'true', 'yes')
+            payload = esp_rx_api_payload(
+                limit=limit, since=since, until=until,
+                max_limit=100000 if download else 10000,
+            )
+            if download:
+                stamp = time.strftime('%Y%m%d-%H%M%S', time.gmtime(payload['generated_at']))
+                self._send_json_download(200, payload, f'esp-rx-{stamp}Z.json')
+            else:
+                self._send_json(200, payload)
             return
         if path.endswith('/api/candidate-report'):
             meter_id = (params.get('meter_id') or [''])[0].strip()

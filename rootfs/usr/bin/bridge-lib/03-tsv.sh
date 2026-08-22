@@ -30,6 +30,137 @@ _tsv_remove_id() {
   ) 9>"${file}.lock"
 }
 
+# Session-scoped reception totals keyed by meter id + ESP device.
+# Format: id<TAB>device<TAB>first_seen_epoch<TAB>last_seen_epoch<TAB>count<TAB>last_topic
+_upsert_esp_meter_reception() {
+  local file="$1" id="$2" device="$3" now="$4" topic="$5"
+  (
+    flock -x 9
+    [[ -f "${file}" ]] || : > "${file}"
+    local _tmp
+    _tmp="$(mktemp "${file}.tmp.XXXXXX")" || return 1
+    if ! awk -F $'\t' -v OFS=$'\t' \
+      -v id="${id}" -v device="${device}" -v now="${now}" -v topic="${topic}" '
+        BEGIN { updated = 0 }
+        $1 == id && $2 == device {
+          first = ($3 ~ /^[0-9]+$/ && $3 > 0) ? $3 : now
+          count = ($5 ~ /^[0-9]+$/) ? $5 + 1 : 1
+          print id, device, first, now, count, topic
+          updated = 1
+          next
+        }
+        { print }
+        END { if (!updated) print id, device, now, now, 1, topic }
+      ' "${file}" > "${_tmp}"; then
+      rm -f "${_tmp}"
+      return 1
+    fi
+    mv "${_tmp}" "${file}" 2>/dev/null || { rm -f "${_tmp}"; true; }
+  ) 9>"${file}.lock"
+}
+
+# Persistent, bounded event history. The payload deliberately contains no RAW
+# telegram and no AES material: only data needed to answer when a given ESP
+# received a given meter. Appends and rotations share one lock.
+_append_esp_rx_history() {
+  local file="$1" now="$2" device="$3" id="$4" topic="$5"
+  local line
+  line="$(jq -cn \
+    --argjson time "${now}" --arg source "${device}" --arg meter_id "${id}" --arg topic "${topic}" \
+    '{time:$time,source:$source,meter_id:$meter_id,topic:$topic}')" || return 1
+  (
+    flock -x 9
+    printf '%s\n' "${line}" >> "${file}"
+  ) 9>"${file}.lock"
+}
+
+# Persist a validated ESP /rx payload with the bridge receive time and source
+# derived from the MQTT topic. The firmware payload contains no RAW frame.
+_append_esp_rf_rx_history() {
+  local file="$1" now="$2" device="$3" payload="$4"
+  local line
+  line="$(jq -c --argjson bridge_rx_time "${now}" --arg source "${device}" \
+    '. + {bridge_rx_time:$bridge_rx_time,source:$source}' <<< "${payload}")" || return 1
+  (
+    flock -x 9
+    printf '%s\n' "${line}" >> "${file}"
+  ) 9>"${file}.lock"
+}
+
+_normalize_esp_rx_payload() {
+  jq -c '
+    select(.schema == 1)
+    | select((.boot_id | type) == "string" and (.boot_id | test("^[0-9A-Fa-f]{8}$")))
+    | select((.seq | type) == "number" and .seq >= 1 and (.seq | floor) == .seq)
+    | select((.rx_task_wakeup_us | type) == "number" and .rx_task_wakeup_us >= 0)
+    | select((.meter_id | type) == "string" and (.meter_id | test("^[0-9A-Fa-f]{8}$")))
+    | select(.mode == "T1" or .mode == "C1" or .mode == "S1")
+    | select(.rssi_dbm == null or ((.rssi_dbm | type) == "number" and .rssi_dbm >= -125 and .rssi_dbm <= -1))
+    | select((.frame_crc32 | type) == "string" and (.frame_crc32 | test("^[0-9A-Fa-f]{8}$")))
+    | select((.frame_length | type) == "number" and .frame_length > 0 and (.frame_length | floor) == .frame_length)
+    | .boot_id |= ascii_upcase
+    | .meter_id |= ascii_upcase
+    | .frame_crc32 |= ascii_upcase
+  ' 2>/dev/null
+}
+
+# Current sequence continuity per ESP source.
+# Format: source<TAB>boot_id<TAB>last_seq<TAB>missing<TAB>out_of_order<TAB>last_seen
+_upsert_esp_rx_sequence() {
+  local file="$1" source="$2" boot_id="$3" seq="$4" now="$5"
+  (
+    flock -x 9
+    [[ -f "${file}" ]] || : > "${file}"
+    local _tmp
+    _tmp="$(mktemp "${file}.tmp.XXXXXX")" || return 1
+    if ! awk -F $'\t' -v OFS=$'\t' \
+      -v source="${source}" -v boot_id="${boot_id}" -v seq="${seq}" -v now="${now}" '
+        BEGIN { updated = 0 }
+        $1 == source {
+          missing = 0
+          out_of_order = 0
+          if ($2 == boot_id) {
+            last = ($3 ~ /^[0-9]+$/) ? $3 : 0
+            missing = ($4 ~ /^[0-9]+$/) ? $4 : 0
+            out_of_order = ($5 ~ /^[0-9]+$/) ? $5 : 0
+            if (last > 0 && seq > last + 1) missing += seq - last - 1
+            if (last > 0 && seq <= last) out_of_order++
+          }
+          print source, boot_id, seq, missing, out_of_order, now
+          updated = 1
+          next
+        }
+        { print }
+        END { if (!updated) print source, boot_id, seq, 0, 0, now }
+      ' "${file}" > "${_tmp}"; then
+      rm -f "${_tmp}"
+      return 1
+    fi
+    mv "${_tmp}" "${file}" 2>/dev/null || { rm -f "${_tmp}"; true; }
+  ) 9>"${file}.lock"
+}
+
+_trim_esp_rx_history() {
+  local file="$1" max_lines="$2" keep_lines="$3"
+  [[ -f "${file}" ]] || return 0
+  (
+    flock -x 9
+    local lines _tmp
+    lines="$(wc -l < "${file}" 2>/dev/null || echo 0)"
+    [[ "${lines}" =~ ^[0-9]+$ ]] || lines=0
+    (( lines > max_lines )) || return 0
+    _tmp="$(mktemp "${file}.tmp.XXXXXX")" || return 1
+    if ! tail -n "${keep_lines}" "${file}" > "${_tmp}"; then
+      rm -f "${_tmp}"
+      return 1
+    fi
+    if ! mv "${_tmp}" "${file}"; then
+      rm -f "${_tmp}"
+      return 1
+    fi
+  ) 9>"${file}.lock"
+}
+
 _upsert_candidate_row() {
   local _id="$1" _driver="$2" _type="$3" _last_seen="$4" _seen_count="$5"
   local _avg_interval_s="$6" _seen_15m="$7" _seen_60m="$8" _manufacturer="${9:-}"

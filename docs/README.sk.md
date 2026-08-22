@@ -429,6 +429,32 @@ zariadenie, ktoré dekodér nemá, keď mu telegramy podávate ako HEX.
 
 ---
 
+### Export dôkazov o príjme z ESP (`esp_rx_api_enabled`, predvolene vypnuté)
+
+Firmvér publikujúci štruktúrované metadáta príjmu na `wmbus/<doska>/rx` umožňuje
+doplnku počítať **skutočné príjmy na merač a na dosku** namiesto spoliehania sa na
+percentá, ktoré si každá doska počítala sama o sebe. Tie percentá neboli medzi
+doskami porovnateľné: doska počujúca každé druhé vysielanie si odvodila dvakrát
+dlhší priemerný interval a aj tak ukazovala 100 %.
+
+Voľba **`esp_rx_api_enabled` je predvolene vypnutá** a nemení nič na zbere dát ani
+na bežnom rozhraní. Zapnutie urobí dve veci:
+
+- sprístupní `GET /api/esp-rx` cez overené Ingress WebUI — prehľad príjmu,
+  spojitosť sekvencie podľa dosiek a ohraničenú históriu, s `limit` (1–10000),
+  `since` a `until` (UTC epocha, `until` nezahrnuté);
+- pridá tlačidlo **Download RX history** na stránke Prijaté / Hľadať, ktoré uloží
+  tie isté povolené dáta s celým uchovaným bufferom (až 100 000 udalostí) pod
+  názvom súboru s UTC značkou.
+
+Export **nikdy** nevracia RAW telegramy, AES kľúče ani prihlasovacie údaje MQTT
+a je len na čítanie: stiahnutie neskracuje históriu, nenuluje počítadlá a nič
+nereštartuje. Pri vypnutej voľbe endpoint odpovedá HTTP 404.
+
+Medzery v sekvencii dokazujú, že sa niekde medzi ESP a odberateľom stratila
+udalosť. Samy osebe **nehovoria**, či bola príčinou rádiová časť, MQTT, sieť alebo
+odberateľ.
+
 ### Drôtový M-Bus (sériová zbernica, predvolene vypnuté)
 
 Merače tepla a vody často vedú káblom, nie rádiom: prevodník M-Bus master sedí na
@@ -455,6 +481,10 @@ ako aktívna až po prijatí telegramu runtime, nie iba zapnutím enginu.
 | `mbus_baudrate` | 300–9600, zvyčajne 2400 |
 | `mbus_poll_interval` | predvolený interval zapísaný každému meraču bez vlastného |
 | `mbus_donotprobe_all` | nechajte zapnuté — pozri varovanie nižšie |
+| `mbus_device_serial` | vyplní sa automaticky pri výbere portu; umožní zistiť, že uzol `/dev` už patrí inému hardvéru, namiesto tichého dopytovania |
+| `mbus_loglevel` | `normal`, `verbose`, `debug` — len pre inštanciu zbernice, nezávisle od hlavnej úrovne logu |
+| `mbus_logtelegrams` | loguje každý rámec vymenený so zbernicou; užitočné, keď merač mlčí, inak ukecané |
+| `mbus_ignoreduplicates` | zahadzuje opakované identické telegramy pred dekódovaním |
 | `mbus_meters[]` | `id`, `address` (`p1`..`p250` alebo 8 hex), `type`, `key`, `poll_interval` |
 
 **Doplnok zámerne nikdy neskenuje porty.** Sondovanie znamená vysielanie a na typickom

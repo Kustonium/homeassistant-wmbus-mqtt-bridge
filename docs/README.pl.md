@@ -441,6 +441,32 @@ HEX.
 
 ---
 
+### Eksport dowodów odbioru z ESP (`esp_rx_api_enabled`, domyślnie wyłączony)
+
+Firmware publikujący strukturalne metadane odbioru na `wmbus/<płytka>/rx` pozwala
+dodatkowi liczyć **rzeczywiste odbiory per licznik i per płytka**, zamiast opierać
+się na procentach, które każda płytka wyliczała sama o sobie. Te procenty nie były
+porównywalne między płytkami: płytka słysząca co drugą transmisję wyliczała dwa
+razy dłuższy średni interwał i też pokazywała 100%.
+
+Opcja **`esp_rx_api_enabled` jest domyślnie wyłączona** i nie zmienia niczego
+w zbieraniu danych ani w zwykłym GUI. Włączenie robi dwie rzeczy:
+
+- udostępnia `GET /api/esp-rx` przez uwierzytelniony Ingress WebUI — podsumowanie
+  odbioru, ciągłość sekwencji per płytka i ograniczoną historię, z parametrami
+  `limit` (1–10000), `since` i `until` (epoka UTC, `until` wyłącznie);
+- dodaje przycisk **Download RX history** na stronie Odebrane / Szukaj, który
+  zapisuje te same dane z pełnym zachowanym buforem (do 100 000 zdarzeń) pod nazwą
+  pliku ze znacznikiem UTC.
+
+Eksport **nigdy** nie zwraca surowych telegramów, kluczy AES ani poświadczeń MQTT
+i jest tylko do odczytu: pobranie nie skraca historii, nie zeruje liczników i nic
+nie restartuje. Przy wyłączonej opcji endpoint odpowiada HTTP 404.
+
+Luki w sekwencji dowodzą, że jakieś zdarzenie zginęło gdzieś między ESP
+a subskrybentem. Same z siebie **nie** mówią, czy przyczyną było radio, MQTT, sieć
+czy subskrybent.
+
 ### M-Bus przewodowy (magistrala szeregowa, domyślnie wyłączony)
 
 Liczniki ciepła i wody często idą kablem, nie radiem: konwerter M-Bus master siedzi
@@ -469,6 +495,10 @@ nie zmienia.
 | `mbus_baudrate` | 300–9600, zwykle 2400 |
 | `mbus_poll_interval` | domyślny interwał wpisywany każdemu licznikowi bez własnego |
 | `mbus_donotprobe_all` | zostaw włączone — patrz ostrzeżenie niżej |
+| `mbus_device_serial` | wypełniane automatycznie przy wyborze portu; pozwala wykryć, że węzeł `/dev` należy już do innego sprzętu, zamiast po cichu go odpytywać |
+| `mbus_loglevel` | `normal`, `verbose`, `debug` — dotyczy tylko instancji magistrali, niezależnie od głównego poziomu logu |
+| `mbus_logtelegrams` | loguje każdą ramkę wymienioną z magistralą; przydatne, gdy licznik milczy, poza tym hałaśliwe |
+| `mbus_ignoreduplicates` | odrzuca powtórzone identyczne telegramy przed dekodowaniem |
 | `mbus_meters[]` | `id`, `address` (`p1`..`p250` albo 8 hex), `type`, `key`, `poll_interval` |
 
 **Dodatek nigdy nie skanuje portów, i to jest świadome.** Sondowanie oznacza
