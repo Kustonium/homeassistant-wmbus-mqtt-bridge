@@ -442,6 +442,32 @@ which the decoder does not have when telegrams are fed to it as hex.
 
 ---
 
+### ESP RX evidence export (`esp_rx_api_enabled`, off by default)
+
+Firmware that publishes structured receive metadata on `wmbus/<board>/rx` lets the
+add-on count **actual receptions per meter and per board**, instead of relying on
+percentages each board computed about itself. Those percentages were not
+comparable between boards: a board hearing every second transmission also derived
+a twice-longer average interval and still showed 100%.
+
+The option **`esp_rx_api_enabled` is off by default** and changes nothing about
+collection or the normal GUI. Turning it on does two things:
+
+- exposes `GET /api/esp-rx` through the authenticated Ingress WebUI — reception
+  summary, per-board sequence continuity and bounded history, with `limit`
+  (1–10000), `since` and `until` (UTC epoch, `until` exclusive);
+- adds a **Download RX history** button on the Received / Search page, which saves
+  the same allow-listed data with the complete retained buffer (up to 100,000
+  events) under a UTC-stamped filename.
+
+The export **never** returns RAW telegrams, AES keys or MQTT credentials, and it is
+read-only: downloading does not truncate history, reset counters or restart
+anything. While the option is off, the endpoint answers HTTP 404.
+
+Sequence gaps prove that an event went missing somewhere between the ESP and the
+subscriber. They do **not**, on their own, say whether the cause was the radio,
+MQTT, the network or the subscriber.
+
 ### Wired M-Bus (serial bus, off by default)
 
 Heat and water meters are often wired rather than radio: an M-Bus master converter
@@ -469,6 +495,10 @@ the engine.
 | `mbus_baudrate` | 300–9600, usually 2400 |
 | `mbus_poll_interval` | default interval written into every meter without its own |
 | `mbus_donotprobe_all` | leave on — see the warning below |
+| `mbus_device_serial` | filled in automatically when you pick a port; lets the add-on notice that a `/dev` node now belongs to different hardware instead of silently polling it |
+| `mbus_loglevel` | `normal`, `verbose`, `debug` — for the bus instance only, independent of the main log level |
+| `mbus_logtelegrams` | logs every frame exchanged with the bus; useful when a meter stays silent, noisy otherwise |
+| `mbus_ignoreduplicates` | drops repeated identical telegrams before decoding |
 | `mbus_meters[]` | `id`, `address` (`p1`..`p250` or 8 hex), `type`, `key`, `poll_interval` |
 
 **The add-on never scans ports, deliberately.** Probing means transmitting, and on a

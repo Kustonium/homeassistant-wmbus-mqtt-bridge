@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
 description: "wM-Bus over MQTT (RAW HEX) + optional wired M-Bus -> wmbusmeters -> Home Assistant Discovery"
-version: "1.5.51"
+version: "1.5.52"
 slug: "wmbus_mqtt_bridge"
 stage: experimental
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
@@ -62,6 +62,11 @@ options:
   # (needs SUPERVISOR_TOKEN).
   verify_ha_entities: false
 
+  # Opt-in read-only WebUI endpoint for exporting structured ESP RX evidence.
+  # Disabled returns 404 and exposes nothing. The endpoint never returns RAW
+  # telegrams, AES keys or MQTT credentials.
+  esp_rx_api_enabled: false
+
   # ── Wired M-Bus (separate engine, off by default) ──────────
   # Two independent gates: mbus_tab_visible only shows the tab, mbus_enabled
   # actually starts the third wmbusmeters instance. Both off means the add-on
@@ -108,6 +113,7 @@ schema:
   external_mqtt_username: str?
   external_mqtt_password: str?
   verify_ha_entities: bool
+  esp_rx_api_enabled: bool
   mbus_tab_visible: bool
   mbus_enabled: bool
   mbus_device: str?

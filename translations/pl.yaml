@@ -1,4 +1,7 @@
 configuration:
+  esp_rx_api_enabled:
+    name: "API danych dowodowych ESP RX"
+    description: "Udostępnia tylko do odczytu endpoint WebUI /api/esp-rx z podsumowaniem i ograniczoną historią RX. Domyślnie wyłączone; nigdy nie zwraca RAW, kluczy AES ani danych logowania MQTT."
   meters:
     name: Liczniki
     description: Lista liczników do dekodowania.

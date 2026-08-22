@@ -1,3 +1,14 @@
+## 1.5.52
+
+### Added
+- download retained ESP RX history (2ad37f2)
+- expose opt-in ESP RX evidence API (a0fecfc)
+- consume structured ESP RX metadata (951912d)
+- track per-meter reception by ESP source (0e61a25)
+
+### Fixed
+- recognise upstream's own KPL handling by its real name (8e81126)
+
 ## 1.5.51
 
 ### Added

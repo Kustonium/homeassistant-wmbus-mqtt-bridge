@@ -453,6 +453,33 @@ Hex übergeben werden.
 
 ---
 
+### Export der ESP-Empfangsnachweise (`esp_rx_api_enabled`, standardmäßig aus)
+
+Firmware, die strukturierte Empfangsmetadaten auf `wmbus/<Platine>/rx`
+veröffentlicht, erlaubt dem Add-on, **tatsächliche Empfänge pro Zähler und pro
+Platine** zu zählen, statt sich auf Prozentwerte zu verlassen, die jede Platine
+über sich selbst berechnet hat. Diese Prozentwerte waren zwischen Platinen nicht
+vergleichbar: Wer nur jede zweite Sendung hört, errechnet auch ein doppelt so
+langes Mittelintervall und zeigt trotzdem 100 %.
+
+Die Option **`esp_rx_api_enabled` ist standardmäßig aus** und ändert nichts an der
+Erfassung oder an der normalen Oberfläche. Eingeschaltet bewirkt sie zweierlei:
+
+- `GET /api/esp-rx` über die authentifizierte Ingress-WebUI — Empfangsübersicht,
+  Sequenzkontinuität je Platine und begrenzte Historie, mit `limit` (1–10000),
+  `since` und `until` (UTC-Epoche, `until` exklusiv);
+- eine Schaltfläche **Download RX history** auf der Seite Empfangen / Suche, die
+  dieselben freigegebenen Daten mit dem vollständigen Puffer (bis 100.000
+  Ereignisse) unter einem UTC-Zeitstempel-Dateinamen speichert.
+
+Der Export liefert **nie** RAW-Telegramme, AES-Schlüssel oder MQTT-Zugangsdaten und
+ist nur lesend: Herunterladen kürzt die Historie nicht, setzt keine Zähler zurück
+und startet nichts neu. Ist die Option aus, antwortet der Endpunkt mit HTTP 404.
+
+Sequenzlücken belegen, dass irgendwo zwischen ESP und Abonnent ein Ereignis
+verloren ging. Sie sagen für sich genommen **nicht**, ob Funk, MQTT, Netzwerk oder
+Abonnent die Ursache war.
+
 ### Drahtgebundener M-Bus (serieller Bus, standardmäßig aus)
 
 Wärme- und Wasserzähler laufen oft über Kabel statt Funk: ein M-Bus-Master-Konverter
@@ -480,6 +507,10 @@ schon durch das Einschalten der Engine.
 | `mbus_baudrate` | 300–9600, meist 2400 |
 | `mbus_poll_interval` | Standardintervall für jeden Zähler ohne eigenes |
 | `mbus_donotprobe_all` | eingeschaltet lassen — siehe Warnung unten |
+| `mbus_device_serial` | wird beim Auswählen eines Ports automatisch gefüllt; erkennt, dass ein `/dev`-Knoten inzwischen zu anderer Hardware gehört, statt ihn stillschweigend abzufragen |
+| `mbus_loglevel` | `normal`, `verbose`, `debug` — nur für die Bus-Instanz, unabhängig vom Haupt-Loglevel |
+| `mbus_logtelegrams` | protokolliert jeden mit dem Bus ausgetauschten Frame; nützlich, wenn ein Zähler schweigt, sonst geschwätzig |
+| `mbus_ignoreduplicates` | verwirft wiederholte identische Telegramme vor dem Dekodieren |
 | `mbus_meters[]` | `id`, `address` (`p1`..`p250` oder 8 Hex), `type`, `key`, `poll_interval` |
 
 **Das Add-on scannt bewusst niemals Ports.** Sondieren heißt Senden, und auf einem

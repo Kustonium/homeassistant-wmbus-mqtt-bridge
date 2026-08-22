@@ -1,4 +1,7 @@
 configuration:
+  esp_rx_api_enabled:
+    name: "ESP RX evidence API"
+    description: "Expose the read-only WebUI endpoint /api/esp-rx for structured RX summaries and bounded history. Off by default; never returns RAW telegrams, AES keys or MQTT credentials."
   meters:
     name: Meters
     description: List of meters to decode.
