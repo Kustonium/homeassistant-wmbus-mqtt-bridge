@@ -474,6 +474,12 @@ Stempelt die Firmware die Frames zusätzlich mit ihrer Empfangszeit, zeigt die
 Karte eine **ESP-Uhr**-Zeile: ob die Uhr der Platine gesetzt ist und wie weit
 ihre Empfangszeit von der des Add-ons abweicht.
 
+Wenn die Firmware zusätzlich einen retained `<diag>/config`-Snapshot sendet,
+bekommt die Karte einen Abschnitt **Konfiguration** mit jeder wirksamen
+Einstellung und ihrer Markierung - `default`, `CHANGED` oder `set` - so sieht
+der Leser, womit die Platine wirklich gestartet ist, ohne nach der YAML zu
+fragen. Ältere Firmware lässt den Abschnitt einfach weg.
+
 ### Export der ESP-Empfangsnachweise (`esp_rx_api_enabled`, standardmäßig aus)
 
 Firmware, die strukturierte Empfangsmetadaten auf `wmbus/<Platine>/rx`

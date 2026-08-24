@@ -450,6 +450,11 @@ Pokud firmware navíc razítkuje rámce časem příjmu, karta získá řádek *
 ESP**: zda jsou hodiny desky nastavené a jak moc se její čas příjmu liší od času
 doplňku.
 
+Když firmware navíc publikuje retained snapshot `<diag>/config`, karta získá
+sekci **Konfigurace** s každým účinným nastavením a značkou - `default`,
+`CHANGED` nebo `set` - takže čtenář vidí, s čím deska skutečně naběhla, bez
+toho aby musel žádat o YAML. Starší firmware sekci prostě nemá.
+
 ### Export důkazů o příjmu z ESP (`esp_rx_api_enabled`, ve výchozím stavu vypnuto)
 
 Firmware publikující strukturovaná metadata příjmu na `wmbus/<deska>/rx` umožňuje

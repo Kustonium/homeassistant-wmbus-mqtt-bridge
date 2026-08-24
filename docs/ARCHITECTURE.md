@@ -842,6 +842,7 @@ for understanding the system.
 | `status_esp_rx_sequence.tsv` | per-source boot and sequence continuity, including missing and out-of-order events |
 | `status_esp_rx_boots.tsv` | one row per ESP boot: first seen, last seen, events - so a restart leaves a trace after it resets the sequence counters |
 | `status_esp_rx_clock.tsv` | the board's own reception time against bridge time: last stamp, skew, and how many frames arrived stamped or unstamped |
+| `status_esp_config.json` | latest retained `<diag>/config` snapshot per ESP source: `{radio, lines, epoch}` - the effective YAML the board actually came up with, refreshed once per boot |
 | `esp_rf_rx_history.jsonl` | bounded structured `/rx` history without RAW or AES payloads |
 | `status_esp_health.json`, `status_esp_meters.json` | per-ESP health and meter flags |
 | `status_esp_diag.json` | latest ESP diagnostic summary |

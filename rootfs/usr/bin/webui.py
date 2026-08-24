@@ -137,6 +137,7 @@ STATUS_ESP_RX_RECEPTION_FILE = BASE / "status_esp_rx_reception.tsv"
 STATUS_ESP_RX_SEQUENCE_FILE = BASE / "status_esp_rx_sequence.tsv"
 STATUS_ESP_RX_BOOTS_FILE = BASE / "status_esp_rx_boots.tsv"
 STATUS_ESP_RX_CLOCK_FILE = BASE / "status_esp_rx_clock.tsv"
+STATUS_ESP_CONFIG_FILE = BASE / "status_esp_config.json"
 ESP_RF_RX_HISTORY_FILE = BASE / "esp_rf_rx_history.jsonl"
 # ESP events TSV and per-event detail files (written by bridge.sh event subscriber)
 STATUS_ESP_EVENTS_FILE = BASE / "status_esp_events.tsv"
@@ -3395,6 +3396,39 @@ def _esp_diag_clock() -> dict:
     return out
 
 
+
+
+def _esp_diag_config() -> dict:
+    """Latest /diag/config snapshot per ESP source.
+
+    Each value carries the effective radio configuration as one list of
+    text lines already annotated with (default) / (CHANGED, default: X) /
+    (set) / (required); the panel splits that marker off for the badge and
+    prints the rest verbatim. A source appears here once the board has
+    published /diag/config after boot; older firmware simply is not there.
+    """
+    try:
+        with open(STATUS_ESP_CONFIG_FILE, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for src, snap in raw.items():
+        if not isinstance(snap, dict):
+            continue
+        lines = snap.get("lines")
+        if not isinstance(lines, list):
+            continue
+        clean = [str(line) for line in lines if line]
+        out[str(src)] = {
+            "radio": str(snap.get("radio") or "").strip(),
+            "lines": clean,
+            "epoch": safe_int(snap.get("_bridge_rx_epoch")),
+        }
+    return out
+
 def _esp_diag_payload() -> dict:
     """Per-board diagnostics for the Diagnostics tab."""
     now = int(time.time())
@@ -3408,6 +3442,7 @@ def _esp_diag_payload() -> dict:
     }
     boots = _esp_diag_boots()
     clocks = _esp_diag_clock()
+    configs = _esp_diag_config()
 
     frames: dict[str, int] = {}
     meters: dict[str, int] = {}
@@ -3422,7 +3457,7 @@ def _esp_diag_payload() -> dict:
         frames[dev] = frames.get(dev, 0) + cnt
         meters[dev] = meters.get(dev, 0) + 1
 
-    names = set(seq_rows) | set(boots) | set(frames)
+    names = set(seq_rows) | set(boots) | set(frames) | set(configs)
     rows = []
     for name in sorted(names):
         seq_row = seq_rows.get(name) or {}
@@ -3473,6 +3508,7 @@ def _esp_diag_payload() -> dict:
             "reboots_24h": reboot["reboots_24h"],
             "reboot_median_interval_s": reboot["median_interval_s"],
             "status": status,
+            "config": configs.get(name) or {},
             "clock": clocks.get(name) or {},
             "reasons": reasons,
         })

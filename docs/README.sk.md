@@ -450,6 +450,11 @@ Ak firmvér navyše pečiatkuje rámce časom príjmu, karta získa riadok **Hod
 ESP**: či sú hodiny dosky nastavené a ako veľmi sa ich čas príjmu líši od času
 doplnku.
 
+Ak firmvér navyše publikuje retained snapshot `<diag>/config`, karta získa
+sekciu **Konfigurácia** s každým účinným nastavením a značkou - `default`,
+`CHANGED` alebo `set` - takže čitateľ vidí, s čím doska skutočne nabehla, bez
+žiadania o YAML. Staršie firmvéry sekciu jednoducho nemajú.
+
 ### Export dôkazov o príjme z ESP (`esp_rx_api_enabled`, predvolene vypnuté)
 
 Firmvér publikujúci štruktúrované metadáta príjmu na `wmbus/<doska>/rx` umožňuje

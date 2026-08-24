@@ -1,3 +1,8 @@
+## 1.5.54
+
+### Added
+- render the ESP configuration snapshot in the panel (59fc422)
+
 ## 1.5.53
 
 ### Added

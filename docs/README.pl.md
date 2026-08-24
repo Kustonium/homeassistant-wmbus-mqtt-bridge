@@ -463,6 +463,12 @@ Gdy firmware stempluje też ramki czasem odbioru, karta zyskuje wiersz **Zegar
 ESP**: czy zegar płytki jest ustawiony i jak bardzo jej pojęcie o czasie odbioru
 rozjeżdża się z czasem dodatku.
 
+Gdy firmware publikuje też retained snapshot `<diag>/config`, karta zyskuje
+sekcję **Konfiguracja** z każdym efektywnym ustawieniem i markerem — `default`,
+`CHANGED` albo `set` — więc czytelnik widzi, z czym płytka realnie wystartowała,
+bez pytania o YAML. Starszy firmware po prostu pomija tę sekcję; z pustego
+tematu nie ma czego renderować.
+
 ### Eksport dowodów odbioru z ESP (`esp_rx_api_enabled`, domyślnie wyłączony)
 
 Firmware publikujący strukturalne metadane odbioru na `wmbus/<płytka>/rx` pozwala

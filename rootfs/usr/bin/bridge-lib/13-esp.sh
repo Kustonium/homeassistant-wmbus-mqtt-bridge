@@ -481,6 +481,21 @@ touch "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
           && mv "${STATUS_ESP_SUGGESTION_FILE}.tmp" "${STATUS_ESP_SUGGESTION_FILE}" 2>/dev/null \
           || true
       fi
+      # Retained /diag/config snapshot: keyed by ESP source name (topic
+      # segment between wmbus/ and /diag/config), refreshed once per boot.
+      # The whole file is rewritten so a removed board eventually falls off.
+      if [[ "${_etopic}" == wmbus/*/diag/config ]]; then
+        _cfg_src="${_etopic#wmbus/}"; _cfg_src="${_cfg_src%/diag/config}"
+        if [[ -n "${_cfg_src}" ]]; then
+          _cfg_cur="{}"
+          [[ -s "${STATUS_ESP_CONFIG_FILE}" ]] && _cfg_cur="$(cat "${STATUS_ESP_CONFIG_FILE}" 2>/dev/null || echo "{}")"
+          if printf '%s' "${_cfg_cur}" | jq --arg src "${_cfg_src}" --argjson t "${_ets}" --argjson pl "${_epayload}" '. + {($src): ($pl + {_bridge_rx_epoch: $t})}' 2>/dev/null > "${STATUS_ESP_CONFIG_FILE}.tmp"; then
+            mv "${STATUS_ESP_CONFIG_FILE}.tmp" "${STATUS_ESP_CONFIG_FILE}" 2>/dev/null || true
+          else
+            rm -f "${STATUS_ESP_CONFIG_FILE}.tmp" 2>/dev/null || true
+          fi
+        fi
+      fi
       if [[ "${_evtype}" == "boot" ]]; then
         printf '%s\n' "${_epayload}" \
           | jq --argjson t "${_ets}" '. + {_bridge_rx_epoch: $t}' 2>/dev/null \

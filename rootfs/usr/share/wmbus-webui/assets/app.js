@@ -2623,6 +2623,40 @@
     return `${t("diag_clock_synced", "synced")} (${skewText})`;
   }
 
+  // Split "  key: value (marker)" into pieces the panel can style.
+  // The marker is the useful signal: "default" is background noise,
+  // "CHANGED" is why the reader opened the panel in the first place.
+  function diagConfigParse(line) {
+    const raw = String(line || "").replace(/^\s+/, "");
+    const m = raw.match(/^\s*([^:]+?):\s*(.*?)\s*\(([^)]+)\)\s*$/);
+    if (!m) return { key: raw, value: "", marker: "", state: "info" };
+    const marker = m[3].trim();
+    let state = "info";
+    if (/^CHANGED/i.test(marker)) state = "changed";
+    else if (/^default/i.test(marker)) state = "default";
+    else if (/^set$/i.test(marker)) state = "set";
+    else if (/^required$/i.test(marker)) state = "info";
+    return { key: m[1].trim(), value: m[2].trim(), marker, state };
+  }
+
+  function diagConfigSection(cfg) {
+    const rows = (cfg && Array.isArray(cfg.lines)) ? cfg.lines : [];
+    if (!rows.length) return "";
+    const colorFor = st => st === "changed" ? "#f4b850"
+      : st === "default" ? "#9eafba"
+      : st === "set" ? "#5cc8b9" : "#cbd9e1";
+    const body = rows.map(line => {
+      const p = diagConfigParse(line);
+      const c = colorFor(p.state);
+      return `<tr>` +
+        `<td style="color:#9eafba;padding:2px 6px 2px 0;white-space:nowrap;">${escapeHtml(p.key)}</td>` +
+        `<td style="padding:2px 6px;">${escapeHtml(p.value)}</td>` +
+        `<td style="text-align:right;padding:2px 0;color:${c};font-size:11px;">${escapeHtml(p.marker)}</td>` +
+        `</tr>`;
+    }).join("");
+    const radioTag = cfg.radio ? ` <span style="color:#9eafba;font-weight:400;">(${escapeHtml(cfg.radio)})</span>` : "";
+    return `<div style="margin-top:12px;"><div style="font-size:12px;color:#9eafba;margin-bottom:4px;">${escapeHtml(t("diag_config", "Configuration"))}${radioTag}</div><table style="width:100%;font-size:12px;font-family:ui-monospace,Menlo,Consolas,monospace;">${body}</table></div>`;
+  }
   function diagDeviceCard(device) {
     const notes = diagReasonNotes(device);
     const noteHtml = notes.length
@@ -2649,6 +2683,7 @@
         <table style="width:100%;font-size:13px;">
           ${kv.map(pair => `<tr><td style="color:#9eafba;padding:2px 0;">${escapeHtml(pair[0])}</td><td style="text-align:right;padding:2px 0;">${escapeHtml(pair[1])}</td></tr>`).join("")}
         </table>
+        ${diagConfigSection(device.config)}
         ${noteHtml}
       </div>`;
   }

@@ -463,6 +463,12 @@ When the firmware also stamps frames with their reception time, the card gains
 an **ESP clock** line: whether the board's clock is set, and how far its idea of
 the reception time is from the bridge's.
 
+When the firmware also publishes a retained `<diag>/config` snapshot, the card
+gains a **Configuration** section that lists every effective setting with its
+marker - `default`, `CHANGED`, or `set` - so the reader can see what the board
+actually came up with without asking for the YAML. Older firmware simply omits
+the section; there is nothing to render from an empty topic.
+
 ### ESP RX evidence export (`esp_rx_api_enabled`, off by default)
 
 Firmware that publishes structured receive metadata on `wmbus/<board>/rx` lets the
