@@ -2655,7 +2655,11 @@
         `</tr>`;
     }).join("");
     const radioTag = cfg.radio ? ` <span style="color:#9eafba;font-weight:400;">(${escapeHtml(cfg.radio)})</span>` : "";
-    return `<div style="margin-top:12px;"><div style="font-size:12px;color:#9eafba;margin-bottom:4px;">${escapeHtml(t("diag_config", "Configuration"))}${radioTag}</div><table style="width:100%;font-size:12px;font-family:ui-monospace,Menlo,Consolas,monospace;">${body}</table></div>`;
+    const changed = rows.reduce((n, line) => n + (diagConfigParse(line).state === "changed" ? 1 : 0), 0);
+    const changedTag = changed > 0
+      ? ` <span style="color:#f4b850;font-weight:400;">(${changed} ${escapeHtml(t("diag_config_changed", "changed"))})</span>`
+      : "";
+    return `<details style="margin-top:12px;"><summary style="cursor:pointer;font-size:12px;color:#9eafba;margin-bottom:4px;list-style:revert;">${escapeHtml(t("diag_config", "Configuration"))}${radioTag}${changedTag}</summary><table style="width:100%;font-size:12px;font-family:ui-monospace,Menlo,Consolas,monospace;margin-top:6px;">${body}</table></details>`;
   }
   function diagDeviceCard(device) {
     const notes = diagReasonNotes(device);

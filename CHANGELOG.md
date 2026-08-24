@@ -1,3 +1,8 @@
+## 1.5.55
+
+### Added
+- make the Configuration section collapsible (950e4e8)
+
 ## 1.5.54
 
 ### Added
