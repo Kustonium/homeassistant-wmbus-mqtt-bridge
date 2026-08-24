@@ -1,3 +1,8 @@
+## 1.5.56
+
+### Fixed
+- remember which Configuration sections the reader opened (24caf68)
+
 ## 1.5.55
 
 ### Added

@@ -2639,7 +2639,21 @@
     return { key: m[1].trim(), value: m[2].trim(), marker, state };
   }
 
-  function diagConfigSection(cfg) {
+  // Rozwijana pod re-renderach - <details> gubi stan, wiec pamietamy je
+  // per plytka w localStorage; delegowany listener nizej dopisuje toggle.
+  function diagConfigOpenKey(name) { return "esp:cfg-open:" + String(name || ""); }
+  // Toggle event nie bubbluje - jeden listener w capture'ie zbiera wszystko.
+  if (typeof window !== "undefined" && !window.diagConfigOpenListenerBound) {
+    window.diagConfigOpenListenerBound = true;
+    document.addEventListener("toggle", (ev) => {
+      const el = ev.target;
+      if (!el || el.tagName !== "DETAILS") return;
+      const key = el.getAttribute("data-cfg-key");
+      if (!key) return;
+      try { localStorage.setItem(key, el.open ? "1" : "0"); } catch (_) {}
+    }, true);
+  }
+  function diagConfigSection(cfg, name) {
     const rows = (cfg && Array.isArray(cfg.lines)) ? cfg.lines : [];
     if (!rows.length) return "";
     const colorFor = st => st === "changed" ? "#f4b850"
@@ -2659,7 +2673,10 @@
     const changedTag = changed > 0
       ? ` <span style="color:#f4b850;font-weight:400;">(${changed} ${escapeHtml(t("diag_config_changed", "changed"))})</span>`
       : "";
-    return `<details style="margin-top:12px;"><summary style="cursor:pointer;font-size:12px;color:#9eafba;margin-bottom:4px;list-style:revert;">${escapeHtml(t("diag_config", "Configuration"))}${radioTag}${changedTag}</summary><table style="width:100%;font-size:12px;font-family:ui-monospace,Menlo,Consolas,monospace;margin-top:6px;">${body}</table></details>`;
+    let openAttr = "";
+    try { if (localStorage.getItem(diagConfigOpenKey(name)) === "1") openAttr = " open"; } catch (_) {}
+    const key = escapeHtml(diagConfigOpenKey(name));
+    return `<details data-cfg-key="${key}" style="margin-top:12px;"${openAttr}><summary style="cursor:pointer;font-size:12px;color:#9eafba;margin-bottom:4px;list-style:revert;">${escapeHtml(t("diag_config", "Configuration"))}${radioTag}${changedTag}</summary><table style="width:100%;font-size:12px;font-family:ui-monospace,Menlo,Consolas,monospace;margin-top:6px;">${body}</table></details>`;
   }
   function diagDeviceCard(device) {
     const notes = diagReasonNotes(device);
@@ -2687,7 +2704,7 @@
         <table style="width:100%;font-size:13px;">
           ${kv.map(pair => `<tr><td style="color:#9eafba;padding:2px 0;">${escapeHtml(pair[0])}</td><td style="text-align:right;padding:2px 0;">${escapeHtml(pair[1])}</td></tr>`).join("")}
         </table>
-        ${diagConfigSection(device.config)}
+        ${diagConfigSection(device.config, device.name)}
         ${noteHtml}
       </div>`;
   }
