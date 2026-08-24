@@ -223,6 +223,17 @@ flowchart TD
 Bis das erste Telegramm eintrifft, zeigt das Dashboard ein Panel **„wartet auf das
 erste Telegramm"**. Ein voller Add-on-Neustart ist nur ein Notfall-Fallback.
 
+**Zähler umbenennen.** Öffne **Driver…** bei einem konfigurierten Zähler und
+bearbeite das Feld **Name**. Der Name ist das, was Home Assistant als Gerätename
+anzeigt. Ein Umbenennen ist für die Historie unbedenklich: die `unique_id` jeder
+Entität wird aus der Zähler-ID gebildet, nicht aus dem Namen — Entitäten und ihre
+aufgezeichneten Daten bleiben erhalten. Home Assistant bildet eine bestehende
+`entity_id` beim Umbenennen nicht neu — eine als `sensor.kueche_total_m3` angelegte
+Entität behält diese ID, auch wenn das Gerät in *Bad* umbenannt wird; nur der
+angezeigte Name folgt. Zwei Zähler dürfen nicht denselben Namen tragen: der Decoder
+schreibt eine Datei pro Name, deshalb wird das Speichern abgelehnt, statt den ersten
+Zähler stillschweigend überschreiben zu lassen.
+
 **Nicht unterstützter Zähler?** Wenn ein Kandidat nie dekodiert wird (unbekannter
 Treiber / „unknown format signature"), nutzen Sie den Button **Meldung…** in
 seiner Zeile: das Add-on erstellt einen fertigen Issue-Block für das

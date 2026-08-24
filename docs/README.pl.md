@@ -221,6 +221,16 @@ flowchart TD
 Zanim przyjdzie pierwszy telegram, dashboard pokazuje sekcję **„czeka na pierwszy
 telegram"**. Pełny restart dodatku jest tylko awaryjnym fallbackiem.
 
+**Zmiana nazwy licznika.** Otwórz **Driver…** na skonfigurowanym liczniku i edytuj
+pole **Nazwa**. Nazwa to jest to, co Home Assistant pokazuje jako nazwę urządzenia.
+Zmiana nazwy jest bezpieczna dla historii: `unique_id` każdej encji powstaje z ID
+licznika, a nie z nazwy, więc encje i ich zapisane dane zostają. Home Assistant nie
+przelicza istniejącego `entity_id` przy zmianie nazwy — encja utworzona jako
+`sensor.kuchnia_total_m3` zachowa to ID po przemianowaniu urządzenia na *Łazienka*,
+zmienia się tylko wyświetlana nazwa. Dwa liczniki nie mogą mieć tej samej nazwy:
+dekoder zapisuje jeden plik na nazwę, więc zapis jest odrzucany zamiast pozwolić,
+by drugi licznik po cichu nadpisał pierwszy.
+
 **Niewspierany licznik?** Jeśli kandydat nigdy się nie dekoduje (nieznany driver
 / „unknown format signature"), użyj przycisku **Zgłoszenie…** w jego wierszu:
 add-on buduje gotowy do wklejenia blok zgłoszenia do projektu wmbusmeters

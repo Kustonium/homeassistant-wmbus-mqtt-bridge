@@ -2,6 +2,17 @@ configuration:
   esp_rx_api_enabled:
     name: "ESP RX evidence API"
     description: "Expose the read-only WebUI endpoint /api/esp-rx for structured RX summaries and bounded history. Off by default; never returns RAW telegrams, AES keys or MQTT credentials."
+  qds_walkby_enabled:
+    name: "Qundis walk-by block (advanced)"
+    description: >-
+      Handles Qundis meters (`qds`, `qcaloric`, `qheat_55` and their kin). At the
+      wM-Bus layer their frames look unencrypted, so nothing signals that a key
+      is needed — but the readings are packed inside a manufacturer record
+      (`0DFF5F`) and, since the 2026 generation, that record is itself
+      encrypted. Without this block the decoder can occasionally publish
+      ciphertext as a reading (e.g. 15430.611 m³ on a meter showing 1.387).
+      Turn on and put the meter's ordinary AES key in its meter entry to get
+      readable values; leave off if you have no Qundis meters.
   meters:
     name: Meters
     description: List of meters to decode.

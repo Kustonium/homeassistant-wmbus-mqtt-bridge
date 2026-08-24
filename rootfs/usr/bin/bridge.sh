@@ -297,6 +297,11 @@ RESTART_ON_EXIT="${RESTART_ON_EXIT:-$(json_get_bool '.restart_on_exit' 'true')}"
 # entity (sensor.wmbus_bridge_health) and a background worker asks the HA Core
 # API whether that entity exists. Off by default (read-only HA access is opt-in).
 VERIFY_HA_ENTITIES="${VERIFY_HA_ENTITIES:-$(json_get_bool '.verify_ha_entities' 'false')}"
+# Qundis walk-by block (0DFF5F). Off by default: no effect on installs that
+# never see the block. On (a) rejects walk-by records the decoder cannot
+# validate, so upstream cannot publish ciphertext as a reading, and (b) with
+# the meter AES key configured, decrypts the 2026-generation encrypted block
+# so the decoder sees plaintext. See config.yaml comment and docs/ARCHITECTURE.md.
 QDS_WALKBY_ENABLED="${QDS_WALKBY_ENABLED:-$(json_get_bool '.qds_walkby_enabled' 'false')}"
 # Optional Qundis walk-by stage, spliced between the RAW tee and wmbusmeters.
 # OFF (the default) is a plain `cat`: one long-lived process, no per-telegram

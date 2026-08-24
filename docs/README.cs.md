@@ -216,6 +216,16 @@ flowchart TD
 Než přijde první telegram, dashboard ukazuje panel **„čeká na první telegram"**.
 Plný restart add-onu je jen nouzová záloha.
 
+**Přejmenování měřiče.** Otevři **Driver…** u nakonfigurovaného měřiče a uprav pole
+**Název**. Název je to, co Home Assistant zobrazuje jako název zařízení.
+Přejmenování je z hlediska historie bezpečné: `unique_id` každé entity vzniká z ID
+měřiče, nikoli z názvu, takže entity i jejich zaznamenaná data zůstanou. Home
+Assistant při přejmenování nepřepočítává existující `entity_id` — entita vytvořená
+jako `sensor.kuchyne_total_m3` si toto ID ponechá i po přejmenování zařízení na
+*Koupelna*, mění se jen zobrazovaný název. Dva měřiče nemohou mít stejný název:
+dekodér zapisuje jeden soubor na název, proto je uložení odmítnuto, místo aby druhý
+měřič tiše přepsal první.
+
 **Nepodporovaný měřič?** Pokud se kandidát nikdy nedekóduje (neznámý driver /
 „unknown format signature"), použijte tlačítko **Hlášení…** v jeho řádku:
 add-on sestaví hotový blok hlášení pro upstream projekt wmbusmeters (surový

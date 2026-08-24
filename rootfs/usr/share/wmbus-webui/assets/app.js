@@ -3251,6 +3251,10 @@
   window.__modalExcludeSet = function (value) {
     if (state.modal) state.modal.excludeFields = String(value == null ? "" : value);
   };
+  window.__editModalNameSet = function (value) {
+    if (state.editModal) state.editModal.name = String(value == null ? "" : value);
+  };
+
   window.__editModalExcludeSet = function (value) {
     if (state.editModal) state.editModal.excludeFields = String(value == null ? "" : value);
   };
@@ -3391,10 +3395,16 @@
       <div class="modal-backdrop">
         <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="edit-driver-title">
           <div class="modal-head">
-            <h2 id="edit-driver-title">${escapeHtml(t("change_driver_title", "Change driver"))} — ${escapeHtml(em.id || "")}</h2>
+            <h2 id="edit-driver-title">${escapeHtml(t("edit_meter_title", "Edit meter"))} — ${escapeHtml(em.id || "")}</h2>
           </div>
           <div class="modal-body">
-            <label for="edit-meter-driver-select">${escapeHtml(t("driver", "Driver"))}</label>
+            <label for="edit-meter-name">${escapeHtml(t("meter_name_label", "Name"))}</label>
+            <input id="edit-meter-name" autocomplete="off" maxlength="64"
+              value="${escapeHtml(em.name || "")}"
+              placeholder="${escapeHtml(t("meter_name_placeholder", "e.g. Kitchen water"))}"
+              oninput="window.__editModalNameSet(this.value)">
+            <div style="font-size:10px;color:var(--muted);margin-top:3px;">${escapeHtml(t("meter_rename_hint", "Shown as the device name in Home Assistant. Renaming keeps the entities and their history - only the displayed name changes, entity IDs stay as they were created."))}</div>
+            <label for="edit-meter-driver-select" style="margin-top:8px;">${escapeHtml(t("driver", "Driver"))}</label>
             ${driverPickerHtml(em.driver, "edit-meter-driver", "")}
             <label for="edit-meter-key" style="margin-top:8px;">${escapeHtml(t("aes_key_label", "AES key"))}</label>
             ${(() => {
@@ -4524,6 +4534,10 @@
       state.editModal = {
         id,
         driver: target.dataset.driver || "auto",
+        // The saved label, so the field opens showing what is in use rather
+        // than empty - an empty box reads as "no name set" and invites the
+        // user to retype something they already have.
+        name: (savedMeter && savedMeter.id) || "",
         excludeFields: (savedMeter && savedMeter.exclude_fields) || "",
         calculatedFields: (savedMeter && savedMeter.calculated_fields) || "",
         staticFields: (savedMeter && savedMeter.static_fields) || "",
@@ -4626,6 +4640,9 @@
         const updatePayload = {
           meter_id: id,
           driver,
+          // Always sent: an empty value is how the label goes back to the
+          // generated meter_<id> form.
+          meter_name: String(em.name || "").trim(),
           exclude_fields: String(em.excludeFields || "").trim(),
           // Always sent, empty included: that is how a formula gets removed.
           calculated_fields: String(em.calculatedFields || "").trim(),
@@ -4634,7 +4651,7 @@
         if (key) updatePayload.key = key;
         await postApi("update-meter", updatePayload);
         state.editModal = null;
-        triggerSoftReload(`${t("driver_changed_msg", "Driver changed.")} ${t("reloading_pipeline", "Applying meter changes…")}`);
+        triggerSoftReload(`${t("meter_saved_msg", "Meter saved.")} ${t("reloading_pipeline", "Applying meter changes…")}`);
       } catch (error) {
         toast(error.message, true);
       }

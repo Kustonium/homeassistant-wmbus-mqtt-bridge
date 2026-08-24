@@ -220,6 +220,16 @@ flowchart TD
 Until the first telegram arrives the dashboard shows a **"waiting for the first
 telegram"** panel. A full add-on restart is only an emergency fallback.
 
+**Renaming a meter.** Open **Driver…** on a configured meter and edit the
+**Name** field. The name is what Home Assistant shows as the device name.
+Renaming is safe for history: every entity's `unique_id` is derived from the
+meter id, not from the name, so the entities and their recorded data survive.
+Home Assistant does not re-slug an existing `entity_id` on a rename — an entity
+created as `sensor.kitchen_total_m3` keeps that id after the device is renamed
+to *Bathroom*, and only the displayed name follows. Two meters cannot share a
+name: the decoder writes one file per name, so the save is refused instead of
+letting the second meter silently overwrite the first.
+
 **Unsupported meter?** If a candidate never decodes (unknown driver / "unknown
 format signature"), use the **Report…** button in its row: the add-on builds a
 ready-to-paste issue block for the upstream wmbusmeters project (raw telegram +

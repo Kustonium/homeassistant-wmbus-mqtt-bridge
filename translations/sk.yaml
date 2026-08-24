@@ -1,0 +1,122 @@
+configuration:
+  esp_rx_api_enabled:
+    name: "ESP RX dôkazové API"
+    description: "Sprístupňuje iba na čítanie endpoint WebUI /api/esp-rx so štruktúrovaným zhrnutím RX a obmedzenou históriou. Predvolene vypnuté; nikdy nevracia RAW telegramy, kľúče AES ani prihlasovacie údaje MQTT."
+  qds_walkby_enabled:
+    name: "Blok walk-by Qundis (pokročilé)"
+    description: >-
+      Obsluhuje merače Qundis (`qds`, `qcaloric`, `qheat_55` a príbuzné). Na
+      vrstve wM-Bus ich rámce vyzerajú nešifrovane, takže nič nesignalizuje
+      potrebu kľúča — údaje sú však zabalené v zázname výrobcu (`0DFF5F`) a
+      od generácie 2026 je tento záznam sám o sebe šifrovaný. Bez tohto bloku
+      môže dekodér občas publikovať šifrovaný text ako údaj (napr. 15430,611 m³
+      na merači, ktorý ukazuje 1,387). Zapnite a vložte bežný AES kľúč merača
+      do jeho záznamu, aby prišli čitateľné hodnoty; nechajte vypnuté, ak
+      merače Qundis nemáte.
+  meters:
+    name: Merače
+    description: Zoznam meračov na dekódovanie.
+    fields:
+      id:
+        name: Názov
+      meter_id:
+        name: ID merača
+      type:
+        name: Ovládač
+      type_other:
+        name: Vlastný ovládač
+      key:
+        name: Kľúč AES
+        description: Nechajte prázdne alebo zadajte presne 32 hexadecimálnych znakov, napríklad 00000000000000000000000000000000.
+  mbus_tab_visible:
+    name: "M-Bus (drôtový) — zobraziť záložku"
+    description: >-
+      Všetko nižšie patrí DRÔTOVÉMU M-Busu: merače pripojené dvojžilovou
+      zbernicou cez M-Bus master prevodník, ktorý sa hlási ako sériový port
+      (USB, RS-232 alebo RS-485). NIE je to pre rádio. RTL-SDR, DVB-T kľúčenka
+      ani rádiový wM-Bus dongle tu fungovať nebudú a ani nemajú — rádio prijíma
+      ESP a posiela cez MQTT, presne ako doteraz. NIE je to ani podpora typických
+      elektromerov distribútora s optickým portom alebo RS-485, ktoré používajú
+      DLMS/COSEM (IEC 62056), ani meračov Modbus RTU/TCP; žiaden z týchto
+      protokolov tento doplnok nedekóduje. Skutočný elektromer s rozhraním
+      M-Bus podľa EN 13757 môže fungovať, ak má wmbusmeters ovládač. Samotný
+      konektor RS-485 neznamená M-Bus.
+      Tento prepínač len zobrazuje záložku M-Bus vo WebUI, nič nespúšťa.
+      Nechajte vypnuté, ak drôtovú zbernicu nemáte.
+      Neoverené na skutočnej zbernici — autor takýto HW nemá. Ak niečo
+      nefunguje, otvorte prosím issue.
+  mbus_enabled:
+    name: "M-Bus (drôtový) — dotazovať zbernicu"
+    description: >-
+      Spúšťa samostatnú inštanciu wmbusmeters, ktorá dotazuje zbernicu. Vyžaduje
+      najprv zvoliť port; bez neho sa nespustí a napíše to do logu. Rádiová
+      cesta nie je nikdy dotknutá.
+  mbus_device:
+    name: "M-Bus (drôtový) — sériový port"
+    description: >-
+      Cesta k prevodníku, najlepšie stabilná /dev/serial/by-id/… Najľahšie sa
+      vyberá zo zoznamu v záložke M-Bus, ktorá zároveň varuje pred zariadeniami,
+      ktoré prevodníkmi nie sú. Doplnok nikdy neskenuje porty: sondovanie
+      posiela rámce a na typickom stroji s Home Assistant je jedným z týchto
+      portov koordinátor Zigbee.
+  mbus_device_serial:
+    name: "M-Bus (drôtový) — sériové číslo zariadenia"
+    description: >-
+      Vyplní sa automaticky pri výbere portu v záložke. Uzol /dev môže po
+      prepojení začať patriť inému hardvéru, preto sa pri každom štarte
+      porovnáva; ak nesúhlasí, dotazovanie odmietne bežať. Prázdne znamená,
+      že zariadenie sériové číslo nehlási (bežné pri CH340 a PL2303) a kontrolu
+      nemožno vykonať.
+  mbus_bus_alias:
+    name: "M-Bus (drôtový) — názov zbernice"
+    description: Názov tejto zbernice v generovanej konfigurácii meračov. Písmená, číslice a podčiarkovník.
+  mbus_baudrate:
+    name: "M-Bus (drôtový) — prenosová rýchlosť"
+    description: Zvyčajne 2400. Parita je pevne EVEN — dekodér ju pre M-Bus vynucuje.
+  mbus_poll_interval:
+    name: "M-Bus (drôtový) — predvolený interval dotazovania"
+    description: >-
+      Zapísaný do každého merača, ktorý nemá vlastný interval, napríklad 15m,
+      30s alebo 1h. Kratšie intervaly znamenajú väčšiu premávku na zbernici a
+      väčšiu spotrebu batérie pri bateriových meračoch.
+  mbus_donotprobe_all:
+    name: "M-Bus (drôtový) — nesondovať iné porty"
+    description: >-
+      Nechajte zapnuté. Vypnuté môže dekodér pri hľadaní zbernice hovoriť s inými
+      sériovými zariadeniami, čo môže narušiť koordinátor Zigbee alebo Z-Wave
+      na susednom porte.
+  mbus_loglevel:
+    name: "M-Bus (drôtový) — úroveň logu"
+    description: Úroveň logu iba pre inštanciu zbernice. Nezávislá od hlavnej úrovne logu.
+  mbus_logtelegrams:
+    name: "M-Bus (drôtový) — logovať surové rámce"
+    description: Loguje každý rámec vymenený so zbernicou. Užitočné, keď merač mlčí; inak ukecané.
+  mbus_ignoreduplicates:
+    name: "M-Bus (drôtový) — ignorovať duplicity"
+    description: Zahodí opakované identické telegramy pred dekódovaním.
+  mbus_meters:
+    name: "M-Bus (drôtový) — merače na zbernici"
+    description: Merače dotazované po drôte. Najľahšie spravovateľné v záložke M-Bus vo WebUI.
+    fields:
+      id:
+        name: Názov
+      address:
+        name: Adresa
+        description: >-
+          Primárna adresa p1 až p250, alebo 8-znaková sekundárna adresa. p0 je
+          továrenská hodnota „nenastavené" a nie je platná — zbernica, na ktorej
+          ju dva merače stále majú, je práve prípad, ktorý pôsobí kolízie.
+      type:
+        name: Ovládač
+      type_other:
+        name: Vlastný ovládač
+      key:
+        name: Kľúč AES
+        description: Nechajte prázdne alebo zadajte presne 32 hexadecimálnych znakov. Väčšina drôtových meračov nešifruje.
+      poll_interval:
+        name: Interval dotazovania
+        description: Prepisuje predvolený pre tento merač, napríklad 1h. Prázdne = použiť predvolený.
+      calculated_fields:
+        name: Počítané polia
+      static_fields:
+        name: Konštantné polia

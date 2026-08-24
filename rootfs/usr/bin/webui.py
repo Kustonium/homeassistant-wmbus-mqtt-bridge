@@ -1079,6 +1079,24 @@ def _clean_static_fields(value: str) -> tuple[bool, str, str]:
     return True, "; ".join(entries), ""
 
 
+def _entry_id_from_name(meter_name: str, meter_id: str) -> str:
+    """Turn a user-typed label into the options entry id.
+
+    That id is what wmbusmeters writes as `name=` in the meter file, so it
+    reaches Home Assistant as the device name. Unicode letters and digits
+    survive (a Polish or Czech label stays readable); everything else
+    collapses to a single underscore. An empty result falls back to
+    meter_<id> rather than to nothing, because a nameless meter file makes
+    the decoder's output ambiguous.
+    """
+    name = (meter_name or '').strip()
+    if name:
+        safe = re.sub(r'[^\w\-]', '_', name)
+        safe = re.sub(r'_+', '_', safe).strip('_')
+        if safe:
+            return safe
+    return f'meter_{meter_id}'
+
 def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str = "",
                          exclude_fields: str = "",
                          calculated_fields: str = "",
@@ -1119,15 +1137,7 @@ def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str =
         if isinstance(m, dict) and normalize_meter_id(m.get("meter_id")) == meter_id:
             return False, f"Meter {meter_id} already exists in options."
 
-    # Build entry id: use provided name (sanitized) or fall back to meter_XXXXXXXX
-    import re as _re, unicodedata as _ud
-    if meter_name:
-        # Keep Unicode letters and numbers, replace everything else with _
-        safe_name = _re.sub(r'[^\w\-]', '_', meter_name.strip())
-        safe_name = _re.sub(r'_+', '_', safe_name).strip('_')
-        entry_id = safe_name if safe_name else f"meter_{meter_id}"
-    else:
-        entry_id = f"meter_{meter_id}"
+    entry_id = _entry_id_from_name(meter_name, meter_id)
 
     entry = {
         "id": entry_id,
@@ -1319,16 +1329,42 @@ def remove_meter_from_options(meter_id: str) -> tuple[bool, str]:
     return True, msg
 
 
+def _update_meter_message(meter_id: str, driver: str, renamed_from: str,
+                          entry: dict, file_only: bool) -> str:
+    """One sentence describing what the update actually changed.
+
+    A rename and a driver change are separate reasons to open the dialog, and
+    the event log is the only place a user can check afterwards what happened -
+    'driver changed to X' on a save where only the label moved was actively
+    misleading.
+    """
+    parts = []
+    if renamed_from:
+        parts.append(f"renamed {renamed_from} -> {entry.get('id')}")
+    parts.append(f"driver {driver}")
+    what = ", ".join(parts)
+    tail = " (file only — no SUPERVISOR_TOKEN)" if file_only else ""
+    return f"Meter {meter_id}: {what}{tail}. Reloading pipeline to apply."
+
 def update_meter_in_options(meter_id: str, driver: str, key: str | None = None,
                             exclude_fields: str | None = None,
                             calculated_fields: str | None = None,
-                            static_fields: str | None = None) -> tuple[bool, str]:
+                            static_fields: str | None = None,
+                            meter_name: str | None = None) -> tuple[bool, str]:
     """Change the driver (and optionally the AES key) of an existing meter.
 
     Same Supervisor-first persistence as add/remove_meter_from_options. The
     driver is a free string — wmbusmeters validates it at decode time — so a
     wrong first guess (e.g. istawater vs evo868) can be corrected without
     removing and re-adding the meter.
+
+    The label can be changed the same way. It only reaches Home Assistant as
+    the DEVICE name: every entity's unique_id is built from the meter id, not
+    from the label, so a rename keeps the entities and their recorded history.
+    Home Assistant does not re-slug an existing entity_id on a name change -
+    an entity created as sensor.kitchen_total_m3 keeps that id after the
+    device is renamed to Bathroom, and only the displayed name follows. Tell
+    the user that rather than let them discover it.
     """
     import urllib.request
 
@@ -1360,6 +1396,28 @@ def update_meter_in_options(meter_id: str, driver: str, key: str | None = None,
     )
     if entry is None:
         return False, f"Meter {meter_id} not found in options."
+
+    # None = the caller did not touch the label. An empty string is a request
+    # to go back to the generated meter_<id> form, which is what the add path
+    # produces when no name is given - so the two stay symmetrical.
+    renamed_from = ""
+    if meter_name is not None:
+        new_entry_id = _entry_id_from_name(meter_name, meter_id)
+        # A duplicate label would make two meters share one wmbusmeters meter
+        # file name, and the decoder writes one file per name - the second
+        # would silently overwrite the first. Refuse instead.
+        for other in meters:
+            if not isinstance(other, dict) or other is entry:
+                continue
+            if str(other.get("id") or "").strip() == new_entry_id:
+                return False, (
+                    f"Name '{new_entry_id}' is already used by meter "
+                    f"{normalize_meter_id(other.get('meter_id'))}. Pick another one."
+                )
+        current_entry_id = str(entry.get("id") or "").strip()
+        if new_entry_id != current_entry_id:
+            renamed_from = current_entry_id
+            entry["id"] = new_entry_id
 
     entry["type"] = driver
     entry["type_other"] = ""
@@ -1401,7 +1459,7 @@ def update_meter_in_options(meter_id: str, driver: str, key: str | None = None,
             with urllib.request.urlopen(req, timeout=10) as resp:
                 if resp.status in (200, 201):
                     write_json_atomic(OPTIONS_JSON, options)
-                    msg = f"Meter {meter_id} driver changed to {driver}. Reloading pipeline to apply."
+                    msg = _update_meter_message(meter_id, driver, renamed_from, entry, False)
                     webui_add_event("ok", msg)
                     return True, msg
                 body = resp.read().decode("utf-8", errors="replace")
@@ -1412,7 +1470,7 @@ def update_meter_in_options(meter_id: str, driver: str, key: str | None = None,
 
     # Fallback: file-only write (plain Docker / no SUPERVISOR_TOKEN).
     write_json_atomic(OPTIONS_JSON, options)
-    msg = f"Meter {meter_id} driver changed to {driver} (file only — no SUPERVISOR_TOKEN). Reloading pipeline to apply."
+    msg = _update_meter_message(meter_id, driver, renamed_from, entry, True)
     webui_add_event("warn", msg)
     return True, msg
 
@@ -4129,8 +4187,20 @@ class Handler(BaseHTTPRequestHandler):
                     return
             else:
                 static_fields = None
+            # Same parameter name as /api/add-meter. Absent = keep the current
+            # label (older front-ends, and the exclude-field toggle, post
+            # without it); present but empty = fall back to meter_<id>.
+            if 'meter_name' in params:
+                meter_name = (params.get('meter_name') or [''])[0].strip()
+                if len(meter_name) > 64:
+                    self._send_json(400, {"ok": False,
+                                          "message": "Name is too long (max 64 characters)."})
+                    return
+            else:
+                meter_name = None
             ok, msg = update_meter_in_options(meter_id, driver, key or None, exclude_fields,
-                                              calculated_fields, static_fields)
+                                              calculated_fields, static_fields,
+                                              meter_name=meter_name)
             self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
             return
         if path.endswith('/api/factory-reset'):

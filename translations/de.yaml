@@ -1,0 +1,125 @@
+configuration:
+  esp_rx_api_enabled:
+    name: "ESP-RX-Beweis-API"
+    description: "Stellt den nur-lesend zugänglichen WebUI-Endpunkt /api/esp-rx mit strukturierter RX-Zusammenfassung und begrenzter Historie bereit. Standardmäßig aus; liefert nie RAW-Telegramme, AES-Schlüssel oder MQTT-Zugangsdaten."
+  qds_walkby_enabled:
+    name: "Qundis-Walk-by-Block (fortgeschritten)"
+    description: >-
+      Behandelt Qundis-Zähler (`qds`, `qcaloric`, `qheat_55` und Verwandte). Auf
+      der wM-Bus-Ebene sehen ihre Frames unverschlüsselt aus, nichts weist also
+      darauf hin, dass ein Schlüssel nötig ist — die Messwerte stecken jedoch
+      in einem Herstellersatz (`0DFF5F`), und seit der Generation 2026 ist dieser
+      Satz selbst verschlüsselt. Ohne diesen Block kann der Decoder gelegentlich
+      Chiffretext als Messwert veröffentlichen (z. B. 15430,611 m³ auf einem
+      Zähler, der 1,387 zeigt). Einschalten und den gewöhnlichen AES-Schlüssel
+      des Zählers in dessen Eintrag setzen liefert lesbare Werte; auslassen,
+      wenn keine Qundis-Zähler vorhanden sind.
+  meters:
+    name: Zähler
+    description: Liste der zu dekodierenden Zähler.
+    fields:
+      id:
+        name: Name
+      meter_id:
+        name: Zähler-ID
+      type:
+        name: Treiber
+      type_other:
+        name: Eigener Treiber
+      key:
+        name: AES-Schlüssel
+        description: Leer lassen oder genau 32 Hexadezimalzeichen eingeben, z. B. 00000000000000000000000000000000.
+  mbus_tab_visible:
+    name: "M-Bus (kabelgebunden) — Reiter zeigen"
+    description: >-
+      Alles darunter gehört zum KABEL-M-Bus: Zähler, die über einen
+      zweiadrigen Bus per M-Bus-Master-Konverter angeschlossen sind, der als
+      serieller Port erscheint (USB, RS-232 oder RS-485). Das ist NICHT für
+      Funk. Ein RTL-SDR, ein DVB-T-Stick oder ein wM-Bus-Funk-Dongle wird hier
+      nicht funktionieren und soll es auch nicht — Funk empfängt der ESP und
+      liefert ihn über MQTT, genau wie bisher. Es ist auch KEINE Unterstützung
+      für typische Netzbetreiber-Stromzähler mit optischer Schnittstelle oder
+      RS-485, die DLMS/COSEM (IEC 62056) sprechen, und keine für Modbus-RTU/TCP-Zähler;
+      dieses Add-on dekodiert keines dieser Protokolle. Ein echter
+      EN-13757-M-Bus-Stromzähler kann funktionieren, wenn wmbusmeters einen
+      passenden Treiber hat. Ein RS-485-Anschluss allein bedeutet nicht M-Bus.
+      Dieser Schalter zeigt nur den M-Bus-Reiter im WebUI, er startet nichts.
+      Ausschalten lassen, wenn kein kabelgebundener Bus vorhanden ist.
+      Nicht auf einem echten Bus verifiziert — dem Autor fehlt die Hardware.
+      Bitte ein Issue öffnen, falls etwas nicht funktioniert.
+  mbus_enabled:
+    name: "M-Bus (kabelgebunden) — Bus abfragen"
+    description: >-
+      Startet eine separate wmbusmeters-Instanz, die den Bus abfragt. Erfordert,
+      dass zuerst ein Port ausgewählt ist; ohne Port startet sie nicht und sagt
+      das im Log. Der Funkweg wird nie berührt.
+  mbus_device:
+    name: "M-Bus (kabelgebunden) — serieller Port"
+    description: >-
+      Pfad zum Konverter, bevorzugt ein stabiler /dev/serial/by-id/… Am einfachsten
+      aus der Liste im M-Bus-Reiter zu wählen, der auch vor Geräten warnt, die
+      keine Konverter sind. Das Add-on scannt niemals Ports: Sondieren sendet
+      Frames, und auf einer typischen Home-Assistant-Maschine ist einer dieser
+      Ports ein Zigbee-Koordinator.
+  mbus_device_serial:
+    name: "M-Bus (kabelgebunden) — Seriennummer des Geräts"
+    description: >-
+      Wird beim Wählen eines Ports im Reiter automatisch eingetragen. Ein
+      /dev-Knoten kann nach einem Umstecken einem anderen Gerät gehören, deshalb
+      wird bei jedem Start verglichen; passt es nicht mehr, verweigert die
+      Abfrage den Start. Leer bedeutet, dass das Gerät keine Seriennummer meldet
+      (üblich bei CH340 und PL2303) und diese Prüfung nicht möglich ist.
+  mbus_bus_alias:
+    name: "M-Bus (kabelgebunden) — Busname"
+    description: Name dieses Busses in der generierten Zählerkonfiguration. Buchstaben, Ziffern und Unterstrich.
+  mbus_baudrate:
+    name: "M-Bus (kabelgebunden) — Baudrate"
+    description: Üblich 2400. Parität ist fest EVEN — der Decoder erzwingt sie für M-Bus.
+  mbus_poll_interval:
+    name: "M-Bus (kabelgebunden) — Standard-Abfrageintervall"
+    description: >-
+      Wird in jeden Zähler geschrieben, der kein eigenes Intervall hat, z. B. 15m,
+      30s oder 1h. Kürzere Intervalle bedeuten mehr Busverkehr und mehr Batterie-
+      verbrauch bei batteriebetriebenen Zählern.
+  mbus_donotprobe_all:
+    name: "M-Bus (kabelgebunden) — andere Ports nicht sondieren"
+    description: >-
+      An lassen. Aus kann der Decoder beim Suchen mit anderen seriellen Geräten
+      reden, was einen Zigbee- oder Z-Wave-Koordinator am Nachbarport stören
+      kann.
+  mbus_loglevel:
+    name: "M-Bus (kabelgebunden) — Log-Level"
+    description: Log-Level nur für die Bus-Instanz. Unabhängig vom Haupt-Log-Level.
+  mbus_logtelegrams:
+    name: "M-Bus (kabelgebunden) — Rohframes loggen"
+    description: Loggt jeden mit dem Bus ausgetauschten Frame. Nützlich, wenn ein Zähler schweigt; sonst geschwätzig.
+  mbus_ignoreduplicates:
+    name: "M-Bus (kabelgebunden) — Duplikate ignorieren"
+    description: Verwirft wiederholte, identische Telegramme vor dem Dekodieren.
+  mbus_meters:
+    name: "M-Bus (kabelgebunden) — Zähler am Bus"
+    description: Über den Kabel-Bus abgefragte Zähler. Am einfachsten im M-Bus-Reiter des WebUI zu verwalten.
+    fields:
+      id:
+        name: Name
+      address:
+        name: Adresse
+        description: >-
+          Primäradresse p1 bis p250, oder eine 8-stellige Sekundäradresse. p0 ist
+          der Werks-„nicht gesetzt"-Wert und ist ungültig — ein Bus, auf dem
+          zwei Zähler ihn noch tragen, ist genau der Fall, der Kollisionen
+          erzeugt.
+      type:
+        name: Treiber
+      type_other:
+        name: Eigener Treiber
+      key:
+        name: AES-Schlüssel
+        description: Leer lassen oder genau 32 Hexadezimalzeichen eingeben. Die meisten Kabelzähler sind unverschlüsselt.
+      poll_interval:
+        name: Abfrageintervall
+        description: Überschreibt den Standard für diesen Zähler, z. B. 1h. Leer = Standard verwenden.
+      calculated_fields:
+        name: Berechnete Felder
+      static_fields:
+        name: Konstante Felder

@@ -1,3 +1,8 @@
+## 1.5.57
+
+### Added
+- let a configured meter be renamed (5348662)
+
 ## 1.5.56
 
 ### Fixed

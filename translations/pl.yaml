@@ -2,6 +2,17 @@ configuration:
   esp_rx_api_enabled:
     name: "API danych dowodowych ESP RX"
     description: "Udostępnia tylko do odczytu endpoint WebUI /api/esp-rx z podsumowaniem i ograniczoną historią RX. Domyślnie wyłączone; nigdy nie zwraca RAW, kluczy AES ani danych logowania MQTT."
+  qds_walkby_enabled:
+    name: "Blok walk-by Qundis (zaawansowane)"
+    description: >-
+      Obsługuje liczniki Qundis (`qds`, `qcaloric`, `qheat_55` i pokrewne). Na
+      warstwie wM-Bus ich ramki wyglądają na nieszyfrowane, więc nic nie
+      sygnalizuje potrzeby klucza — a odczyty są upakowane w rekordzie
+      producenta (`0DFF5F`) i od generacji 2026 ten rekord jest sam w sobie
+      zaszyfrowany. Bez tego bloku dekoder może raz na jakiś czas opublikować
+      szyfrogram jako odczyt (np. 15430,611 m³ na liczniku pokazującym 1,387).
+      Włącz i wpisz zwykły klucz AES licznika w jego wpisie, żeby dostać
+      czytelne wartości; zostaw wyłączone, jeśli nie masz liczników Qundis.
   meters:
     name: Liczniki
     description: Lista liczników do dekodowania.
