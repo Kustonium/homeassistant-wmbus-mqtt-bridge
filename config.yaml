@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
 description: "wM-Bus over MQTT (RAW HEX) + optional wired M-Bus -> wmbusmeters -> Home Assistant Discovery"
-version: "1.5.52"
+version: "1.5.53"
 slug: "wmbus_mqtt_bridge"
 stage: experimental
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
@@ -67,6 +67,15 @@ options:
   # telegrams, AES keys or MQTT credentials.
   esp_rx_api_enabled: false
 
+  # Qundis (QDS/LSE) manufacturer walk-by block (0DFF5F). Off by default: it
+  # only affects meters that emit that block, and it inserts a rewriting stage
+  # ahead of the decoder. With it off the decode path is byte-for-byte what it
+  # was. On, it (a) neutralises walk-by records the decoder cannot validate, so
+  # upstream's single-byte gate cannot publish ciphertext as a reading, and
+  # (b) decrypts the 2026-generation encrypted block when the meter's ordinary
+  # AES key is configured. See docs/ARCHITECTURE.md.
+  qds_walkby_enabled: false
+
   # ── Wired M-Bus (separate engine, off by default) ──────────
   # Two independent gates: mbus_tab_visible only shows the tab, mbus_enabled
   # actually starts the third wmbusmeters instance. Both off means the add-on
@@ -114,6 +123,7 @@ schema:
   external_mqtt_password: str?
   verify_ha_entities: bool
   esp_rx_api_enabled: bool
+  qds_walkby_enabled: bool
   mbus_tab_visible: bool
   mbus_enabled: bool
   mbus_device: str?

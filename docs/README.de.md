@@ -453,6 +453,27 @@ Hex übergeben werden.
 
 ---
 
+### Diagnose-Tab
+
+Eine Tabelle je Platine: Frames, Zähler, fehlende Ereignisse, Neustarts der
+letzten 24 Stunden und Zeit seit dem letzten Frame, dazu ein Status je Platine.
+Darunter je eine Karte mit Details und einer Klartext-Notiz zu jeder Warnung.
+
+Zwei Dinge, für die das gebaut ist. **Sequenzlücken** belegen, dass ein Ereignis
+zwischen ESP und Add-on verloren ging - nicht aber, ob Funk, MQTT, Netzwerk oder
+Abonnent schuld war. Und **stille Neustarts**: ein Neustart setzt die Zähler
+zurück und löscht damit seinen eigenen Beleg. Liegen die Neustarts etwa 15
+Minuten auseinander, benennt der Tab die wahrscheinliche Ursache - ESPHomes
+Standard `api.reboot_timeout`, der die Platine neu startet, sobald kein
+Native-API-Client verbunden ist. Ein reiner MQTT-Empfänger hat nie einen.
+
+Die Seite braucht Firmware, die das `rx`-Metadaten-Topic sendet; ältere Platinen
+erscheinen schlicht nicht.
+
+Stempelt die Firmware die Frames zusätzlich mit ihrer Empfangszeit, zeigt die
+Karte eine **ESP-Uhr**-Zeile: ob die Uhr der Platine gesetzt ist und wie weit
+ihre Empfangszeit von der des Add-ons abweicht.
+
 ### Export der ESP-Empfangsnachweise (`esp_rx_api_enabled`, standardmäßig aus)
 
 Firmware, die strukturierte Empfangsmetadaten auf `wmbus/<Platine>/rx`
@@ -479,6 +500,40 @@ und startet nichts neu. Ist die Option aus, antwortet der Endpunkt mit HTTP 404.
 Sequenzlücken belegen, dass irgendwo zwischen ESP und Abonnent ein Ereignis
 verloren ging. Sie sagen für sich genommen **nicht**, ob Funk, MQTT, Netzwerk oder
 Abonnent die Ursache war.
+
+### Qundis-Walk-by-Block (`qds_walkby_enabled`, standardmäßig aus)
+
+Qundis-Zähler packen ihre gesamte Walk-by-Nutzlast in einen einzigen
+Herstellerdatensatz (`0DFF5F`, 53 Bytes) in CI=0x78-Telegrammen. Seit der
+Generation 2026 ist dieser Datensatz **innerhalb des Datensatzes** verschlüsselt,
+nicht auf der wM-Bus-Ebene: Solche Telegramme haben keinen TPL-Header, wM-Bus
+meldet sie also zu Recht als unverschlüsselt, und nichts kennzeichnet sie als
+schlüsselpflichtig.
+
+Ohne diese Option gehen zwei Dinge schief; die Option behebt beide:
+
+- **Zufällige Werte mit `status: OK`.** Der Dekoder erkennt einen
+  Walk-by-Datensatz an einem einzigen Byte, das zufälliger verschlüsselter Inhalt
+  in einem von 256 Telegrammen trifft — also etwa alle acht Stunden pro Zähler.
+  Dann liest er die verschlüsselten Bytes als Zahl. Bei einem Zähler mit 1,387 m³
+  ergibt das `15430.611` und verfälscht unbemerkt die Langzeitstatistik von Home
+  Assistant. Mit eingeschalteter Option wird ein nicht überprüfbarer Datensatz
+  mit geändertem Schlüssel an den Dekoder gegeben, sodass kein Treiber darauf
+  passt: Der Messwert entfällt, die Zähleruhr wird weiterhin aktualisiert.
+- **Gar keine Werte, ohne Erklärung.** Ist der AES-Schlüssel des Zählers
+  konfiguriert, entschlüsselt das Add-on den Block selbst und übergibt dem
+  Dekoder einen lesbaren Datensatz. Ist er es nicht, sagt das Log genau das —
+  zusammen mit Version, Typ und CI des Zählers sowie den gefundenen Datensätzen.
+
+**Gemeint ist der gewöhnliche AES-Schlüssel des Zählers** — derselbe, den seine
+regulären Telegramme (CI=0x7A) bereits verwenden. Es gibt kein separates
+Walk-by-Geheimnis: Wenn sich die regulären Telegramme dieses Zählers
+entschlüsseln lassen, ist es genau dieser Schlüssel. Ein falscher Schlüssel wird
+als solcher gemeldet und liefert niemals einen Ersatzwert.
+
+Bei ausgeschalteter Option ist die Dekodierung Byte für Byte wie zuvor; eine
+Installation ohne Qundis-Zähler ist also nicht betroffen. Siehe
+`docs/ARCHITECTURE.md` §3.5.
 
 ### Drahtgebundener M-Bus (serieller Bus, standardmäßig aus)
 

@@ -98,6 +98,12 @@ _normalize_esp_rx_payload() {
     | select(.rssi_dbm == null or ((.rssi_dbm | type) == "number" and .rssi_dbm >= -125 and .rssi_dbm <= -1))
     | select((.frame_crc32 | type) == "string" and (.frame_crc32 | test("^[0-9A-Fa-f]{8}$")))
     | select((.frame_length | type) == "number" and .frame_length > 0 and (.frame_length | floor) == .frame_length)
+    # received_at is optional decoration, so a malformed one drops the FIELD,
+    # never the frame. Rejecting a whole telegram over a cosmetic timestamp
+    # would let one firmware bug silence a board completely.
+    | if (.received_at != null and (((.received_at | type) != "string")
+        or ((.received_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$")) | not)))
+      then del(.received_at) else . end
     | .boot_id |= ascii_upcase
     | .meter_id |= ascii_upcase
     | .frame_crc32 |= ascii_upcase
@@ -106,6 +112,15 @@ _normalize_esp_rx_payload() {
 
 # Current sequence continuity per ESP source.
 # Format: source<TAB>boot_id<TAB>last_seq<TAB>missing<TAB>out_of_order<TAB>last_seen
+#
+# last_seq is the HIGHEST sequence number seen for this boot, not the most
+# recent one. That distinction is the whole point: a duplicate or a late
+# delivery used to overwrite the baseline, and the next in-order frame then
+# looked like a jump and was counted as missing. One reordering event could
+# therefore invent a gap that never happened - observed 2026-08-21, when three
+# boards reported missing=1 in the same second while the broker was simply
+# redelivering. Frames at or below the maximum are counted as out_of_order and
+# never move the baseline.
 _upsert_esp_rx_sequence() {
   local file="$1" source="$2" boot_id="$3" seq="$4" now="$5"
   (
@@ -125,6 +140,7 @@ _upsert_esp_rx_sequence() {
             out_of_order = ($5 ~ /^[0-9]+$/) ? $5 : 0
             if (last > 0 && seq > last + 1) missing += seq - last - 1
             if (last > 0 && seq <= last) out_of_order++
+            if (seq < last) seq = last
           }
           print source, boot_id, seq, missing, out_of_order, now
           updated = 1
@@ -132,6 +148,80 @@ _upsert_esp_rx_sequence() {
         }
         { print }
         END { if (!updated) print source, boot_id, seq, 0, 0, now }
+      ' "${file}" > "${_tmp}"; then
+      rm -f "${_tmp}"
+      return 1
+    fi
+    mv "${_tmp}" "${file}" 2>/dev/null || { rm -f "${_tmp}"; true; }
+  ) 9>"${file}.lock"
+}
+
+# One row per ESP boot, so a restart leaves a trace instead of silently
+# resetting the sequence counters.
+#
+# WHY THIS EXISTS: on 2026-08-20/21 four boards were restarting every 15 minutes
+# and nobody noticed for a day - reception simply looked "a bit worse". The
+# cause was an empty `api:` block, where ESPHome applies reboot_timeout: 15min
+# and restarts the device whenever no Native API client is connected. Without a
+# boot history the evidence is destroyed by the very event you are looking for.
+#
+# Format: source<TAB>boot_id<TAB>first_seen<TAB>last_seen<TAB>events
+_upsert_esp_rx_boot() {
+  local file="$1" source="$2" boot_id="$3" now="$4"
+  (
+    flock -x 9
+    [[ -f "${file}" ]] || : > "${file}"
+    local _tmp
+    _tmp="$(mktemp "${file}.tmp.XXXXXX")" || return 1
+    if ! awk -F $'\t' -v OFS=$'\t' \
+      -v source="${source}" -v boot_id="${boot_id}" -v now="${now}" '
+        BEGIN { updated = 0 }
+        $1 == source && $2 == boot_id {
+          events = ($5 ~ /^[0-9]+$/) ? $5 + 1 : 1
+          print $1, $2, $3, now, events
+          updated = 1
+          next
+        }
+        { print }
+        END { if (!updated) print source, boot_id, now, now, 1 }
+      ' "${file}" > "${_tmp}"; then
+      rm -f "${_tmp}"
+      return 1
+    fi
+    mv "${_tmp}" "${file}" 2>/dev/null || { rm -f "${_tmp}"; true; }
+  ) 9>"${file}.lock"
+}
+
+# Clock view per ESP: the board's own reception time against the time the
+# bridge saw the message. The difference is the only way to notice that a
+# board's clock never synced, or that frames are arriving late.
+#
+# Format: source<TAB>last_received_epoch<TAB>last_bridge_epoch<TAB>skew_s<TAB>stamped<TAB>unstamped
+_upsert_esp_rx_clock() {
+  local file="$1" source="$2" received_epoch="$3" bridge_epoch="$4"
+  (
+    flock -x 9
+    [[ -f "${file}" ]] || : > "${file}"
+    local _tmp
+    _tmp="$(mktemp "${file}.tmp.XXXXXX")" || return 1
+    if ! awk -F $'\t' -v OFS=$'\t' \
+      -v source="${source}" -v rcv="${received_epoch}" -v now="${bridge_epoch}" '
+        BEGIN { updated = 0 }
+        $1 == source {
+          stamped = ($5 ~ /^[0-9]+$/) ? $5 : 0
+          unstamped = ($6 ~ /^[0-9]+$/) ? $6 : 0
+          if (rcv == "") { unstamped++; print source, $2, now, $4, stamped, unstamped }
+          else { stamped++; print source, rcv, now, now - rcv, stamped, unstamped }
+          updated = 1
+          next
+        }
+        { print }
+        END {
+          if (!updated) {
+            if (rcv == "") print source, 0, now, 0, 0, 1
+            else print source, rcv, now, now - rcv, 1, 0
+          }
+        }
       ' "${file}" > "${_tmp}"; then
       rm -f "${_tmp}"
       return 1

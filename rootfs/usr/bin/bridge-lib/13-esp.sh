@@ -419,6 +419,15 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
       _upsert_esp_rx_sequence \
         "${STATUS_ESP_RX_SEQUENCE_FILE}" "${_rx_meta_dev}" "${_rx_meta_boot}" \
         "${_rx_meta_seq}" "${_rx_meta_now}" || true
+      _upsert_esp_rx_boot \
+        "${STATUS_ESP_RX_BOOTS_FILE}" "${_rx_meta_dev}" "${_rx_meta_boot}" \
+        "${_rx_meta_now}" || true
+      # Empty when the board had no clock yet; the tracker counts those
+      # separately so "no timestamps at all" is visible as a state.
+      _rx_meta_rcv="$(jq -r 'if .received_at then (.received_at | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601) else "" end' <<< "${_rx_meta_norm}" 2>/dev/null || echo "")"
+      _upsert_esp_rx_clock \
+        "${STATUS_ESP_RX_CLOCK_FILE}" "${_rx_meta_dev}" "${_rx_meta_rcv}" \
+        "${_rx_meta_now}" || true
 
       _rx_meta_since_trim=$((_rx_meta_since_trim + 1))
       if (( _rx_meta_since_trim >= 1000 )); then

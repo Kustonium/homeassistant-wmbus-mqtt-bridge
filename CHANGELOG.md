@@ -1,3 +1,35 @@
+## 1.5.53
+
+### Added
+- diagnostics tab, and make a silent restart visible (a1aa748)
+- classify, validate and decrypt the Qundis walk-by block (opt-in) (f54b550)
+- **Qundis walk-by block (`qds_walkby_enabled`, off by default).** Qundis meters
+  pack their whole walk-by payload into one manufacturer record (`0DFF5F`, LVAR
+  0x35, 53 bytes) on CI=0x78 frames. Since the 2026 generation that block is
+  encrypted *inside* the record -- the frame carries no TPL header, so wM-Bus
+  correctly reports it as unencrypted and nothing flags it. The new option adds
+  a stage ahead of the decoder that:
+  - rejects any walk-by record it cannot validate, instead of letting the
+    decoder's single-byte gate (`blob[9] == 0x13`) match random ciphertext
+    1 time in 256 and publish it as a reading. Verified against wmbusmeters
+    3.0.0: the frame from upstream issue #2025 decodes to `total_m3 15430.611`
+    with `status: OK` on a meter reading 1.387 m3; through this stage the same
+    frame yields only `meter_datetime`.
+  - decrypts the block (AES-128-CBC) when the meter's ordinary AES key is
+    configured -- the same key its CI=0x7A frames already use, not a separate
+    walk-by secret -- and hands the decoder the plaintext record.
+  - classifies every telegram as `QDS_PLAINTEXT_OK`, `QDS_ENCRYPTED_PAYLOAD`,
+    `QDS_DECRYPT_FAILED`, `QDS_UNKNOWN_LAYOUT` or `QDS_NO_MFCT_BLOCK`, each with
+    the meter version, type, CI, the DIF/VIF records found and the reason for
+    rejection -- never a bare "no values".
+  With the option off the decode path is byte-for-byte unchanged.
+
+### Fixed
+- Strict BCD validation on manufacturer-block fields: a nibble above 9 now
+  rejects the record instead of being read as a decimal digit. The decoder's
+  `extractDVdouble()` maps hex A-F to "digits" 17-22, which is how ciphertext
+  bytes `9E D5 FE 13` became the reading 15430.611.
+
 ## 1.5.52
 
 ### Added

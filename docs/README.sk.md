@@ -429,6 +429,27 @@ zariadenie, ktoré dekodér nemá, keď mu telegramy podávate ako HEX.
 
 ---
 
+### Záložka Diagnostika
+
+Tabuľka podľa dosiek: rámce, merače, chýbajúce udalosti, reštarty za posledných
+24 hodín a čas od posledného rámca, plus jeden stav na dosku. Pod ňou karta
+každej dosky s detailmi a zrozumiteľným vysvetlením každého varovania.
+
+Dve veci, kvôli ktorým vznikla. **Medzery v sekvencii** dokazujú, že sa udalosť
+stratila medzi ESP a doplnkom - nehovoria však, či zlyhalo rádio, MQTT, sieť
+alebo odberateľ. A **tiché reštarty**: reštart vynuluje počítadlá dosky, takže
+bez osobitného záznamu maže vlastnú stopu. Keď sú reštarty zhruba 15 minút od
+seba, záložka to povie a pomenuje pravdepodobnú príčinu - predvolený
+`api.reboot_timeout` v ESPHome, ktorý dosku reštartuje vždy, keď nie je
+pripojený klient Native API. Prijímač len na MQTT žiadneho nemá.
+
+Stránka potrebuje firmvér publikujúci tému metadát `rx`; staršie dosky sa
+jednoducho neobjavia.
+
+Ak firmvér navyše pečiatkuje rámce časom príjmu, karta získa riadok **Hodiny
+ESP**: či sú hodiny dosky nastavené a ako veľmi sa ich čas príjmu líši od času
+doplnku.
+
 ### Export dôkazov o príjme z ESP (`esp_rx_api_enabled`, predvolene vypnuté)
 
 Firmvér publikujúci štruktúrované metadáta príjmu na `wmbus/<doska>/rx` umožňuje
@@ -454,6 +475,36 @@ nereštartuje. Pri vypnutej voľbe endpoint odpovedá HTTP 404.
 Medzery v sekvencii dokazujú, že sa niekde medzi ESP a odberateľom stratila
 udalosť. Samy osebe **nehovoria**, či bola príčinou rádiová časť, MQTT, sieť alebo
 odberateľ.
+
+### Blok walk-by Qundis (`qds_walkby_enabled`, predvolene vypnuté)
+
+Meradlá Qundis vkladajú celý obsah walk-by do jediného záznamu výrobcu
+(`0DFF5F`, 53 bajtov) v telegramoch CI=0x78. Od generácie 2026 je tento záznam
+šifrovaný **vnútri záznamu**, nie na vrstve wM-Bus: takéto telegramy nemajú
+hlavičku TPL, wM-Bus ich teda správne hlási ako nešifrované a nič ich neoznačí
+ako vyžadujúce kľúč.
+
+Bez tejto voľby nastávajú dva problémy a voľba rieši oba:
+
+- **Náhodné hodnoty so `status: OK`.** Dekodér rozpozná záznam walk-by podľa
+  jediného bajtu, ktorý náhodný šifrovaný obsah trafí raz za 256 telegramov —
+  teda približne každých osem hodín na meradlo. Potom číta šifrované bajty ako
+  číslo. Pri meradle s 1,387 m³ z toho vznikne `15430.611`, čo nenápadne
+  znehodnotí dlhodobé štatistiky Home Assistanta. So zapnutou voľbou sa
+  neoveriteľný záznam odovzdá dekodéru so zmeneným kľúčom, na ktorý nesedí žiadny
+  ovládač: odčet prepadne, hodiny meradla sa naďalej aktualizujú.
+- **Žiadne hodnoty a žiadne vysvetlenie.** Ak je AES kľúč meradla nastavený,
+  doplnok blok sám dešifruje a odovzdá dekodéru čitateľný záznam. Ak nie je, log
+  to povie priamo — spolu s verziou a typom meradla, poľom CI a nájdenými
+  záznamami.
+
+**Ide o bežný AES kľúč meradla** — ten istý, ktorý používajú jeho bežné telegramy
+(CI=0x7A). Žiadne osobitné tajomstvo pre walk-by neexistuje; ak sa bežné
+telegramy toho meradla dešifrujú, je to práve tento kľúč. Nesprávny kľúč je
+nahlásený ako nesprávny a nikdy nevedie k náhradnej hodnote.
+
+S vypnutou voľbou je dekódovanie bajt po bajte rovnaké ako predtým, inštalácia
+bez meradiel Qundis teda nie je dotknutá. Pozri `docs/ARCHITECTURE.md` §3.5.
 
 ### Drôtový M-Bus (sériová zbernica, predvolene vypnuté)
 

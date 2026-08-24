@@ -57,6 +57,7 @@ BASE="${WMBUS_BASE:-/data}"
 OPTIONS_JSON="${BASE}/options.json"
 ETC_DIR="${BASE}/etc"
 METER_DIR="${ETC_DIR}/wmbusmeters.d"
+
 CONF_FILE="${ETC_DIR}/wmbusmeters.conf"
 
 mkdir -p "${ETC_DIR}" "${METER_DIR}"
@@ -173,6 +174,11 @@ ESP_RX_HISTORY_FILE="${BASE}/esp_rx_history.jsonl"
 STATUS_ESP_RX_RECEPTION_FILE="${BASE}/status_esp_rx_reception.tsv"
 ESP_RF_RX_HISTORY_FILE="${BASE}/esp_rf_rx_history.jsonl"
 STATUS_ESP_RX_SEQUENCE_FILE="${BASE}/status_esp_rx_sequence.tsv"
+# One row per ESP boot. A restart resets the sequence counters, so without
+# this the evidence of the restart is destroyed by the restart itself.
+STATUS_ESP_RX_BOOTS_FILE="${BASE}/status_esp_rx_boots.tsv"
+# ESP-reported reception time against bridge time, per board.
+STATUS_ESP_RX_CLOCK_FILE="${BASE}/status_esp_rx_clock.tsv"
 SEARCH_MATCHES_FILE="${BASE}/search_matches.tsv"
 SEARCH_STATUS_FILE="${BASE}/search_status.json"
 # discovery_published flag — file-backed (see write_status_json). The raw-counter
@@ -223,7 +229,7 @@ RAW_RATE_CUR_MIN_COUNT=0
 # shellcheck disable=SC2034
 RAW_RATE_PREV_MIN_COUNT=0
 
-touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_METER_KEY_PROBLEM_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${STATUS_ESP_METER_DEVICE_FILE}" "${STATUS_ESP_METER_RECEPTION_FILE}" "${ESP_RX_HISTORY_FILE}" "${STATUS_ESP_RX_RECEPTION_FILE}" "${ESP_RF_RX_HISTORY_FILE}" "${STATUS_ESP_RX_SEQUENCE_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" "${STATUS_BROKER_ERROR_FILE}"
+touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_METER_KEY_PROBLEM_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${STATUS_ESP_METER_DEVICE_FILE}" "${STATUS_ESP_METER_RECEPTION_FILE}" "${ESP_RX_HISTORY_FILE}" "${STATUS_ESP_RX_RECEPTION_FILE}" "${ESP_RF_RX_HISTORY_FILE}" "${STATUS_ESP_RX_SEQUENCE_FILE}" "${STATUS_ESP_RX_BOOTS_FILE}" "${STATUS_ESP_RX_CLOCK_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" "${STATUS_BROKER_ERROR_FILE}"
 printf '0\n' > "${STATUS_OFFICIAL_METERS_COUNT_FILE}" 2>/dev/null || true
 # Remove any orphaned pending-reload marker left by a hard stop during deferred sleep.
 rm -rf "${BASE}/.reload_listen_pending" 2>/dev/null || true
@@ -236,6 +242,12 @@ mkdir -p "${BASE}/.preview_attempts" 2>/dev/null || true
 : > "${STATUS_ESP_METER_RECEPTION_FILE}" 2>/dev/null || true
 : > "${STATUS_ESP_RX_RECEPTION_FILE}" 2>/dev/null || true
 : > "${STATUS_ESP_RX_SEQUENCE_FILE}" 2>/dev/null || true
+# Boot history and the clock view are scoped to the bridge session like every
+# other counter here. The 24 h reboot window therefore starts over when the
+# add-on restarts - stated in ARCHITECTURE.md so the number is not read as
+# "the board never rebooted".
+: > "${STATUS_ESP_RX_BOOTS_FILE}" 2>/dev/null || true
+: > "${STATUS_ESP_RX_CLOCK_FILE}" 2>/dev/null || true
 # HA presence is session-scoped to the current broker. Clear stale state so a
 # previous run's "online" cannot mask a now-foreign broker until the retained
 # birth message (if any) re-arrives on subscribe.
@@ -281,6 +293,17 @@ RESTART_ON_EXIT="${RESTART_ON_EXIT:-$(json_get_bool '.restart_on_exit' 'true')}"
 # entity (sensor.wmbus_bridge_health) and a background worker asks the HA Core
 # API whether that entity exists. Off by default (read-only HA access is opt-in).
 VERIFY_HA_ENTITIES="${VERIFY_HA_ENTITIES:-$(json_get_bool '.verify_ha_entities' 'false')}"
+QDS_WALKBY_ENABLED="${QDS_WALKBY_ENABLED:-$(json_get_bool '.qds_walkby_enabled' 'false')}"
+# Optional Qundis walk-by stage, spliced between the RAW tee and wmbusmeters.
+# OFF (the default) is a plain `cat`: one long-lived process, no per-telegram
+# work, so an install that never sees a 0DFF5F block is unaffected. ON is one
+# long-lived python3 filter — deliberately not a fork per telegram, which would
+# hit the bash bookkeeping ceiling on the raw path. See rootfs/usr/bin/qds.py.
+if [[ "${QDS_WALKBY_ENABLED}" == "true" ]]; then
+  QDS_STAGE=( python3 -u /usr/bin/qds.py filter --meter-dir "${METER_DIR}" )
+else
+  QDS_STAGE=( cat )
+fi
 export VERIFY_HA_ENTITIES
 
 STATE_PREFIX="${STATE_PREFIX:-$(json_get '.state_prefix' 'wmbusmeters')}"
@@ -646,6 +669,7 @@ run_once() {
         }
       ' \
     | tee >(while IFS= read -r raw_line; do status_raw_seen "${raw_line}"; done >/dev/null) \
+    | "${QDS_STAGE[@]}" \
     | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
     | while IFS= read -r line; do
         if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
@@ -718,6 +742,7 @@ done
 else
   ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
     | tee >(while IFS= read -r raw_line; do status_raw_seen "${raw_line}"; done >/dev/null) \
+    | "${QDS_STAGE[@]}" \
     | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
     | while IFS= read -r line; do
         if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then

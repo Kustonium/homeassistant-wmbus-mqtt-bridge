@@ -135,6 +135,8 @@ STATUS_ESP_METER_RECEPTION_FILE = BASE / "status_esp_meter_reception.tsv"
 # for a meter, these replace /telegram-derived counts for that meter.
 STATUS_ESP_RX_RECEPTION_FILE = BASE / "status_esp_rx_reception.tsv"
 STATUS_ESP_RX_SEQUENCE_FILE = BASE / "status_esp_rx_sequence.tsv"
+STATUS_ESP_RX_BOOTS_FILE = BASE / "status_esp_rx_boots.tsv"
+STATUS_ESP_RX_CLOCK_FILE = BASE / "status_esp_rx_clock.tsv"
 ESP_RF_RX_HISTORY_FILE = BASE / "esp_rf_rx_history.jsonl"
 # ESP events TSV and per-event detail files (written by bridge.sh event subscriber)
 STATUS_ESP_EVENTS_FILE = BASE / "status_esp_events.tsv"
@@ -3283,6 +3285,212 @@ def status_model(data: dict) -> dict:
 # ─────────────────────────────────────────────────────────────────────────
 
 
+# ── Diagnostics tab ──────────────────────────────────────────────────────────
+#
+# One row per ESP, answering the two questions a multi-board setup actually
+# raises: which board is behaving differently, and has any of them been
+# restarting behind my back.
+#
+# The restart half exists because of a real miss: on 2026-08-20/21 four boards
+# rebooted every 15 minutes for a whole day and the only visible symptom was
+# "reception looks a bit worse". The cause was an empty `api:` block, where
+# ESPHome applies its default reboot_timeout of 15 minutes and restarts the
+# device whenever no Native API client is connected. A restart also resets the
+# sequence counters, so the event erases its own evidence unless it is recorded
+# separately - which is what status_esp_rx_boots.tsv is for.
+
+# Sequence gaps are only meaningful once there is enough sequence to judge.
+ESP_DIAG_MIN_EVENTS = 500
+# Fraction of expected events. Chosen so a handful of redeliveries cannot raise
+# an alert on a board that has been running for hours.
+ESP_DIAG_WARN_RATIO = 0.001
+ESP_DIAG_ALARM_RATIO = 0.01
+# A single hole this large is a different symptom from a trickle of losses:
+# it means something was down, not that the network is lossy.
+ESP_DIAG_ALARM_SINGLE_GAP = 100
+# A board that has just booted has no useful statistics yet.
+ESP_DIAG_BOOT_GRACE_S = 300
+ESP_DIAG_REBOOT_WINDOW_S = 86400
+ESP_DIAG_REBOOT_WARN = 1
+ESP_DIAG_REBOOT_ALARM = 3
+# ESPHome's api.reboot_timeout defaults to 15 minutes. Restarts clustered around
+# that interval are the signature of an MQTT-only receiver with a bare `api:`.
+ESP_DIAG_API_TIMEOUT_LO_S = 840
+ESP_DIAG_API_TIMEOUT_HI_S = 960
+
+
+def _esp_diag_boots() -> dict:
+    """Boot history per source, newest last."""
+    out: dict[str, list[dict]] = {}
+    for row in read_tsv(
+        STATUS_ESP_RX_BOOTS_FILE,
+        ["source", "boot_id", "first_seen", "last_seen", "events"],
+    ):
+        src = str(row.get("source") or "").strip()
+        if not src:
+            continue
+        out.setdefault(src, []).append({
+            "boot_id": str(row.get("boot_id") or ""),
+            "first_seen": safe_int(row.get("first_seen")),
+            "last_seen": safe_int(row.get("last_seen")),
+            "events": safe_int(row.get("events")),
+        })
+    for src in out:
+        out[src].sort(key=lambda b: b["first_seen"])
+    return out
+
+
+def _esp_diag_reboot_view(boots: list[dict], now: int) -> dict:
+    """Reboot count in the last 24 h plus the median interval between them."""
+    starts = [b["first_seen"] for b in boots if b["first_seen"] > 0]
+    starts.sort()
+    recent = [t for t in starts if now - t <= ESP_DIAG_REBOOT_WINDOW_S]
+    gaps = [b - a for a, b in zip(recent, recent[1:]) if b > a]
+    median_gap = 0
+    if gaps:
+        gaps.sort()
+        median_gap = gaps[len(gaps) // 2]
+    # The first boot we ever saw is not a reboot - it is the board appearing.
+    reboots = max(0, len(recent) - 1)
+    looks_like_api_timeout = bool(
+        reboots >= ESP_DIAG_REBOOT_ALARM
+        and ESP_DIAG_API_TIMEOUT_LO_S <= median_gap <= ESP_DIAG_API_TIMEOUT_HI_S
+    )
+    return {
+        "reboots_24h": reboots,
+        "median_interval_s": median_gap,
+        "looks_like_api_reboot_timeout": looks_like_api_timeout,
+        "boot_started_at": starts[-1] if starts else 0,
+    }
+
+
+def _esp_diag_clock() -> dict:
+    """The board's own reception time against the time the bridge saw it.
+
+    A board whose clock never synced still publishes frames, just without
+    received_at - and that is worth showing rather than leaving the reader to
+    wonder why one column is empty. A large skew is the other case: the frames
+    are arriving, but not when the board thinks they were received.
+    """
+    out: dict[str, dict] = {}
+    for row in read_tsv(
+        STATUS_ESP_RX_CLOCK_FILE,
+        ["source", "last_received", "last_bridge", "skew_s", "stamped", "unstamped"],
+    ):
+        src = str(row.get("source") or "").strip()
+        if not src:
+            continue
+        stamped = safe_int(row.get("stamped"))
+        unstamped = safe_int(row.get("unstamped"))
+        out[src] = {
+            "stamped": stamped,
+            "unstamped": unstamped,
+            "skew_s": safe_int(row.get("skew_s")),
+            # A board is only "synced" once it is actually stamping frames, not
+            # because it once did: firmware without the field looks identical to
+            # firmware whose clock never came up.
+            "synced": stamped > 0 and unstamped == 0,
+            "partial": stamped > 0 and unstamped > 0,
+        }
+    return out
+
+
+def _esp_diag_payload() -> dict:
+    """Per-board diagnostics for the Diagnostics tab."""
+    now = int(time.time())
+    seq_rows = {
+        str(r.get("source") or ""): r
+        for r in read_tsv(
+            STATUS_ESP_RX_SEQUENCE_FILE,
+            ["source", "boot_id", "last_seq", "missing", "out_of_order", "last_seen"],
+        )
+        if str(r.get("source") or "")
+    }
+    boots = _esp_diag_boots()
+    clocks = _esp_diag_clock()
+
+    frames: dict[str, int] = {}
+    meters: dict[str, int] = {}
+    for row in read_tsv(
+        STATUS_ESP_RX_RECEPTION_FILE,
+        ["id", "device", "first_seen", "last_seen", "count", "last_topic"],
+    ):
+        dev = str(row.get("device") or "").strip()
+        cnt = safe_int(row.get("count"))
+        if not dev or cnt <= 0:
+            continue
+        frames[dev] = frames.get(dev, 0) + cnt
+        meters[dev] = meters.get(dev, 0) + 1
+
+    names = set(seq_rows) | set(boots) | set(frames)
+    rows = []
+    for name in sorted(names):
+        seq_row = seq_rows.get(name) or {}
+        last_seq = safe_int(seq_row.get("last_seq"))
+        missing = safe_int(seq_row.get("missing"))
+        ooo = safe_int(seq_row.get("out_of_order"))
+        last_seen = safe_int(seq_row.get("last_seen"))
+        reboot = _esp_diag_reboot_view(boots.get(name) or [], now)
+
+        expected = last_seq + missing
+        young = reboot["boot_started_at"] > 0 and now - reboot["boot_started_at"] < ESP_DIAG_BOOT_GRACE_S
+        ratio = (missing / expected) if expected > 0 else 0.0
+
+        reasons = []
+        status = "ok"
+        if last_seq < ESP_DIAG_MIN_EVENTS or young:
+            status = "unknown"
+            reasons.append("not_enough_data")
+        else:
+            if ratio > ESP_DIAG_ALARM_RATIO or missing >= ESP_DIAG_ALARM_SINGLE_GAP:
+                status = "alarm"
+                reasons.append("sequence_gaps")
+            elif ratio > ESP_DIAG_WARN_RATIO:
+                status = "warn"
+                reasons.append("sequence_gaps")
+
+        if reboot["reboots_24h"] >= ESP_DIAG_REBOOT_ALARM:
+            status = "alarm"
+            reasons.append("reboot_loop")
+        elif reboot["reboots_24h"] >= ESP_DIAG_REBOOT_WARN and status in ("ok", "unknown"):
+            status = "warn"
+            reasons.append("reboots")
+        if reboot["looks_like_api_reboot_timeout"]:
+            reasons.append("api_reboot_timeout")
+
+        rows.append({
+            "name": name,
+            "boot_id": str(seq_row.get("boot_id") or ""),
+            "last_seq": last_seq,
+            "missing": missing,
+            "out_of_order": ooo,
+            "gap_ratio_pct": round(ratio * 100, 3),
+            "frames": frames.get(name, 0),
+            "meters": meters.get(name, 0),
+            "last_seen": last_seen,
+            "age_s": max(0, now - last_seen) if last_seen else 0,
+            "uptime_s": max(0, now - reboot["boot_started_at"]) if reboot["boot_started_at"] else 0,
+            "reboots_24h": reboot["reboots_24h"],
+            "reboot_median_interval_s": reboot["median_interval_s"],
+            "status": status,
+            "clock": clocks.get(name) or {},
+            "reasons": reasons,
+        })
+
+    return {
+        "now": now,
+        "devices": rows,
+        "thresholds": {
+            "min_events": ESP_DIAG_MIN_EVENTS,
+            "warn_ratio_pct": ESP_DIAG_WARN_RATIO * 100,
+            "alarm_ratio_pct": ESP_DIAG_ALARM_RATIO * 100,
+            "alarm_single_gap": ESP_DIAG_ALARM_SINGLE_GAP,
+            "reboot_warn": ESP_DIAG_REBOOT_WARN,
+            "reboot_alarm": ESP_DIAG_REBOOT_ALARM,
+        },
+    }
+
+
 def _esp_payload() -> dict:
     """Assemble the ESP section of /api/app.
 
@@ -3565,6 +3773,7 @@ def frontend_payload(lang: str = DEFAULT_LANG, include_i18n: bool = True) -> dic
         "model": status_model(data),
         "search_config": search_config_model(data),
         "esp": _esp_payload(),
+        "esp_diag": _esp_diag_payload(),
         # The nav needs this before anything M-Bus specific is fetched. Without
         # it the tab could never appear: its visibility flag lived only in the
         # /api/mbus payload, which is loaded lazily when the tab is opened —

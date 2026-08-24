@@ -13,6 +13,7 @@
     // ["search", "nav_search", "SR"],
     ["logs", "nav_logs", "LG"],
     ["esp-logs", "nav_esp_logs", "EL"],
+    ["diagnostics", "nav_diagnostics", "DG"],
     ["settings", "nav_settings", "ST"],
     ["about", "nav_about", "AB"],
   ];
@@ -2561,6 +2562,158 @@
     `;
   }
 
+  // ── Diagnostics tab ────────────────────────────────────────────────────────
+  //
+  // Comparison first, detail second. With several boards the opening question
+  // is never "what is board X doing" but "which one behaves differently", and
+  // four stacked cards answer that badly.
+  //
+  // The restart column exists because a restart used to be invisible: it resets
+  // the sequence counters, so the event erases its own evidence. Four boards
+  // here rebooted every 15 minutes for a whole day and the only symptom was
+  // slightly worse reception.
+  function diagStatusPill(status) {
+    const map = {
+      ok: ["ok", t("diag_status_ok", "OK")],
+      warn: ["warn", t("diag_status_warn", "needs attention")],
+      alarm: ["warn", t("diag_status_alarm", "alarm")],
+      unknown: ["", t("diag_status_unknown", "not enough data")],
+    };
+    const pair = map[status] || map.unknown;
+    return `<span class="pill ${pair[0]}" style="font-size:11px;">${escapeHtml(pair[1])}</span>`;
+  }
+
+  function diagAge(seconds) {
+    const n = Number(seconds) || 0;
+    if (n <= 0) return "-";
+    if (n < 120) return `${Math.round(n)} s`;
+    if (n < 7200) return `${Math.round(n / 60)} min`;
+    return `${Math.round(n / 3600)} h`;
+  }
+
+  function diagReasonNotes(device) {
+    const reasons = asArray(device.reasons);
+    const notes = [];
+    if (reasons.indexOf("api_reboot_timeout") >= 0) {
+      notes.push(t("diag_reason_api_reboot_timeout", "Restarts are spaced about 15 minutes apart. That is ESPHome's default api.reboot_timeout, which restarts the board whenever no Native API client is connected - and an MQTT-only receiver has none. Set reboot_timeout: 0s under api: in the firmware YAML."));
+    } else if (reasons.indexOf("reboot_loop") >= 0) {
+      notes.push(t("diag_reason_reboot_loop", "The board restarted several times in the last 24 hours. Reception statistics reset on every restart."));
+    } else if (reasons.indexOf("reboots") >= 0) {
+      notes.push(t("diag_reason_reboots", "The board restarted in the last 24 hours."));
+    }
+    if (reasons.indexOf("sequence_gaps") >= 0) {
+      notes.push(t("diag_reason_gaps", "Events are missing from this board's sequence. That proves an event was lost between the ESP and this add-on; it does not say the radio was at fault."));
+    }
+    if (reasons.indexOf("not_enough_data") >= 0) {
+      notes.push(t("diag_reason_young", "Too few events since the last restart to judge anything yet."));
+    }
+    return notes;
+  }
+
+  // A board with no clock still works; it just cannot say when a frame
+  // arrived. Worth stating, because an empty timestamp column otherwise
+  // reads as a bug in the add-on.
+  function diagClockText(clock) {
+    const c = clock || {};
+    if (!c.stamped && !c.unstamped) return "-";
+    if (!c.stamped) return t("diag_clock_none", "no timestamp");
+    const skew = Math.abs(Number(c.skew_s) || 0);
+    const skewText = `${skew} s`;
+    if (c.partial) return `${t("diag_clock_partial", "partly stamped")} (${skewText})`;
+    return `${t("diag_clock_synced", "synced")} (${skewText})`;
+  }
+
+  function diagDeviceCard(device) {
+    const notes = diagReasonNotes(device);
+    const noteHtml = notes.length
+      ? `<div style="margin-top:10px;display:flex;flex-direction:column;gap:6px;">${notes.map(n => `<div style="font-size:12px;color:#cbd9e1;background:#0e1a23;border:1px dashed #2c4555;border-radius:6px;padding:8px 10px;">${escapeHtml(n)}</div>`).join("")}</div>`
+      : "";
+    const kv = [
+      [t("diag_frames", "Frames"), String(device.frames || 0)],
+      [t("diag_meters", "Meters"), String(device.meters || 0)],
+      [t("diag_last_frame", "Last frame"), diagAge(device.age_s)],
+      [t("diag_uptime", "Uptime"), diagAge(device.uptime_s)],
+      [t("diag_boot_id", "boot_id"), String(device.boot_id || "-")],
+      [t("diag_last_seq", "Last seq"), String(device.last_seq || 0)],
+      [t("diag_missing", "Missing events"), String(device.missing || 0)],
+      [t("diag_out_of_order", "Out of order"), String(device.out_of_order || 0)],
+      [t("diag_reboots", "Restarts (24 h)"), String(device.reboots_24h || 0)],
+      [t("diag_clock", "ESP clock"), diagClockText(device.clock)],
+    ];
+    return `
+      <div class="card" style="margin-top:10px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+          <strong>${escapeHtml(device.name || "?")}</strong>
+          ${diagStatusPill(device.status)}
+        </div>
+        <table style="width:100%;font-size:13px;">
+          ${kv.map(pair => `<tr><td style="color:#9eafba;padding:2px 0;">${escapeHtml(pair[0])}</td><td style="text-align:right;padding:2px 0;">${escapeHtml(pair[1])}</td></tr>`).join("")}
+        </table>
+        ${noteHtml}
+      </div>`;
+  }
+
+  function espDiagPage() {
+    const diag = (state.data || {}).esp_diag || {};
+    const devices = asArray(diag.devices);
+    if (!devices.length) {
+      return `
+        <section class="section">
+          <div class="section-head"><h2>${escapeHtml(t("nav_diagnostics", "Diagnostics"))}</h2></div>
+          <div class="empty">${escapeHtml(t("diag_no_devices", "No board has published receive metadata yet. This page needs firmware that publishes the rx topic."))}</div>
+        </section>`;
+    }
+    const counts = {ok: 0, warn: 0, alarm: 0, unknown: 0};
+    devices.forEach(d => { counts[d.status] = (counts[d.status] || 0) + 1; });
+    const summary = [
+      counts.ok ? `<span class="pill ok" style="font-size:11px;">${counts.ok} ${escapeHtml(t("diag_status_ok", "OK"))}</span>` : "",
+      counts.warn ? `<span class="pill warn" style="font-size:11px;">${counts.warn} ${escapeHtml(t("diag_status_warn", "needs attention"))}</span>` : "",
+      counts.alarm ? `<span class="pill warn" style="font-size:11px;">${counts.alarm} ${escapeHtml(t("diag_status_alarm", "alarm"))}</span>` : "",
+      counts.unknown ? `<span class="pill" style="font-size:11px;">${counts.unknown} ${escapeHtml(t("diag_status_unknown", "not enough data"))}</span>` : "",
+    ].join(" ");
+
+    const rows = devices.map(d => `
+      <tr>
+        <td>${escapeHtml(d.name || "?")}</td>
+        <td style="text-align:right;">${escapeHtml(String(d.frames || 0))}</td>
+        <td style="text-align:right;">${escapeHtml(String(d.meters || 0))}</td>
+        <td style="text-align:right;">${escapeHtml(String(d.missing || 0))}</td>
+        <td style="text-align:right;">${escapeHtml(String(d.reboots_24h || 0))}</td>
+        <td style="text-align:right;">${escapeHtml(diagAge(d.age_s))}</td>
+        <td>${diagStatusPill(d.status)}</td>
+      </tr>`).join("");
+
+    return `
+      <section class="section">
+        <div class="section-head">
+          <h2>${escapeHtml(t("nav_diagnostics", "Diagnostics"))}</h2>
+          <span>${summary}</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>${escapeHtml(t("diag_board", "Board"))}</th>
+              <th style="text-align:right;">${escapeHtml(t("diag_frames", "Frames"))}</th>
+              <th style="text-align:right;">${escapeHtml(t("diag_meters", "Meters"))}</th>
+              <th style="text-align:right;">${escapeHtml(t("diag_missing", "Missing events"))}</th>
+              <th style="text-align:right;">${escapeHtml(t("diag_reboots", "Restarts (24 h)"))}</th>
+              <th style="text-align:right;">${escapeHtml(t("diag_last_frame", "Last frame"))}</th>
+              <th>${escapeHtml(t("diag_state", "State"))}</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div style="font-size:11px;color:#7a8a96;margin-top:8px;">
+          ${escapeHtml(t("diag_gap_caveat", "A gap in the sequence means an event was lost between the ESP and this add-on. It does not identify the radio, MQTT, the network or the subscriber as the cause."))}
+        </div>
+      </section>
+      <section class="section">
+        <div class="section-head"><h2>${escapeHtml(t("diag_per_board", "Per board"))}</h2></div>
+        ${devices.map(diagDeviceCard).join("")}
+      </section>
+    `;
+  }
+
   function espLogsPage() {
     const data = state.data || {};
     const esp = data.esp || {};
@@ -3910,6 +4063,8 @@
         return shell(logsPage());
       case "esp-logs":
         return shell(espLogsPage());
+      case "diagnostics":
+        return shell(espDiagPage());
       case "settings":
         return shell(settingsPage());
       case "about":
