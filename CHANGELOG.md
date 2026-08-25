@@ -1,3 +1,8 @@
+## 1.5.59
+
+### Fixed
+- pin the coverage sensor entity_id with object_id (910339b)
+
 ## 1.5.58
 
 ### Added

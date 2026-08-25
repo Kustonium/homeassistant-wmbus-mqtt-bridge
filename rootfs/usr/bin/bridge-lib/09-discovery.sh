@@ -477,16 +477,23 @@ publish_esp_coverage() {
     _attr_topic="${STATE_PREFIX}/bridge/coverage/${_src}/attrs"
 
     if [[ -z "${ESP_COVERAGE_CFG_SENT[${_src}]+x}" ]]; then
-      # Explicit name instead of has_entity_name: it yields
-      # sensor.wmbus_<board>_meters_heard, matching the naming the ESP diagnostic
-      # sensors already use, so both sit together in one Grafana query.
+      # object_id pins the entity_id to sensor.wmbus_<board>_meters_heard,
+      # matching the ESP diagnostic sensors so both sit in one Grafana query.
+      # Without it HA builds the id from the device name plus the entity name
+      # and yields sensor.wmbus_bridge_wmbus_<board>_meters_heard - "wmbus"
+      # twice. has_entity_name keeps the friendly name sane at the same time.
+      # This is the doubling the canary entity below was written to avoid, and
+      # this sensor shipped in 1.5.58 without either guard.
       _payload="$(jq -c -n \
-        --arg name "wmbus ${_src} meters_heard" \
+        --arg name "${_src} meters heard" \
+        --arg objid "wmbus_${_src}_meters_heard" \
         --arg uniq "${_uniq}" \
         --arg st "${_state_topic}" \
         --arg at "${_attr_topic}" \
         '{
            name: $name,
+           has_entity_name: true,
+           object_id: $objid,
            unique_id: $uniq,
            state_topic: $st,
            json_attributes_topic: $at,
