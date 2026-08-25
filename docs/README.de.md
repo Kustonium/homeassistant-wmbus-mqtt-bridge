@@ -234,6 +234,15 @@ angezeigte Name folgt. Zwei Zähler dürfen nicht denselben Namen tragen: der De
 schreibt eine Datei pro Name, deshalb wird das Speichern abgelehnt, statt den ersten
 Zähler stillschweigend überschreiben zu lassen.
 
+**Wie viele Zähler hört eine Platine wirklich?** Jede ESP-Platine bekommt einen
+Sensor `wmbus <Platine> meters_heard`: die Anzahl verschiedener Zähler seit dem
+Start des Add-ons, mit der Gesamtzahl über alle Platinen und einem
+Abdeckungsprozentsatz als Attribute. Er wird wie jeder Messwert aufgezeichnet
+und landet damit in den Langzeitstatistiken und in InfluxDB/Grafana. Das ist
+die Zahl, nach der man Platinen vergleichen sollte - der Anteil verworfener
+Frames wird *besser*, wenn eine Platine taub wird, denn ein Frame, den sie nie
+zu empfangen versucht hat, zählt auch nie als verworfen.
+
 **Nicht unterstützter Zähler?** Wenn ein Kandidat nie dekodiert wird (unbekannter
 Treiber / „unknown format signature"), nutzen Sie den Button **Meldung…** in
 seiner Zeile: das Add-on erstellt einen fertigen Issue-Block für das

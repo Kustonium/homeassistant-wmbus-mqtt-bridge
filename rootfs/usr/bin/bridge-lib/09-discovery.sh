@@ -428,6 +428,106 @@ clear_meter_discovery() {
       -t "${DISCOVERY_PREFIX}/binary_sensor/wmbus_${id}/+/config" 2>/dev/null || true)
 }
 
+# Per-ESP coverage sensor: how many DISTINCT meters that board has heard this
+# session, published as its own Home Assistant entity.
+#
+# WHY THIS EXISTS: unique-meter coverage is the measurement this project actually
+# cares about - it is what separates a sensitive board from a deaf one, and
+# drop_pct notoriously IMPROVES when reception gets worse, because a frame that is
+# never attempted is never counted as dropped. Yet that number lived only in
+# status_esp_rx_reception.tsv, which is session-scoped and wiped on every add-on
+# restart, while far less interesting frame counters already had permanent history
+# in HA. Publishing it as a measurement sensor puts it into HA long-term
+# statistics - and therefore InfluxDB and Grafana - like any other sensor.
+#
+# The count is session-scoped by nature: it can only mean "distinct meters since
+# this session began". Recorded over time that is exactly what is wanted - the
+# curve climbs while a board discovers meters and its plateau is real coverage.
+declare -A ESP_COVERAGE_CFG_SENT
+ESP_COVERAGE_LAST_S=0
+ESP_COVERAGE_INTERVAL_S="${ESP_COVERAGE_INTERVAL_S:-60}"
+
+publish_esp_coverage() {
+  [[ "${DISCOVERY_ENABLED:-true}" == "true" ]] || return 0
+  [[ -s "${STATUS_ESP_RX_RECEPTION_FILE}" ]] || return 0
+
+  # Throttled: the heartbeat ticker runs every few seconds and this rereads the
+  # whole reception table. Once a minute is plenty for a number that moves in
+  # steps of one.
+  local _now
+  _now="$(epoch_now)"
+  (( _now - ESP_COVERAGE_LAST_S >= ESP_COVERAGE_INTERVAL_S )) || return 0
+  ESP_COVERAGE_LAST_S="${_now}"
+
+  # Column 1 = meter id, column 2 = source board (_upsert_esp_meter_reception).
+  local _total
+  _total="$(awk -F '\t' 'NF>=2 && $1!="" {a[$1]=1} END{print length(a)+0}' "${STATUS_ESP_RX_RECEPTION_FILE}" 2>/dev/null || echo 0)"
+  [[ "${_total}" =~ ^[0-9]+$ ]] && (( _total > 0 )) || return 0
+
+  local _src _meters _frames _uniq _cfg_topic _state_topic _attr_topic _payload
+  while IFS=$'\t' read -r _src _meters _frames; do
+    [[ -n "${_src}" ]] || continue
+    # The board name arrives from an MQTT topic segment, so validate it before it
+    # becomes a unique_id and a topic of ours.
+    [[ "${_src}" =~ ^[A-Za-z0-9_-]+$ ]] || continue
+
+    _uniq="wmbus_${_src}_meters_heard"
+    _cfg_topic="${DISCOVERY_PREFIX}/sensor/${_uniq}/config"
+    _state_topic="${STATE_PREFIX}/bridge/coverage/${_src}/state"
+    _attr_topic="${STATE_PREFIX}/bridge/coverage/${_src}/attrs"
+
+    if [[ -z "${ESP_COVERAGE_CFG_SENT[${_src}]+x}" ]]; then
+      # Explicit name instead of has_entity_name: it yields
+      # sensor.wmbus_<board>_meters_heard, matching the naming the ESP diagnostic
+      # sensors already use, so both sit together in one Grafana query.
+      _payload="$(jq -c -n \
+        --arg name "wmbus ${_src} meters_heard" \
+        --arg uniq "${_uniq}" \
+        --arg st "${_state_topic}" \
+        --arg at "${_attr_topic}" \
+        '{
+           name: $name,
+           unique_id: $uniq,
+           state_topic: $st,
+           json_attributes_topic: $at,
+           state_class: "measurement",
+           icon: "mdi:access-point-network",
+           device: {
+             identifiers: ["wmbus_bridge_coverage"],
+             name: "wMBus Bridge",
+             model: "per-board meter coverage",
+             manufacturer: "wmbus-mqtt-bridge"
+           }
+         }' 2>/dev/null)"
+      if [[ -n "${_payload}" ]] && mqtt_pub "${_cfg_topic}" "${_payload}" "${DISCOVERY_RETAIN}"; then
+        ESP_COVERAGE_CFG_SENT["${_src}"]=1
+      fi
+    fi
+
+    mqtt_pub "${_state_topic}" "${_meters}" "true" || true
+    # coverage_pct is measured against every meter ANY board heard, so it answers
+    # "how much of what is out there does this one get?" - the question a second
+    # board is bought to answer.
+    _payload="$(jq -c -n \
+      --argjson meters "${_meters}" \
+      --argjson frames "${_frames}" \
+      --argjson total "${_total}" \
+      '{meters_heard: $meters, frames: $frames, meters_total_all_boards: $total,
+        coverage_pct: (if $total > 0 then (($meters * 1000 / $total) | floor) / 10 else 0 end)}' 2>/dev/null)"
+    [[ -n "${_payload}" ]] && { mqtt_pub "${_attr_topic}" "${_payload}" "true" || true; }
+  done < <(
+    awk -F '\t' '
+      NF>=2 && $1!="" && $2!="" {
+        k = $2 SUBSEP $1
+        if (!(k in seen)) { seen[k] = 1; meters[$2]++ }
+        frames[$2] += ($5 ~ /^[0-9]+$/) ? $5 : 0
+      }
+      END { for (s in meters) printf "%s\t%d\t%d\n", s, meters[s], frames[s] }
+    ' "${STATUS_ESP_RX_RECEPTION_FILE}" 2>/dev/null
+  )
+}
+
+
 # Canary entity for the opt-in HA verification (verify_ha_entities).
 # A hidden diagnostic sensor with a STABLE entity_id (sensor.wmbus_bridge_health)
 # that lets the verification worker ask HA Core API "did you create this entity?".

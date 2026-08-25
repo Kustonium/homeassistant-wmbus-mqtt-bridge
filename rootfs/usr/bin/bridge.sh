@@ -471,6 +471,9 @@ start_esp_subscribers
       touch "${BASE}/.reload_pipeline" 2>/dev/null || true
       status_add_event "ok" "Factory reset applied — add-on returned to post-install state" || true
     fi
+    # Per-board meter coverage -> HA entity -> long-term statistics.
+    # Throttles itself, so calling it on every tick is fine.
+    publish_esp_coverage || true
     sleep "${HEARTBEAT_INTERVAL_SECONDS:-10}"
   done
 ) &

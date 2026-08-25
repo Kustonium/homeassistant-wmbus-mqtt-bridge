@@ -226,6 +226,14 @@ jako `sensor.kuchyne_total_m3` si toto ID ponechá i po přejmenování zaříze
 dekodér zapisuje jeden soubor na název, proto je uložení odmítnuto, místo aby druhý
 měřič tiše přepsal první.
 
+**Kolik měřičů deska opravdu slyší?** Každá deska ESP dostane senzor
+`wmbus <deska> meters_heard`: počet různých měřičů slyšených od startu doplňku,
+v atributech součet přes všechny desky a procento pokrytí. Zaznamenává se jako
+každá jiná veličina, takže se dostane do dlouhodobých statistik i do
+InfluxDB/Grafany. Právě podle tohoto čísla má smysl desky porovnávat - podíl
+zahozených rámců se *zlepší*, když deska ohluchne, protože rámec, který se
+nepokusila přijmout, se nikdy nezapočítá jako zahozený.
+
 **Nepodporovaný měřič?** Pokud se kandidát nikdy nedekóduje (neznámý driver /
 „unknown format signature"), použijte tlačítko **Hlášení…** v jeho řádku:
 add-on sestaví hotový blok hlášení pro upstream projekt wmbusmeters (surový

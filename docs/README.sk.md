@@ -225,6 +225,14 @@ pri premenovaní neprepočítava existujúce `entity_id` — entita vytvorená a
 dekodér zapisuje jeden súbor na názov, preto je uloženie odmietnuté, namiesto toho
 aby druhý merač ticho prepísal prvý.
 
+**Koľko meračov doska naozaj počuje?** Každá doska ESP dostane senzor
+`wmbus <doska> meters_heard`: počet rôznych meračov počutých od štartu doplnku,
+v atribútoch súčet cez všetky dosky a percento pokrytia. Zaznamenáva sa ako
+každá iná veličina, takže sa dostane do dlhodobých štatistík aj do
+InfluxDB/Grafany. Práve podľa tohto čísla má zmysel dosky porovnávať - podiel
+zahodených rámcov sa *zlepší*, keď doska ohluchne, lebo rámec, ktorý sa
+nepokúsila prijať, sa nikdy nezaráta ako zahodený.
+
 **Nepodporovaný merač?** Ak sa kandidát nikdy nedekóduje (neznámy driver /
 „unknown format signature"), použite tlačidlo **Hlásenie…** v jeho riadku:
 add-on zostaví hotový blok hlásenia pre upstream projekt wmbusmeters (surový

@@ -230,6 +230,15 @@ to *Bathroom*, and only the displayed name follows. Two meters cannot share a
 name: the decoder writes one file per name, so the save is refused instead of
 letting the second meter silently overwrite the first.
 
+**How many meters does each board actually hear?** Every ESP board gets a
+`wmbus <board> meters_heard` sensor: the number of distinct meters it has
+heard since the add-on started, with the all-board total and a coverage
+percentage as attributes. It is recorded like any other measurement, so it
+lands in long-term statistics and in InfluxDB/Grafana if you use them. This
+is the number worth comparing boards on - the percentage of dropped frames
+gets *better* when a board goes deaf, because a frame it never tried to
+receive is never counted as dropped.
+
 **Unsupported meter?** If a candidate never decodes (unknown driver / "unknown
 format signature"), use the **Report…** button in its row: the add-on builds a
 ready-to-paste issue block for the upstream wmbusmeters project (raw telegram +

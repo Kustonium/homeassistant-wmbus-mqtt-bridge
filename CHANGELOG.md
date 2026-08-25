@@ -1,3 +1,11 @@
+## 1.5.58
+
+### Added
+- publish per-board meter coverage as an HA sensor (4b32c1a)
+
+### Fixed
+- let shellcheck resolve the sourced lib (62710b3)
+
 ## 1.5.57
 
 ### Added

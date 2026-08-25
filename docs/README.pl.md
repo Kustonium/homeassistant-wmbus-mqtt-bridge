@@ -231,6 +231,14 @@ zmienia się tylko wyświetlana nazwa. Dwa liczniki nie mogą mieć tej samej na
 dekoder zapisuje jeden plik na nazwę, więc zapis jest odrzucany zamiast pozwolić,
 by drugi licznik po cichu nadpisał pierwszy.
 
+**Ile liczników realnie słyszy każda płytka?** Każda płytka ESP dostaje sensor
+`wmbus <płytka> meters_heard`: liczbę różnych liczników usłyszanych od startu
+dodatku, a w atrybutach sumę ze wszystkich płytek i procent pokrycia. Jest
+zapisywany jak każdy inny pomiar, więc trafia do statystyk długoterminowych
+i do InfluxDB/Grafany. To jest liczba, po której warto porównywać płytki —
+procent odrzuconych ramek *poprawia się*, gdy płytka głuchnie, bo ramka,
+której nie próbowała odebrać, nie liczy się jako odrzucona.
+
 **Niewspierany licznik?** Jeśli kandydat nigdy się nie dekoduje (nieznany driver
 / „unknown format signature"), użyj przycisku **Zgłoszenie…** w jego wierszu:
 add-on buduje gotowy do wklejenia blok zgłoszenia do projektu wmbusmeters

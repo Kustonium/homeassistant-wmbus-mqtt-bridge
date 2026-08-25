@@ -517,7 +517,24 @@ configuration directories remain intact.
 | Field Discovery | `<discovery_prefix>/sensor/wmbus_<id>/<field>/config` |
 | Status text | `<discovery_prefix>/sensor/wmbus_<id>/status/config` |
 | Status problem | `<discovery_prefix>/binary_sensor/wmbus_<id>/status_problem/config` |
+| Board coverage | `<state_prefix>/bridge/coverage/<board>/state` (+ `/attrs`) |
+| Board coverage Discovery | `<discovery_prefix>/sensor/wmbus_<board>_meters_heard/config` |
 | Search results | `search_topic`, default `wmbus/search/candidates` |
+
+Per-board coverage is published once a minute as its own measurement sensor:
+the count of **distinct meters** that board has heard this session, with
+`meters_total_all_boards` and `coverage_pct` as attributes. It exists because
+that number is the one worth reasoning about - it separates a sensitive board
+from a deaf one, whereas `drop_pct` improves when reception gets worse, since a
+frame that is never attempted is never counted as dropped. Before this it lived
+only in `status_esp_rx_reception.tsv`, which resets with the session, so every
+version bump destroyed it while frame counters kept permanent history in Home
+Assistant. As a `state_class: measurement` sensor it now reaches HA long-term
+statistics, and from there InfluxDB and Grafana.
+
+The count is session-scoped by nature - it can only mean "distinct meters since
+this session began". Recorded over time that is the useful shape: the curve
+climbs while a board discovers meters and its plateau is its real coverage.
 
 The state payload is the decoded JSON from `wmbusmeters`. Metadata fields are
 kept as attributes, while numeric fields receive Discovery sensors. The decoder
