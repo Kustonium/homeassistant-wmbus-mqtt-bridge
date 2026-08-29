@@ -134,7 +134,9 @@ _upsert_esp_rx_sequence() {
         $1 == source {
           missing = 0
           out_of_order = 0
-          if ($2 == boot_id) {
+          # Prefix both operands so awk cannot interpret hex-looking boot IDs
+          # such as 651E6871 as overflowing scientific notation.
+          if ("boot:" $2 == "boot:" boot_id) {
             last = ($3 ~ /^[0-9]+$/) ? $3 : 0
             missing = ($4 ~ /^[0-9]+$/) ? $4 : 0
             out_of_order = ($5 ~ /^[0-9]+$/) ? $5 : 0
@@ -176,7 +178,9 @@ _upsert_esp_rx_boot() {
     if ! awk -F $'\t' -v OFS=$'\t' \
       -v source="${source}" -v boot_id="${boot_id}" -v now="${now}" '
         BEGIN { updated = 0 }
-        $1 == source && $2 == boot_id {
+        # Force a string comparison. BusyBox awk otherwise treats values such
+        # as 651E6871 and 999E9999 as equal numeric infinities.
+        $1 == source && "boot:" $2 == "boot:" boot_id {
           events = ($5 ~ /^[0-9]+$/) ? $5 + 1 : 1
           print $1, $2, $3, now, events
           updated = 1

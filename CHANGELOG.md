@@ -1,3 +1,8 @@
+## 1.5.60
+
+### Other (review)
+- Fix awk boot ID comparisons (26c9b93)
+
 ## 1.5.59
 
 ### Fixed
