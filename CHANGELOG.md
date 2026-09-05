@@ -1,3 +1,8 @@
+## 1.5.61
+
+### Other (review)
+- Do not flag a single restart as needing attention (c705be4)
+
 ## 1.5.60
 
 ### Other (review)
