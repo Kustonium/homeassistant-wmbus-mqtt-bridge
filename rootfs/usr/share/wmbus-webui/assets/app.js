@@ -2599,7 +2599,7 @@
     } else if (reasons.indexOf("reboot_loop") >= 0) {
       notes.push(t("diag_reason_reboot_loop", "The board restarted several times in the last 24 hours. Reception statistics reset on every restart."));
     } else if (reasons.indexOf("reboots") >= 0) {
-      notes.push(t("diag_reason_reboots", "The board restarted in the last 24 hours."));
+      notes.push(t("diag_reason_reboots", "The board restarted more than once in the last 24 hours. A single restart is not flagged, because reflashing the board causes one."));
     }
     if (reasons.indexOf("sequence_gaps") >= 0) {
       notes.push(t("diag_reason_gaps", "Events are missing from this board's sequence. That proves an event was lost between the ESP and this add-on; it does not say the radio was at fault."));

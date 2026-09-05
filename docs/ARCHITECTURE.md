@@ -735,8 +735,15 @@ Thresholds, deliberately conservative:
 |---|---|
 | not enough data | fewer than 500 events this boot, or less than 5 min since boot |
 | OK | gaps at or below 0.1 % of expected events |
-| needs attention | gaps above 0.1 %, or 1-2 restarts in 24 h |
+| needs attention | gaps above 0.1 %, or 2 restarts in 24 h |
 | alarm | gaps above 1 %, a single gap of 100+, or 3+ restarts in 24 h |
+
+A single restart in 24 h is deliberately not flagged. Reflashing a board
+restarts it, and so does a power blip, so warning on one turned the column
+amber on every board in a fleet that was being worked on - and a state that is
+amber on everything says nothing. The reboot loop this feature was built for is
+still caught twice: by the 3+ threshold, and by the interval pattern check that
+recognises `api.reboot_timeout` restarts regardless of count.
 
 
 Firmware that sets `received_at` in the `rx` payload lets the tab show an **ESP

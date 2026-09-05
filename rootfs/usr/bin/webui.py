@@ -3370,7 +3370,16 @@ ESP_DIAG_ALARM_SINGLE_GAP = 100
 # A board that has just booted has no useful statistics yet.
 ESP_DIAG_BOOT_GRACE_S = 300
 ESP_DIAG_REBOOT_WINDOW_S = 86400
-ESP_DIAG_REBOOT_WARN = 1
+# One restart in 24 h is normal operation, not a symptom: reflashing a board
+# restarts it, and so does a power blip. Warning on a single restart made the
+# status column light up on every board in a fleet that was being worked on,
+# and a status that is amber on everything carries no information.
+#
+# Nothing is lost by starting at two. The case this whole feature was built
+# for - four boards restarting every 15 minutes on a bare `api:` block - is
+# caught twice over: by ESP_DIAG_REBOOT_ALARM below, and by the interval
+# pattern check that recognises that signature regardless of count.
+ESP_DIAG_REBOOT_WARN = 2
 ESP_DIAG_REBOOT_ALARM = 3
 # ESPHome's api.reboot_timeout defaults to 15 minutes. Restarts clustered around
 # that interval are the signature of an MQTT-only receiver with a bare `api:`.
