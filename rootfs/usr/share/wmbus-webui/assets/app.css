@@ -1636,6 +1636,36 @@ tr:last-child td {
   color: var(--text);
 }
 
+/* Time and reading number sit in a fixed-width gutter so the decoder's own
+   text still starts on one vertical line - that alignment is most of what
+   makes a log scannable. Not selectable: copying a line should give the
+   decoder's words, not the console's chrome. */
+.mbus-console-time {
+  display: inline-block;
+  min-width: 8ch;
+  margin-right: 8px;
+  color: var(--muted);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.mbus-console-seq {
+  display: inline-block;
+  min-width: 4ch;
+  margin-right: 8px;
+  color: var(--muted);
+  opacity: .75;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* One rule between readings. */
+.mbus-console-sep {
+  border-top: 1px solid var(--line);
+  margin: 6px 0;
+  opacity: .5;
+}
+
 .mbus-console-line.muted {
   color: var(--muted);
 }

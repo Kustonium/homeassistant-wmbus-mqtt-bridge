@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
 description: "wM-Bus over MQTT (RAW HEX) + optional wired M-Bus -> wmbusmeters -> Home Assistant Discovery"
-version: "1.5.61"
+version: "1.5.62"
 slug: "wmbus_mqtt_bridge"
 stage: experimental
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
@@ -67,6 +67,11 @@ options:
   # telegrams, AES keys or MQTT credentials.
   esp_rx_api_enabled: false
 
+  # Advanced, opt-in capture for investigating the radio path. Keeps up to
+  # 10,000 LR1121 FIFO samples and pipeline drops, including raw radio bytes.
+  # It is intentionally separate from normal RX evidence and off by default.
+  esp_diag_history_enabled: false
+
   # Qundis (QDS/LSE) manufacturer walk-by block (0DFF5F). Off by default: it
   # only affects meters that emit that block, and it inserts a rewriting stage
   # ahead of the decoder. With it off the decode path is byte-for-byte what it
@@ -123,6 +128,7 @@ schema:
   external_mqtt_password: str?
   verify_ha_entities: bool
   esp_rx_api_enabled: bool
+  esp_diag_history_enabled: bool
   qds_walkby_enabled: bool
   mbus_tab_visible: bool
   mbus_enabled: bool
@@ -145,6 +151,12 @@ schema:
       type_other: str?
       key: str?
       poll_interval: str?
+      # Same glob patterns as a radio meter's exclude_fields, and the same
+      # effect: matching fields get no Home Assistant entity. Applied by
+      # field_excluded_for_meter(), which the wired path already reaches -
+      # 14-mbus.sh hands its decoded JSON to emit_discovery_from_json() like
+      # any radio telegram. Only the pattern map was never filled for it.
+      exclude_fields: str?
       calculated_fields: str?
       static_fields: str?
   meters:

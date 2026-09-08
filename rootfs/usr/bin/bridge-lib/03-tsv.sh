@@ -87,6 +87,25 @@ _append_esp_rf_rx_history() {
   ) 9>"${file}.lock"
 }
 
+# Persist selected radio diagnostics separately from decoded /rx metadata.  In
+# particular, LR1121 FIFO snapshots may contain the complete radio buffer, so
+# they must never be folded into the ordinary reception history (whose public
+# contract deliberately excludes RAW telegram data).
+_append_esp_diag_history() {
+  local file="$1" now="$2" device="$3" topic="$4" payload="$5"
+  local line
+  line="$(jq -c --argjson bridge_rx_time "${now}" --arg source "${device}" --arg topic "${topic}" '
+    select(.schema == 1)
+    | select(.kind == "fifo_sample" or .kind == "pipeline_drop")
+    | . + {bridge_rx_time:$bridge_rx_time,source:$source,topic:$topic}
+  ' <<< "${payload}")" || return 1
+  [[ -n "${line}" ]] || return 1
+  (
+    flock -x 9
+    printf '%s\n' "${line}" >> "${file}"
+  ) 9>"${file}.lock"
+}
+
 _normalize_esp_rx_payload() {
   jq -c '
     select(.schema == 1)

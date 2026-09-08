@@ -557,7 +557,7 @@ záložku, `mbus_enabled` spustí engine. Při obou vypnutých se pro vás nic n
 | `mbus_loglevel` | `normal`, `verbose`, `debug` — jen pro instanci sběrnice, nezávisle na hlavní úrovni logu |
 | `mbus_logtelegrams` | loguje každý rámec vyměněný se sběrnicí; užitečné, když měřidlo mlčí, jinak upovídané |
 | `mbus_ignoreduplicates` | zahazuje opakované identické telegramy před dekódováním |
-| `mbus_meters[]` | `id`, `address` (`p1`..`p250` nebo 8 hex), `type`, `key`, `poll_interval` |
+| `mbus_meters[]` | `id`, `address` (`p0`..`p250` nebo 8 hex), `type`, `key`, `poll_interval`, `exclude_fields` |
 
 **Doplněk záměrně nikdy neskenuje porty.** Sondování znamená vysílání a na typickém
 stroji s Home Assistant je jeden ze sériových portů koordinátor Zigbee. Dekodér
@@ -566,13 +566,15 @@ vybíráte vy.
 
 Vybranou sběrnici pak můžete výslovně ověřit: **Ověřit, zda sběrnice žije** odešle
 jeden testovací broadcast, **Sken primárních adres** projde jen zadaný rozsah
-(`p1`–`p250`, nejvýše 32 adres na požadavek) a v každém řádku zobrazí potvrzení
+(`p0`–`p250`) a jedním kliknutím projde celý rozsah po omezených blocích, s
+ukazatelem postupu a možností zastavení. V každém řádku zobrazí potvrzení
 adresy i diagnostiku datové odpovědi; **Dotázat jednou** osloví jednu
 nakonfigurovanou primární adresu. Za běžícího pravidelného dotazování jsou všechny
 tři akce odmítnuty, protože M-Bus má jediný master. **„Dotázat jednou“ slouží pouze
 k diagnostice:** zobrazí surovou odpověď, ale nedekóduje ji, nepublikuje do
 MQTT/Home Assistant ani nepřidá měřič do Pipeline. Pro běžný provoz měřič uložte,
-zapněte engine, klikněte na **Použít** a restartujte doplněk. Výstup tohoto běžného
+zapněte engine a klikněte na **Použít** — dotazovací engine se během několika
+sekund znovu načte, restart doplňku není potřeba. Výstup tohoto běžného
 enginu zůstává viditelný v **Konzoli sběrnice**, která je pouze pro čtení a neumí
 odesílat libovolné bajty.
 
@@ -587,6 +589,10 @@ spolehlivý návrh, rozhraní to oznámí místo hádání.
 Pipeline odvozuje zobrazenou jednotku ze skutečného názvu dekódovaného pole
 (například `_c` → `°C`, `_rh` → `RH%`), také u ovladačů bez kumulativního odečtu,
 které používají obecný číselný fallback.
+
+**Pole** funguje i pro kabelový měřič. Vypíše každé pole posledního dekódovaného
+telegramu a umožní vyřadit ta, která nemají dostat entitu v Home Assistant —
+stejnými vzory `exclude_fields`, jaké používá rádiová cesta.
 
 **V Dockeru** namapujte převodník výslovně:
 `devices: ["/dev/serial/by-id/usb-…:/dev/ttyUSB0"]`. Nikdy `/dev:/dev`, nikdy

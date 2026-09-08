@@ -139,6 +139,9 @@ STATUS_ESP_RX_BOOTS_FILE = BASE / "status_esp_rx_boots.tsv"
 STATUS_ESP_RX_CLOCK_FILE = BASE / "status_esp_rx_clock.tsv"
 STATUS_ESP_CONFIG_FILE = BASE / "status_esp_config.json"
 ESP_RF_RX_HISTORY_FILE = BASE / "esp_rf_rx_history.jsonl"
+# Isolated dev-radio evidence (fifo_sample and pipeline_drop). Unlike the
+# ordinary /rx metadata this can include raw radio bytes by explicit design.
+ESP_DIAG_HISTORY_FILE = BASE / "esp_diag_history.jsonl"
 # ESP events TSV and per-event detail files (written by bridge.sh event subscriber)
 STATUS_ESP_EVENTS_FILE = BASE / "status_esp_events.tsv"
 STATUS_ESP_SUGGESTION_FILE = BASE / "status_esp_suggestion.json"
@@ -652,7 +655,7 @@ def read_tsv(path: Path, fields: list[str], limit: int | None = None, reverse: b
 
 
 def esp_rx_api_payload(limit: int = 1000, since: int = 0, until: int = 0,
-                       max_limit: int = 10000) -> dict:
+                       max_limit: int = 10000, include_diagnostics: bool = False) -> dict:
     """Return bounded, secret-free structured RX evidence for the opt-in API."""
     from collections import deque
 
@@ -668,7 +671,9 @@ def esp_rx_api_payload(limit: int = 1000, since: int = 0, until: int = 0,
         ["source", "boot_id", "last_seq", "missing", "out_of_order", "last_seen"],
     )
     history: deque[dict] = deque(maxlen=limit)
+    diagnostics_history: deque[dict] = deque(maxlen=limit)
     invalid_lines = 0
+    diagnostics_invalid_lines = 0
     try:
         with ESP_RF_RX_HISTORY_FILE.open("r", encoding="utf-8", errors="replace") as stream:
             for line in stream:
@@ -694,6 +699,30 @@ def esp_rx_api_payload(limit: int = 1000, since: int = 0, until: int = 0,
                 )})
     except OSError:
         pass
+    try:
+        if not include_diagnostics:
+            raise OSError
+        with ESP_DIAG_HISTORY_FILE.open("r", encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                except (TypeError, ValueError):
+                    diagnostics_invalid_lines += 1
+                    continue
+                if not isinstance(event, dict):
+                    diagnostics_invalid_lines += 1
+                    continue
+                event_time = safe_int(event.get("bridge_rx_time", 0))
+                if since and event_time < since:
+                    continue
+                if until and event_time >= until:
+                    continue
+                if event.get("kind") not in {"fifo_sample", "pipeline_drop"}:
+                    diagnostics_invalid_lines += 1
+                    continue
+                diagnostics_history.append(event)
+    except OSError:
+        pass
     return {
         "ok": True,
         "schema": 1,
@@ -703,6 +732,8 @@ def esp_rx_api_payload(limit: int = 1000, since: int = 0, until: int = 0,
         "sequence": sequence,
         "history": list(history),
         "history_invalid_lines": invalid_lines,
+        "diagnostics_history": list(diagnostics_history),
+        "diagnostics_history_invalid_lines": diagnostics_invalid_lines,
     }
 
 
@@ -2019,8 +2050,8 @@ MBUS_SCAN_MAX = 32
 
 def mbus_scan_range(first: int, last: int) -> tuple[int, int]:
     """Clamp, order and cap a requested primary-address range."""
-    first = max(1, min(250, first))
-    last = max(1, min(250, last))
+    first = max(0, min(250, first))
+    last = max(0, min(250, last))
     if last < first:
         first, last = last, first
     return first, min(last, first + MBUS_SCAN_MAX - 1)
@@ -2070,9 +2101,10 @@ def mbus_scan_addresses(device: str, first: int, last: int, baudrate: int = 2400
                         wait_s: float = 0.4, data_wait_s: float = 3.5) -> tuple[str, list]:
     """Check presence and immediately request data from every primary address.
 
-    Valid primaries are 1..250. 0 is the factory "unset" value and is not part
-    of a normal address sweep; 251..255 are reserved or broadcast and are never
-    scanned.
+    Valid primaries are 0..250; 251..255 are reserved or broadcast and are never
+    scanned. 0 is included because that is where a meter answers until somebody
+    gives it an address - excluding it made a factory-fresh meter look exactly
+    like a dead bus, which is the one thing this scan exists to tell apart.
 
     Returns one row for every scanned address. SND_NKE supplies the independent
     presence result; addresses that acknowledge are then sent REQ_UD2 so the UI
@@ -2128,7 +2160,7 @@ def mbus_poll_once(device: str, address: int, baudrate: int = 2400,
     decoder's job, and duplicating it would mean a second implementation of the
     thing this project exists not to reimplement.
     """
-    if not 1 <= address <= 250:
+    if not 0 <= address <= 250:
         return 'bad_address', ''
     if termios is None:
         return 'busy_or_error', ''
@@ -2192,6 +2224,10 @@ MBUS_CONSOLE_MARKERS = (
 )
 
 
+# Console lines are stamped by the bridge as HH:MM:SS<TAB>seq<TAB>text.
+MBUS_CONSOLE_STAMP_RE = re.compile(r'\d{2}:\d{2}:\d{2}')
+
+
 def mbus_console_lines(limit: int = 200) -> list:
     """Tail the M-Bus instance log, classified, read-only.
 
@@ -2209,6 +2245,17 @@ def mbus_console_lines(limit: int = 200) -> list:
         return []
     out = []
     for line in lines[-max(1, min(1000, limit)):]:
+        # "HH:MM:SS<TAB>seq<TAB>text", written by mbus_log_console_line(). Split
+        # off before anything classifies the line, so every marker below still
+        # matches the decoder's own words. A line without the prefix is a log
+        # written by an older build: it keeps working, just without a stamp.
+        stamp = ''
+        read_seq = ''
+        head, tab, rest = line.partition('\t')
+        if tab and MBUS_CONSOLE_STAMP_RE.fullmatch(head):
+            seq_part, tab2, text = rest.partition('\t')
+            if tab2 and seq_part.isdigit():
+                stamp, read_seq, line = head, seq_part, text
         kind = 'info'
         for needle, name in MBUS_CONSOLE_MARKERS:
             if needle in line:
@@ -2227,7 +2274,8 @@ def mbus_console_lines(limit: int = 200) -> list:
             hex_text = tail.split('|', 1)[0].replace('_', '')
             shape = mbus_frame_shape(hex_text)
             kind = 'frame'
-        out.append({'text': line[:400], 'kind': kind, 'shape': shape})
+        out.append({'text': line[:400], 'kind': kind, 'shape': shape,
+                    'ts': stamp, 'seq': read_seq})
     return out
 
 
@@ -2335,17 +2383,23 @@ def mbus_save_meters(meters: list) -> tuple[bool, str]:
         address = str(entry.get('address') or '').strip()
         if not name:
             return False, "Every meter needs a name."
-        # p1..p250 (0 is the factory 'unset' value, 0xFB-0xFF are reserved or
-        # broadcast) or an 8-hex secondary address.
-        if not (re.fullmatch(r'p([1-9]|[1-9]\d|1\d\d|2[0-4]\d|250)', address)
+        # p0..p250 (0xFB-0xFF are reserved or broadcast) or an 8-hex secondary
+        # address. p0 is accepted: a meter answers there until it is given an
+        # address, and on a single-meter bus polling it works. It stops working
+        # the moment a second unconfigured meter joins - the UI says so.
+        if not (re.fullmatch(r'p(\d|[1-9]\d|1\d\d|2[0-4]\d|250)', address)
                 or re.fullmatch(r'[0-9A-Fa-f]{8}', address)):
-            return False, f"{name}: address must be p1..p250 or 8 hex characters."
+            return False, f"{name}: address must be p0..p250 or 8 hex characters."
         key = str(entry.get('key') or '').strip()
         if key and not re.fullmatch(r'[0-9A-Fa-f]{32}', key):
             return False, f"{name}: key must be 32 hex characters."
         poll = str(entry.get('poll_interval') or '').strip()
         if poll and not re.fullmatch(r'\d+[smh]', poll):
             return False, f"{name}: poll interval must look like 15m."
+        # Same validator the radio path uses, so one glob syntax covers both.
+        ok_ex, exclude, err = _clean_exclude_fields(str(entry.get('exclude_fields') or ''))
+        if not ok_ex:
+            return False, f"{name}: {err}"
         cleaned.append({k: v for k, v in {
             'id': name,
             'address': address,
@@ -2353,10 +2407,48 @@ def mbus_save_meters(meters: list) -> tuple[bool, str]:
             'type_other': str(entry.get('type_other') or '').strip() or None,
             'key': key or None,
             'poll_interval': poll or None,
+            'exclude_fields': exclude or None,
             'calculated_fields': str(entry.get('calculated_fields') or '').strip() or None,
             'static_fields': str(entry.get('static_fields') or '').strip() or None,
         }.items() if v is not None})
     return save_options_patch({'mbus_meters': cleaned})
+
+
+def mbus_save_meter_fields(name: str, exclude_fields: str) -> tuple[bool, str]:
+    """Set exclude_fields on one wired meter, addressed by its configured name.
+
+    Narrow on purpose. update_meter_in_options() searches options["meters"] by
+    meter_id and rewrites driver, key and label; a wired meter lives in
+    options["mbus_meters"] keyed by name and address, and the field table only
+    ever changes this one value. Widening the radio writer to understand a
+    second shape would put a rename and a driver rewrite on a path that needs
+    neither.
+    """
+    name = (name or '').strip()
+    if not name:
+        return False, "Missing meter name."
+    ok, cleaned, err = _clean_exclude_fields(exclude_fields or '')
+    if not ok:
+        return False, err
+
+    options = read_options()
+    options = options if isinstance(options, dict) else {}
+    meters = options.get('mbus_meters')
+    if not isinstance(meters, list):
+        return False, "No mbus_meters list in options."
+
+    found = False
+    for entry in meters:
+        if isinstance(entry, dict) and str(entry.get('id') or '').strip() == name:
+            if cleaned:
+                entry['exclude_fields'] = cleaned
+            else:
+                entry.pop('exclude_fields', None)
+            found = True
+            break
+    if not found:
+        return False, f"Wired meter {name} not found in mbus_meters."
+    return save_options_patch({'mbus_meters': meters})
 
 
 def restart_addon_via_supervisor() -> tuple[bool, str]:
@@ -4027,6 +4119,7 @@ class Handler(BaseHTTPRequestHandler):
             '/api/compare-driver', '/api/save-config', '/api/driver-fields',
             '/api/esp-rx',
             '/api/mbus', '/api/mbus/device', '/api/mbus/meters', '/api/mbus/probe',
+            '/api/mbus/meter-fields',
             '/api/mbus/console', '/api/mbus/scan', '/api/mbus/poll-one',
             '/api/mbus/detect-driver',
         )
@@ -4055,6 +4148,13 @@ class Handler(BaseHTTPRequestHandler):
                 in ('true', '1', 'on', 'yes'),
                 (params['mbus_enabled'][0].strip().lower() in ('true', '1', 'on', 'yes')
                  if 'mbus_enabled' in params else None),
+            )
+            self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
+            return
+        if path.endswith('/api/mbus/meter-fields'):
+            ok, msg = mbus_save_meter_fields(
+                (params.get('name') or [''])[0],
+                (params.get('exclude_fields') or [''])[0],
             )
             self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
             return
@@ -4105,8 +4205,8 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 baud = 2400
             try:
-                first = int((params.get('first') or ['1'])[0])
-                last = int((params.get('last') or ['32'])[0])
+                first = int((params.get('first') or ['0'])[0])
+                last = int((params.get('last') or ['31'])[0])
             except ValueError:
                 self._send_json(400, {"ok": False, "message": "first/last must be numbers."})
                 return
@@ -4134,9 +4234,9 @@ class Handler(BaseHTTPRequestHandler):
             # 68123456 down as an address. Secondary addressing needs a select
             # cycle the decoder performs; this button sends one bare REQ_UD2.
             raw_addr = (params.get('address') or [''])[0].strip().lstrip('pP')
-            if not raw_addr.isdigit() or not 1 <= int(raw_addr) <= 250:
+            if not raw_addr.isdigit() or not 0 <= int(raw_addr) <= 250:
                 self._send_json(400, {"ok": False, "state": "bad_address",
-                                      "message": "Only a primary address (p1..p250) can be polled from here. "
+                                      "message": "Only a primary address (p0..p250) can be polled from here. "
                                                  "A secondary (8-hex) address needs the selection the decoder does."})
                 return
             device = str(opts.get('mbus_device') or '')
@@ -4457,6 +4557,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = esp_rx_api_payload(
                 limit=limit, since=since, until=until,
                 max_limit=100000 if download else 10000,
+                include_diagnostics=bool(options.get("esp_diag_history_enabled", False)),
             )
             if download:
                 stamp = time.strftime('%Y%m%d-%H%M%S', time.gmtime(payload['generated_at']))
