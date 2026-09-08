@@ -1838,12 +1838,27 @@
   // promise control that does not exist.
   const METADATA_FIELDS = new Set(["_", "id", "name", "meter", "media", "timestamp", "device_date_time", "rssi", "lqi"]);
 
+  // A wired meter is configured in mbus_meters under a NAME, but the table row
+  // carries the id from its telegram - and those are different things: the id
+  // is learned from the first reply, the name is what the user typed. The
+  // runtime map in status_mbus.json is the only link between them.
+  function wiredMeterEntry(meterId) {
+    const runtime = ((state.data || {}).mbus || {}).meters || {};
+    const name = Object.keys(runtime).find(
+      (k) => normalizeMeterId((runtime[k] || {}).id) === normalizeMeterId(meterId));
+    if (!name) return null;
+    return asArray(((state.data || {}).options || {}).mbus_meters)
+      .find((m) => m && String(m.id || "").trim() === name) || null;
+  }
+
   function meterFieldsRow(row, colspan) {
     let fields = null;
     try { fields = JSON.parse(row.last_json || ""); } catch (e) { fields = null; }
     const meterId = normalizeMeterId(row.id || row.meter_id || "");
-    const savedMeter = ((state.data && state.data.options && state.data.options.meters) || [])
-      .find(m => m && normalizeMeterId(m.meter_id) === meterId);
+    const savedMeter = row.source === "mbus"
+      ? wiredMeterEntry(meterId)
+      : ((state.data && state.data.options && state.data.options.meters) || [])
+          .find(m => m && normalizeMeterId(m.meter_id) === meterId);
     const excludeText = (savedMeter && savedMeter.exclude_fields) || "";
     let inner;
     if (!fields || typeof fields !== "object") {
@@ -1945,7 +1960,7 @@
                     ${
                       withActions
                         ? (row.source === "mbus"
-                          ? `<td><a class="btn" href="#mbus" style="text-decoration:none;">${escapeHtml(t("source_mbus_manage", "Manage in M-Bus"))}</a></td>`
+                          ? `<td><div class="actions"><button class="btn" data-action="toggle-meter-fields" data-id="${escapeHtml(id)}">${escapeHtml(t("published_fields_btn", "Fields"))} ${state.expandedMeterFields.has(id) ? "▴" : "▾"}</button><a class="btn" href="#mbus" style="text-decoration:none;">${escapeHtml(t("source_mbus_manage", "Manage in M-Bus"))}</a></div></td>`
                           : `<td><div class="actions"><button class="btn" data-action="toggle-meter-fields" data-id="${escapeHtml(id)}">${escapeHtml(t("published_fields_btn", "Fields"))} ${state.expandedMeterFields.has(id) ? "▴" : "▾"}</button><button class="btn" data-action="open-edit-driver" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(row.driver || "auto")}">${escapeHtml(t("change_driver_btn", "Driver…"))}</button><button class="btn" data-action="export-report" data-id="${escapeHtml(id)}" title="${escapeHtml(t("export_report_title", "wmbusmeters issue report"))}">${escapeHtml(t("export_report_btn", "Report…"))}</button><button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(id)}">${escapeHtml(t("webui_remove", "Remove"))}</button></div></td>`)
                         : ""
                     }
@@ -2118,7 +2133,16 @@
 
   function metersPage() {
     const data = state.data || {};
-    const all = asArray(data.meters);
+    // state() sorts data.meters by last_seen descending. That is what the
+    // dashboard's "Recent meters" wants, but it makes this page restless: every
+    // reception moves its meter to the top, so a wired meter and a radio meter
+    // swap places on each poll while the reader is managing the configuration.
+    // This table is a configuration list, so order it by something a reception
+    // cannot change. slice() first - sorting in place would reorder the array
+    // the dashboard reads for recency.
+    const all = asArray(data.meters).slice().sort((a, b) =>
+      String(a.name || a.id || "").localeCompare(String(b.name || b.id || "")) ||
+      String(a.id || "").localeCompare(String(b.id || "")));
     const filtered = applyMediaFilter(all, "media");
 
     const pending = pendingMeters();
@@ -2172,7 +2196,13 @@
 
   function discoverConfiguredPanel(rows) {
     if (!rows.length) return "";
-    const rowIds   = rows.map(r => r.id || r.meter_id || "").filter(Boolean);
+    // Wired meters are configured in mbus_meters, which the removal endpoint
+    // never touches: remove_meter_from_options() finds no such entry, reports
+    // success, drops the row from status_meters.tsv and the next poll puts it
+    // straight back. They get no checkbox below, so they must not count towards
+    // the select-all state either.
+    const rowIds   = rows.filter(r => r.source !== "mbus")
+      .map(r => r.id || r.meter_id || "").filter(Boolean);
     const selCount = rowIds.filter(i => state.selectedRemoval.has(i)).length;
     const allSel   = rowIds.length > 0 && selCount === rowIds.length;
     return `
@@ -2227,9 +2257,24 @@
                 const mfrCell    = mfrCompact
                   ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>`
                   : `<span style="color:var(--muted);">—</span>`;
+                // A wired meter's driver lives in mbus_meters, which
+                // update_meter_in_options() does not search - opening the driver
+                // modal for one answered "Meter <id> not found in options." and
+                // left the name field empty. Route it to the tab that owns it,
+                // exactly as the Meters tab already does.
+                const isWired    = row.source === "mbus";
+                const selectCell = isWired
+                  ? `<span style="color:var(--muted);" title="${escapeHtml(t("source_mbus_hint", "Reading from the wired M-Bus polling instance"))}">—</span>`
+                  : `<input type="checkbox" data-action="toggle-select-meter" data-id="${escapeHtml(id)}" ${state.selectedRemoval.has(id) ? "checked" : ""} style="cursor:pointer;">`;
+                const actionCell = isWired
+                  ? `<a class="btn" href="#mbus" style="text-decoration:none;">${escapeHtml(t("source_mbus_manage", "Manage in M-Bus"))}</a>`
+                  : `<div class="actions">
+                      ${row.preview_active === "true" ? `<button class="btn" data-action="cancel-preview" data-id="${escapeHtml(id)}">${escapeHtml(t("cancel_preview", "Cancel preview"))}</button>` : ""}
+                      <button class="btn" data-action="open-edit-driver" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(row.driver || "auto")}">${escapeHtml(t("change_driver_btn", "Driver…"))}</button>
+                    </div>`;
                 return `
                   <tr data-value="${escapeHtml(dataVal)}">
-                    <td style="text-align:center;"><input type="checkbox" data-action="toggle-select-meter" data-id="${escapeHtml(id)}" ${state.selectedRemoval.has(id) ? "checked" : ""} style="cursor:pointer;"></td>
+                    <td style="text-align:center;">${selectCell}</td>
                     <td><strong>${escapeHtml(id)}</strong>${aesLockBadge(row)}</td>
                     <td><span style="margin-right:5px;font-size:15px;vertical-align:middle;">${mIcon}</span>${escapeHtml(row.name || id || "-")}</td>
                     <td>${escapeHtml(row.driver || "-")}</td>
@@ -2242,10 +2287,7 @@
                     <td>${escapeHtml(String(seen15mAdj))}</td>
                     <td>${escapeHtml(String(seen60mAdj))}</td>
                     <td style="color:var(--muted);font-size:12px;">${escapeHtml(fmtInterval(row.avg_interval_s))}${espReceptionBadges(row)}</td>
-                    <td><div class="actions">
-                      ${row.preview_active === "true" ? `<button class="btn" data-action="cancel-preview" data-id="${escapeHtml(id)}">${escapeHtml(t("cancel_preview", "Cancel preview"))}</button>` : ""}
-                      <button class="btn" data-action="open-edit-driver" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(row.driver || "auto")}">${escapeHtml(t("change_driver_btn", "Driver…"))}</button>
-                    </div></td>
+                    <td>${actionCell}</td>
                   </tr>`;
               }).join("")}
             </tbody>
@@ -3722,8 +3764,53 @@
     render();
   }
 
+  // M-Bus form sinks: edits go to state, not the DOM - the same rule __cfgSet
+  // follows, and for the same reason. refreshMbusDevices() re-renders this tab
+  // every 5 s, and morphdom rewrites the value of every input that is not the
+  // focused one, so a row that was edited and then left alone was silently
+  // reverted to the last saved entry.
+  window.__mbusMeterSet = function (index, field, value) {
+    const meters = asArray(state.mbus && state.mbus.meters);
+    if (!meters[index]) return;
+    meters[index][field] = String(value == null ? "" : value);
+  };
+
+  // The address decides whether "Poll once" and "Detect driver" are enabled, so
+  // unlike the other fields it needs a render to take effect. On change, not on
+  // input: this file's rule is no render() per keystroke, and change fires when
+  // the field is left - focus has moved by then, so nothing is dropped.
+  window.__mbusAddressCommit = function () {
+    render();
+  };
+
+  // The scan range inputs render from state.mbusScan, so without a sink they
+  // were rewritten by morphdom on the next 5 s refresh - the same way the meter
+  // rows were before __mbusMeterSet. It matters more here: a full sweep is a
+  // range somebody types once and then watches for minutes.
+  window.__mbusScanRangeSet = function (which, value) {
+    if (!state.mbusScan) state.mbusScan = {};
+    const n = Number(value);
+    state.mbusScan[which] = Number.isFinite(n) ? n : 0;
+  };
+
+  window.__mbusPollIntervalSet = function (value) {
+    if (state.mbus) state.mbus.poll_interval = String(value == null ? "" : value);
+  };
+
+  // The row inputs cover four fields. Everything else an entry can carry - key,
+  // type_other, calculated_fields, static_fields - has no widget in this table,
+  // so it is carried over from the loaded entry at the same index. Without that
+  // carry-over every "Save meters" posted a row without those fields and
+  // mbus_save_meters() rebuilds the meter from the payload alone: an AES key and
+  // both field lists set on the add-on Configuration page were silently dropped.
+  // Spread rather than a second whitelist - an explicit list is what caused this
+  // in the first place, and it would go stale again the next time mbus_meters
+  // grows a field. Index alignment holds because the rows, their data-i and
+  // state.mbus.meters are all produced from the same array.
   function mbusMetersFromForm() {
+    const loaded = asArray(state.mbus?.meters);
     return Array.from(document.querySelectorAll(".mbus-m-name")).map((input, index) => ({
+      ...loaded[index],
       id: input.value.trim(),
       address: (document.querySelector(`.mbus-m-addr[data-i="${index}"]`)?.value || "").trim(),
       type: (document.querySelector(`.mbus-m-type[data-i="${index}"]`)?.value || "auto").trim(),
@@ -3853,9 +3940,21 @@
         <span class="detail">${escapeHtml(f.answered ? t("mbus_scan_answered", "present") : t("mbus_scan_silent", "no response"))} · ${escapeHtml(labels[f.data_state] || f.data_state || "")}${f.hex ? ` · <code>${escapeHtml(f.hex.slice(0, 24))}</code>` : ""}</span>
         ${f.answered ? `<button class="btn" data-action="mbus-scan-add" data-addr="${f.address}">${escapeHtml(t("mbus_scan_add", "Add"))}</button>` : ""}
       </div>`).join("");
+    // While the sweep runs, say how far it has got: a full range is minutes of
+    // work and a bare "Scanning..." gives the reader no way to tell progress
+    // from a hang.
+    const progress = scan.running
+      ? `<p class="hint">${escapeHtml(
+          t("mbus_scan_progress", "Scanning p{at} of p{to}… {n} answered so far.")
+            .replace("{at}", String(scan.at ?? scan.from ?? 0))
+            .replace("{to}", String(scan.to ?? 0))
+            .replace("{n}", String((scan.found || []).length)))}</p>`
+      : "";
     const summary = scan.done
       ? `<p class="hint">${escapeHtml(
-          t("mbus_scan_summary", "Scanned p{first}–p{last}: {n} answered.")
+          (scan.cancelled
+            ? t("mbus_scan_summary_cancelled", "Stopped after p{first}–p{last}: {n} answered.")
+            : t("mbus_scan_summary", "Scanned p{first}–p{last}: {n} answered."))
             .replace("{first}", String(scan.first))
             .replace("{last}", String(scan.last))
             .replace("{n}", String((scan.found || []).length)))}</p>`
@@ -3863,19 +3962,24 @@
     return `
       <div class="mbus-scan-section">
         <h2>${escapeHtml(t("mbus_scan_title", "Scan primary addresses"))}</h2>
-        <p class="hint">${escapeHtml(t("mbus_scan_hint", "The diagnostic scan checks whether each address acknowledges and immediately requests its data. It never starts on its own. Valid primaries are p1–p250; p0 is the factory 'unset' value."))}</p>
+        <p class="hint">${escapeHtml(t("mbus_scan_hint", "The diagnostic scan checks whether each address acknowledges and immediately requests its data. It never starts on its own. Valid primaries are p0–p250; p0 is where a meter answers until it is given an address."))}</p>
         <div class="mbus-scan-controls">
           <label>${escapeHtml(t("mbus_scan_from", "From"))}
-            <input type="number" id="mbus_scan_first" min="1" max="250" value="${escapeHtml(String(scan.nextFirst ?? 1))}">
+            <input type="number" id="mbus_scan_first" min="0" max="250" value="${escapeHtml(String(scan.nextFirst ?? 0))}"
+                   oninput="window.__mbusScanRangeSet('nextFirst', this.value)">
           </label>
           <label>${escapeHtml(t("mbus_scan_to", "To"))}
-            <input type="number" id="mbus_scan_last" min="1" max="250" value="${escapeHtml(String(scan.nextLast ?? 32))}">
+            <input type="number" id="mbus_scan_last" min="0" max="250" value="${escapeHtml(String(scan.nextLast ?? 31))}"
+                   oninput="window.__mbusScanRangeSet('nextLast', this.value)">
           </label>
         </div>
         <div class="row-actions">
           <button class="btn primary" data-action="mbus-scan"${mbus.enabled || scan.running ? " disabled" : ""}>${escapeHtml(
             scan.running ? t("mbus_scan_running", "Scanning…") : t("mbus_scan_button", "Scan this range"))}</button>
+          ${scan.running ? `<button class="btn" data-action="mbus-scan-cancel"${scan.cancel ? " disabled" : ""}>${escapeHtml(
+            scan.cancel ? t("mbus_scan_stopping", "Stopping…") : t("mbus_scan_stop", "Stop"))}</button>` : ""}
         </div>
+        ${progress}
         ${mbus.enabled ? `<p class="hint">${escapeHtml(t("mbus_engine_holds_bus", "Turn polling off first — it is the bus master."))}</p>` : ""}
         ${summary}
         ${rows}
@@ -3898,6 +4002,10 @@
   function mbusConsoleCard() {
     const con = state.mbusConsole || {};
     const lines = con.lines || [];
+    // Reading number of the previous line, so a change of number can be drawn
+    // as the boundary between one reading and the next. null until the first
+    // stamped line: no rule above the top of the log.
+    let prevSeq = null;
     const body = lines.length
       ? lines.map((l) => {
           // The shape outranks the line kind. A logged frame is kind "frame"
@@ -3905,7 +4013,16 @@
           // that is not M-Bus at all the same green as a good telegram.
           const cls = l.shape === "not_mbus" ? "bad" : (MBUS_LINE_CLASS[l.kind] || "muted");
           const shape = l.shape ? ` [${l.shape}]` : "";
-          return `<div class="mbus-console-line ${cls}">${escapeHtml(l.text + shape)}</div>`;
+          const sep = (l.seq && prevSeq !== null && l.seq !== prevSeq)
+            ? `<div class="mbus-console-sep"></div>`
+            : "";
+          if (l.seq) prevSeq = l.seq;
+          // Absent on a log written by an older build, which then renders
+          // exactly as it did before - one continuous block, no gutter.
+          const meta = l.ts
+            ? `<span class="mbus-console-time">${escapeHtml(l.ts)}</span><span class="mbus-console-seq">#${escapeHtml(l.seq)}</span>`
+            : "";
+          return `${sep}<div class="mbus-console-line ${cls}">${meta}<span>${escapeHtml(l.text + shape)}</span></div>`;
         }).join("")
       : `<div class="mbus-console-line muted">${escapeHtml(t("mbus_console_empty", "Nothing logged yet. The stream fills once polling runs; turn on logtelegrams to see the raw frames."))}</div>`;
     // Only shown when the classifier actually saw foreign bytes — offered as
@@ -4018,32 +4135,38 @@
         <div class="mbus-card-head">
           <h2>${escapeHtml(t("mbus_meters_title", "Meters on the bus"))}</h2>
           <label class="mbus-default-poll">${escapeHtml(t("mbus_poll_label", "Default poll interval"))}
-            <input type="text" id="mbus_poll_interval" value="${escapeHtml(mbus.poll_interval || "15m")}">
+            <input type="text" id="mbus_poll_interval" value="${escapeHtml(mbus.poll_interval || "15m")}"
+                   oninput="window.__mbusPollIntervalSet(this.value)">
           </label>
         </div>
-        <p class="hint">${escapeHtml(t("mbus_meters_hint", "Address is p1..p250 (primary) or 8 hex characters (secondary). p0 is the factory 'unset' value and is not a valid address."))}</p>
+        <p class="hint">${escapeHtml(t("mbus_meters_hint", "Address is p0..p250 (primary) or 8 hex characters (secondary). A meter answers on p0 until it is given an address; leave one there only while it is the only unconfigured meter on the bus."))}</p>
         <div class="table-wrap"><table class="table mbus-table">
           <tr><th>${escapeHtml(t("mbus_col_name", "Name"))}</th><th>${escapeHtml(t("mbus_col_address", "Address"))}</th>
               <th>${escapeHtml(t("mbus_col_driver", "Driver"))}</th><th>${escapeHtml(t("mbus_col_interval", "Interval"))}</th><th></th></tr>
           ${meters.map((m, index) => `
             <tr>
-              <td><input type="text" class="mbus-m-name" data-i="${index}" value="${escapeHtml(m.id || "")}"></td>
-              <td><input type="text" class="mbus-m-addr" data-i="${index}" value="${escapeHtml(m.address || "")}"></td>
+              <td><input type="text" class="mbus-m-name" data-i="${index}" value="${escapeHtml(m.id || "")}"
+                    oninput="window.__mbusMeterSet(${index}, 'id', this.value)"></td>
+              <td><input type="text" class="mbus-m-addr" data-i="${index}" value="${escapeHtml(m.address || "")}"
+                    oninput="window.__mbusMeterSet(${index}, 'address', this.value)"
+                    onchange="window.__mbusAddressCommit()"></td>
               <td><input type="text" class="mbus-m-type" data-i="${index}" list="mbus-driver-options"
                     value="${escapeHtml(m.type || "auto")}"
-                    title="${escapeHtml(t("mbus_driver_picker_hint", "Choose a driver shipped with this add-on, leave auto, or type a custom driver name."))}"></td>
+                    title="${escapeHtml(t("mbus_driver_picker_hint", "Choose a driver shipped with this add-on, leave auto, or type a custom driver name."))}"
+                    oninput="window.__mbusMeterSet(${index}, 'type', this.value)"></td>
               <td><input type="text" class="mbus-m-poll" data-i="${index}" value="${escapeHtml(m.poll_interval || "")}"
-                    placeholder="${escapeHtml(mbus.poll_interval || "15m")}"></td>
+                    placeholder="${escapeHtml(mbus.poll_interval || "15m")}"
+                    oninput="window.__mbusMeterSet(${index}, 'poll_interval', this.value)"></td>
               <td><div class="actions"><button class="btn" data-action="mbus-poll-one" data-i="${index}"${
-                    mbus.enabled || !/^p(?:[1-9]|[1-9]\d|1\d\d|2[0-4]\d|250)$/.test(String(m.address || "")) ? " disabled" : ""}
+                    mbus.enabled || !/^p(?:\d|[1-9]\d|1\d\d|2[0-4]\d|250)$/.test(String(m.address || "")) ? " disabled" : ""}
                     title="${escapeHtml(mbus.enabled
                       ? t("mbus_engine_holds_bus", "Turn polling off first — it is the bus master.")
-                      : (!/^p(?:[1-9]|[1-9]\d|1\d\d|2[0-4]\d|250)$/.test(String(m.address || ""))
-                          ? t("mbus_poll_primary_only", "Only a primary address (p1–p250) can be polled from here.")
+                      : (!/^p(?:\d|[1-9]\d|1\d\d|2[0-4]\d|250)$/.test(String(m.address || ""))
+                          ? t("mbus_poll_primary_only", "Only a primary address (p0–p250) can be polled from here.")
                           : ""))}"
                   >${escapeHtml(t("mbus_poll_once", "Poll once"))}</button>
                 <button class="btn" data-action="mbus-detect-driver" data-i="${index}"${
-                    mbus.enabled || !/^p(?:[1-9]|[1-9]\d|1\d\d|2[0-4]\d|250)$/.test(String(m.address || "")) ? " disabled" : ""}
+                    mbus.enabled || !/^p(?:\d|[1-9]\d|1\d\d|2[0-4]\d|250)$/.test(String(m.address || "")) ? " disabled" : ""}
                     title="${escapeHtml(t("mbus_detect_driver_hint", "Poll this address and ask the bundled wmbusmeters analyzer for a driver suggestion. Nothing is saved automatically."))}"
                   >${escapeHtml(t("mbus_detect_driver", "Detect driver"))}</button>
                 <button class="btn danger" data-action="mbus-del-meter" data-i="${index}">${escapeHtml(t("remove", "Remove"))}</button></div></td>
@@ -4065,7 +4188,7 @@
           <button class="btn primary" data-action="mbus-save-meters">${escapeHtml(t("mbus_save_meters", "Save meters"))}</button>
         </div>
         <p class="hint">${escapeHtml(t("mbus_poll_once_diagnostic", "Poll once is diagnostic only: it shows the raw reply but does not decode it, publish it to MQTT/Home Assistant or add the meter to Pipeline."))}</p>
-        ${meters.length && !mbus.enabled ? `<div class="banner banner-warn">${escapeHtml(t("mbus_engine_required_banner", "The meter is saved, but polling is OFF. To make it appear in Pipeline and Home Assistant, enable the engine below, click Apply and restart the add-on."))}</div>` : ""}
+        ${meters.length && !mbus.enabled ? `<div class="banner banner-warn">${escapeHtml(t("mbus_engine_required_banner", "The meter is saved, but polling is OFF. To make it appear in Pipeline and Home Assistant, enable the engine below and click Apply."))}</div>` : ""}
         ${mbusScanCard(mbus)}
       </div>
 
@@ -4085,7 +4208,7 @@
         </div>
         <label class="mbus-engine-switch"><input type="checkbox" id="mbus_enabled"${mbus.enabled ? " checked" : ""}>
           <span>${escapeHtml(t("mbus_enabled_label", "Enable continuous automatic bus polling"))}</span></label>
-        <p class="mbus-engine-restart">${escapeHtml(t("mbus_engine_restart_note", "After changing this switch, restart the add-on/container. Apply only saves the option; the engine actually starts or stops during restart."))}</p>
+        <p class="mbus-engine-restart">${escapeHtml(t("mbus_engine_restart_note", "Apply saves the switch and reloads the polling engine - no add-on restart is needed. It stops or starts within a few seconds."))}</p>
         <p class="hint">${escapeHtml(t("mbus_engine_hint", "This controls only wired M-Bus. The radio path is never stopped."))}</p>
         <div class="row-actions">
           <button class="btn primary" data-action="mbus-save-engine">${escapeHtml(t("mbus_save_engine", "Apply"))}</button>
@@ -4207,6 +4330,14 @@
         });
         toast(result.message || t("saved", "Saved"));
         await loadMbus(true);
+        // Applying a wired change no longer needs an add-on restart. bridge.sh
+        // runs stop_mbus_instance/start_mbus_instance inside its restart-on-exit
+        // loop, so the soft pipeline reload the radio path already uses makes
+        // the engine re-read wmbusmeters.conf and the meter files; mbus_opt()
+        // re-reads options.json on every call, so the new values are picked up.
+        // Only while the engine runs: with polling off there is nothing to
+        // reload, and a reload briefly interrupts radio decoding for nothing.
+        if (state.mbus?.enabled) triggerSoftReload();
       } catch (error) {
         toast(error.message, true);
       }
@@ -4231,28 +4362,56 @@
     }
 
     if (action === "mbus-scan") {
-      const first = Number(document.getElementById("mbus_scan_first")?.value ?? 1);
-      const last = Number(document.getElementById("mbus_scan_last")?.value ?? 32);
-      state.mbusScan = {running: true, found: [], nextFirst: first, nextLast: last};
+      // One click sweeps the whole requested range. The request stays capped at
+      // MBUS_SCAN_MAX addresses - a sweep of 0..250 would otherwise hold one
+      // HTTP request for minutes - so the walk happens here, chunk by chunk,
+      // accumulating rows and reporting where it is. ThreadingHTTPServer gives
+      // each request its own thread, so the rest of the tab keeps refreshing.
+      const from = Math.max(0, Math.min(250, Number(document.getElementById("mbus_scan_first")?.value ?? 0)));
+      const to   = Math.max(0, Math.min(250, Number(document.getElementById("mbus_scan_last")?.value ?? 31)));
+      const lo = Math.min(from, to), hi = Math.max(from, to);
+      const results = [];
+      state.mbusScan = {running: true, results: [], found: [], from: lo, to: hi,
+                        at: lo, nextFirst: from, nextLast: to};
       render();
-      try {
-        const result = await postApi("mbus/scan", {first, last});
-        // The server reports the range it actually swept, which is capped. The
-        // next range is pre-filled from it so continuing the sweep does not
-        // depend on the reader noticing where it stopped.
+      let cursor = lo, failed = "";
+      while (cursor <= hi) {
+        // Checked between chunks, not during one: a chunk already on the wire
+        // has to finish - the replies are still coming back.
+        if (state.mbusScan?.cancel) break;
+        let result;
+        try {
+          result = await postApi("mbus/scan", {first: cursor, last: hi});
+        } catch (error) {
+          failed = error.message;
+          break;
+        }
+        results.push(...asArray(result.results));
+        const swept = Number(result.last);
         state.mbusScan = {
-          running: false, done: true,
-          found: asArray(result.found),
-          results: asArray(result.results),
-          first: result.first, last: result.last,
-          nextFirst: Math.min(250, Number(result.last) + 1),
-          nextLast: Math.min(250, Number(result.last) + Number(result.chunk || 32)),
+          ...state.mbusScan,
+          running: true, results, found: results.filter((r) => r.answered),
+          first: lo, last: swept, at: swept,
         };
-        if (result.state && result.state !== "ok") toast(result.state, true);
-      } catch (error) {
-        state.mbusScan = {running: false, found: [], nextFirst: first, nextLast: last};
-        toast(error.message, true);
+        render();
+        if (!Number.isFinite(swept) || swept >= hi) break;
+        cursor = swept + 1;
       }
+      const cancelled = Boolean(state.mbusScan?.cancel);
+      state.mbusScan = {
+        ...state.mbusScan,
+        running: false, done: true, cancel: false, cancelled,
+        results, found: results.filter((r) => r.answered),
+        first: lo, last: results.length ? results[results.length - 1].address : lo,
+      };
+      if (failed) toast(failed, true);
+      render();
+      return;
+    }
+
+    if (action === "mbus-scan-cancel") {
+      // Only sets the flag; the loop above stops after the chunk in flight.
+      if (state.mbusScan) state.mbusScan.cancel = true;
       render();
       return;
     }
@@ -4328,8 +4487,23 @@
       const meters = mbusMetersFromForm();
       try {
         const result = await postApi("mbus/meters", {meters: JSON.stringify(meters)});
+        // "Default poll interval" is rendered in this card but is stored with
+        // the device options, so until now the only button that saved it was
+        // "Save port" in a different card - the field next to Save meters
+        // silently discarded whatever was typed into it. Same device payload
+        // the Engine card posts, and mbus_enabled is left out of it, so the
+        // engine switch is not touched. Second request rather than a widened
+        // /api/mbus/meters: the interval is not a property of a meter.
+        await postApi("mbus/device", {
+          device: state.mbus?.device || "",
+          bus_alias: state.mbus?.bus_alias || "MAIN",
+          baudrate: String(state.mbus?.baudrate || "2400"),
+          poll_interval: state.mbus?.poll_interval || "15m",
+          donotprobe_all: state.mbus?.donotprobe_all ? "true" : "false",
+        });
         toast(result.message || t("saved", "Saved"));
         await loadMbus(true);
+        if (state.mbus?.enabled) triggerSoftReload();
       } catch (error) {
         toast(error.message, true);
       }
@@ -4348,6 +4522,10 @@
         });
         toast(result.message || t("saved", "Saved"));
         await loadMbus(true);
+        // Unconditionally: this is the switch itself. start_mbus_instance()
+        // consults mbus_enabled on every loop pass, so the reload starts the
+        // engine or leaves it stopped, whichever the switch now says.
+        triggerSoftReload();
       } catch (error) {
         toast(error.message, true);
       }
@@ -4449,7 +4627,11 @@
       const fieldName = target.dataset.name || "";
       const driver = target.dataset.driver || "auto";
       if (!id || !fieldName) return;
-      const saved = ((state.data && state.data.options && state.data.options.meters) || [])
+      // A wired meter has no entry in options.meters, so update-meter would
+      // answer "not found in options." and the click would do nothing. Its
+      // patterns live in mbus_meters and are addressed by name.
+      const wired = wiredMeterEntry(id);
+      const saved = wired || ((state.data && state.data.options && state.data.options.meters) || [])
         .find(m => m && normalizeMeterId(m.meter_id) === normalizeMeterId(id));
       const next = toggleExcludedName((saved && saved.exclude_fields) || "", fieldName);
       // update-meter overwrites the driver with whatever it receives, so take it
@@ -4464,7 +4646,11 @@
       target.disabled = true;
       (async () => {
         try {
-          await postApi("update-meter", {meter_id: id, driver: effectiveDriver, exclude_fields: next});
+          if (wired) {
+            await postApi("mbus/meter-fields", {name: String(wired.id || ""), exclude_fields: next});
+          } else {
+            await postApi("update-meter", {meter_id: id, driver: effectiveDriver, exclude_fields: next});
+          }
           triggerSoftReload(`${t("fields_saved", "Field selection saved.")} ${t("reloading_pipeline", "Applying meter changes…")}`);
         } catch (error) {
           toast(error.message, true);

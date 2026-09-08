@@ -592,7 +592,7 @@ schon durch das Einschalten der Engine.
 | `mbus_loglevel` | `normal`, `verbose`, `debug` — nur für die Bus-Instanz, unabhängig vom Haupt-Loglevel |
 | `mbus_logtelegrams` | protokolliert jeden mit dem Bus ausgetauschten Frame; nützlich, wenn ein Zähler schweigt, sonst geschwätzig |
 | `mbus_ignoreduplicates` | verwirft wiederholte identische Telegramme vor dem Dekodieren |
-| `mbus_meters[]` | `id`, `address` (`p1`..`p250` oder 8 Hex), `type`, `key`, `poll_interval` |
+| `mbus_meters[]` | `id`, `address` (`p0`..`p250` oder 8 Hex), `type`, `key`, `poll_interval`, `exclude_fields` |
 
 **Das Add-on scannt bewusst niemals Ports.** Sondieren heißt Senden, und auf einem
 typischen Home-Assistant-Rechner ist eine der seriellen Schnittstellen ein
@@ -601,14 +601,16 @@ bestätigen — er öffnet das Gerät und meldet Erfolg — deshalb wählen Sie 
 
 Den ausgewählten Bus können Sie anschließend ausdrücklich prüfen: **Prüfen, ob der
 Bus lebt** sendet genau einen Test-Broadcast, **Primäradressen scannen** durchläuft nur
-den gewählten Bereich (`p1`–`p250`, höchstens 32 je Anfrage) und zeigt je Zeile sowohl
+den gewählten Bereich (`p0`–`p250`) und durchläuft ihn mit einem Klick in begrenzten
+Blöcken, mit Fortschrittsanzeige und jederzeit stoppbar. Je Zeile zeigt er sowohl
 die Adressbestätigung als auch die Diagnose der Datenantwort; **Einmal abfragen**
 fragt eine konfigurierte Primäradresse ab. Während die reguläre Abfrage läuft, werden
 alle drei Aktionen abgewiesen, weil M-Bus nur einen Master hat. **„Einmal abfragen“
 dient nur zur Diagnose:** Die Rohantwort wird angezeigt, aber nicht dekodiert, an
 MQTT/Home Assistant veröffentlicht oder zur Pipeline hinzugefügt. Für den normalen
-Betrieb speichern Sie einen Zähler, aktivieren die Engine, klicken auf **Anwenden**
-und starten das Add-on neu. Die Ausgabe dieser regulären Engine bleibt in der
+Betrieb speichern Sie einen Zähler, aktivieren die Engine und klicken auf
+**Anwenden** — die Abfrage-Engine lädt binnen Sekunden neu, ein Neustart des
+Add-ons ist nicht nötig. Die Ausgabe dieser regulären Engine bleibt in der
 schreibgeschützten **Bus-Konsole** sichtbar; beliebige Bytes lassen sich dort nicht
 senden.
 
@@ -625,6 +627,11 @@ meldet die Oberfläche dies ausdrücklich, statt zu raten.
 Pipeline leitet die angezeigte Einheit aus dem tatsächlichen Namen des dekodierten
 Feldes ab (zum Beispiel `_c` → `°C`, `_rh` → `RH%`), auch bei Treibern ohne
 kumulativen Zählerstand, die den allgemeinen numerischen Fallback verwenden.
+
+**Felder** funktioniert auch für einen kabelgebundenen Zähler. Es listet jedes
+Feld des zuletzt dekodierten Telegramms auf und lässt Sie die abwählen, die keine
+Home-Assistant-Entität bekommen sollen — mit denselben `exclude_fields`-Mustern
+wie der Funkweg.
 
 **Unter Docker** binden Sie den Konverter explizit ein:
 `devices: ["/dev/serial/by-id/usb-…:/dev/ttyUSB0"]`. Niemals `/dev:/dev`, niemals

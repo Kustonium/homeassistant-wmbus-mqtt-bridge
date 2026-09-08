@@ -576,7 +576,7 @@ the engine.
 | `mbus_loglevel` | `normal`, `verbose`, `debug` — for the bus instance only, independent of the main log level |
 | `mbus_logtelegrams` | logs every frame exchanged with the bus; useful when a meter stays silent, noisy otherwise |
 | `mbus_ignoreduplicates` | drops repeated identical telegrams before decoding |
-| `mbus_meters[]` | `id`, `address` (`p1`..`p250` or 8 hex), `type`, `key`, `poll_interval` |
+| `mbus_meters[]` | `id`, `address` (`p0`..`p250` or 8 hex), `type`, `key`, `poll_interval`, `exclude_fields` |
 
 **The add-on never scans ports, deliberately.** Probing means transmitting, and on a
 typical Home Assistant machine one of the serial ports is a Zigbee coordinator.
@@ -585,13 +585,16 @@ and reports success — so the port is always chosen by you.
 
 The selected bus can then be checked explicitly: **Check whether the bus is alive**
 sends one test broadcast, **Scan primary addresses** walks only the range you choose
-(`p1`–`p250`, at most 32 per request), shows both address acknowledgement and the
+(`p0`–`p250`), sweeping the whole range from one click in capped chunks while it
+reports progress and stays stoppable. Each row shows both address acknowledgement
+and the
 immediate data-reply diagnosis for every row, and **Poll once** requests one configured
 primary address. All three are refused while regular polling is running because
 M-Bus has one master. **Poll once is diagnostic only:** it displays the raw reply,
 but does not decode it, publish it to MQTT/Home Assistant or add the meter to the
-Pipeline. For normal operation, save a meter, enable the engine, click **Apply**
-and restart the add-on. Decoder output from that regular engine is visible in the
+Pipeline. For normal operation, save a meter, enable the engine and click
+**Apply** — the polling engine reloads within seconds and no add-on restart is
+needed. Decoder output from that regular engine is visible in the
 read-only **Bus console**; it never accepts arbitrary bytes to transmit.
 
 The meter table's **Driver** field suggests every driver shipped in the current
@@ -605,6 +608,10 @@ cannot make a reliable suggestion, the UI says so instead of guessing.
 Pipeline derives the displayed unit from the actual decoded field name (for
 example `_c` → `°C` and `_rh` → `RH%`), including drivers whose telegram has no
 cumulative meter reading and therefore uses a generic numeric fallback.
+
+**Fields** works for a wired meter as well. It lists every field of the last
+decoded telegram and lets you drop the ones that should get no Home Assistant
+entity — the same `exclude_fields` glob patterns the radio path uses.
 
 **In Docker** map your converter explicitly:
 `devices: ["/dev/serial/by-id/usb-…:/dev/ttyUSB0"]`. Never `/dev:/dev`, never

@@ -559,7 +559,7 @@ ako aktívna až po prijatí telegramu runtime, nie iba zapnutím enginu.
 | `mbus_loglevel` | `normal`, `verbose`, `debug` — len pre inštanciu zbernice, nezávisle od hlavnej úrovne logu |
 | `mbus_logtelegrams` | loguje každý rámec vymenený so zbernicou; užitočné, keď merač mlčí, inak ukecané |
 | `mbus_ignoreduplicates` | zahadzuje opakované identické telegramy pred dekódovaním |
-| `mbus_meters[]` | `id`, `address` (`p1`..`p250` alebo 8 hex), `type`, `key`, `poll_interval` |
+| `mbus_meters[]` | `id`, `address` (`p0`..`p250` alebo 8 hex), `type`, `key`, `poll_interval`, `exclude_fields` |
 
 **Doplnok zámerne nikdy neskenuje porty.** Sondovanie znamená vysielanie a na typickom
 stroji s Home Assistant je jeden zo sériových portov koordinátor Zigbee. Dekodér
@@ -568,13 +568,15 @@ vyberáte vy.
 
 Vybranú zbernicu potom môžete výslovne overiť: **Overiť, či zbernica žije** odošle
 jeden testovací broadcast, **Sken primárnych adries** prejde iba zadaný rozsah
-(`p1`–`p250`, najviac 32 adries na požiadavku) a v každom riadku zobrazí potvrdenie
+(`p0`–`p250`) a jedným kliknutím prejde celý rozsah po obmedzených blokoch, s
+ukazovateľom postupu a možnosťou zastavenia. V každom riadku zobrazí potvrdenie
 adresy aj diagnostiku dátovej odpovede; **Dopytovať raz** osloví jednu
 nakonfigurovanú primárnu adresu. Počas bežného dopytovania sú všetky tri akcie
 odmietnuté, pretože M-Bus má jediný master. **„Dopytovať raz“ slúži iba na
 diagnostiku:** zobrazí surovú odpoveď, ale nedekóduje ju, nepublikuje do MQTT/Home
 Assistant ani nepridá merač do Pipeline. Pre bežnú prevádzku merač uložte, zapnite
-engine, kliknite na **Použiť** a reštartujte doplnok. Výstup tohto bežného enginu
+engine a kliknite na **Použiť** — dopytovací engine sa v priebehu niekoľkých
+sekúnd znovu načíta, reštart doplnku nie je potrebný. Výstup tohto bežného enginu
 zostáva viditeľný v **Konzole zbernice**, ktorá je iba na čítanie a neumožňuje
 posielať ľubovoľné bajty.
 
@@ -589,6 +591,10 @@ spoľahlivý návrh, rozhranie to oznámi namiesto hádania.
 Pipeline odvodzuje zobrazenú jednotku zo skutočného názvu dekódovaného poľa
 (napríklad `_c` → `°C`, `_rh` → `RH%`), aj pri ovládačoch bez kumulatívneho odpočtu,
 ktoré používajú všeobecný číselný fallback.
+
+**Polia** funguje aj pre káblový merač. Vypíše každé pole posledného dekódovaného
+telegramu a umožní vyradiť tie, ktoré nemajú dostať entitu v Home Assistant —
+rovnakými vzormi `exclude_fields`, aké používa rádiová cesta.
 
 **V Dockeri** namapujte prevodník výslovne:
 `devices: ["/dev/serial/by-id/usb-…:/dev/ttyUSB0"]`. Nikdy `/dev:/dev`, nikdy

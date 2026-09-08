@@ -173,6 +173,9 @@ ESP_RX_HISTORY_FILE="${BASE}/esp_rx_history.jsonl"
 # the two observation points can never be mistaken for one another.
 STATUS_ESP_RX_RECEPTION_FILE="${BASE}/status_esp_rx_reception.tsv"
 ESP_RF_RX_HISTORY_FILE="${BASE}/esp_rf_rx_history.jsonl"
+# Raw radio diagnostic evidence is intentionally separate from /rx metadata.
+# This is used by the isolated dev add-on for LR1121 FIFO/drop investigation.
+ESP_DIAG_HISTORY_FILE="${BASE}/esp_diag_history.jsonl"
 STATUS_ESP_RX_SEQUENCE_FILE="${BASE}/status_esp_rx_sequence.tsv"
 # One row per ESP boot. A restart resets the sequence counters, so without
 # this the evidence of the restart is destroyed by the restart itself.
@@ -232,7 +235,7 @@ RAW_RATE_CUR_MIN_COUNT=0
 # shellcheck disable=SC2034
 RAW_RATE_PREV_MIN_COUNT=0
 
-touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_METER_KEY_PROBLEM_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${STATUS_ESP_METER_DEVICE_FILE}" "${STATUS_ESP_METER_RECEPTION_FILE}" "${ESP_RX_HISTORY_FILE}" "${STATUS_ESP_RX_RECEPTION_FILE}" "${ESP_RF_RX_HISTORY_FILE}" "${STATUS_ESP_RX_SEQUENCE_FILE}" "${STATUS_ESP_RX_BOOTS_FILE}" "${STATUS_ESP_RX_CLOCK_FILE}" "${STATUS_ESP_CONFIG_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" "${STATUS_BROKER_ERROR_FILE}"
+touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_METER_KEY_PROBLEM_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${STATUS_ESP_METER_DEVICE_FILE}" "${STATUS_ESP_METER_RECEPTION_FILE}" "${ESP_RX_HISTORY_FILE}" "${STATUS_ESP_RX_RECEPTION_FILE}" "${ESP_RF_RX_HISTORY_FILE}" "${ESP_DIAG_HISTORY_FILE}" "${STATUS_ESP_RX_SEQUENCE_FILE}" "${STATUS_ESP_RX_BOOTS_FILE}" "${STATUS_ESP_RX_CLOCK_FILE}" "${STATUS_ESP_CONFIG_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" "${STATUS_BROKER_ERROR_FILE}"
 printf '0\n' > "${STATUS_OFFICIAL_METERS_COUNT_FILE}" 2>/dev/null || true
 # Remove any orphaned pending-reload marker left by a hard stop during deferred sleep.
 rm -rf "${BASE}/.reload_listen_pending" 2>/dev/null || true
@@ -297,6 +300,7 @@ RESTART_ON_EXIT="${RESTART_ON_EXIT:-$(json_get_bool '.restart_on_exit' 'true')}"
 # entity (sensor.wmbus_bridge_health) and a background worker asks the HA Core
 # API whether that entity exists. Off by default (read-only HA access is opt-in).
 VERIFY_HA_ENTITIES="${VERIFY_HA_ENTITIES:-$(json_get_bool '.verify_ha_entities' 'false')}"
+ESP_DIAG_HISTORY_ENABLED="${ESP_DIAG_HISTORY_ENABLED:-$(json_get_bool '.esp_diag_history_enabled' 'false')}"
 # Qundis walk-by block (0DFF5F). Off by default: no effect on installs that
 # never see the block. On (a) rejects walk-by records the decoder cannot
 # validate, so upstream cannot publish ciphertext as a reading, and (b) with
@@ -313,7 +317,7 @@ if [[ "${QDS_WALKBY_ENABLED}" == "true" ]]; then
 else
   QDS_STAGE=( cat )
 fi
-export VERIFY_HA_ENTITIES
+export VERIFY_HA_ENTITIES ESP_DIAG_HISTORY_ENABLED
 
 STATE_PREFIX="${STATE_PREFIX:-$(json_get '.state_prefix' 'wmbusmeters')}"
 STATE_RETAIN="${STATE_RETAIN:-$(json_get_bool '.state_retain' 'false')}"
@@ -375,6 +379,7 @@ log "wmbusmeters: loglevel=${LOGLEVEL} filter_hex_only=${FILTER_HEX_ONLY} debug_
 log "search: mode=${SEARCH_MODE} expected_value_m3=${SEARCH_EXPECTED_VALUE_M3} tolerance_m3=${SEARCH_TOLERANCE_M3} delta_mode=${SEARCH_DELTA_MODE} min_delta_m3=${SEARCH_MIN_DELTA_M3} topic=${SEARCH_TOPIC}"
 log "robust: ignore_retained=${IGNORE_RETAINED} require_timestamp=${REQUIRE_TIMESTAMP} restart_on_exit=${RESTART_ON_EXIT}"
 log "verify_ha_entities: ${VERIFY_HA_ENTITIES}"
+log "esp_diag_history_enabled: ${ESP_DIAG_HISTORY_ENABLED}"
 status_add_event "ok" "bridge starting"
 write_status_json
 

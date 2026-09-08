@@ -1,3 +1,22 @@
+## 1.5.62
+
+### Added
+- let a wired M-Bus meter exclude fields like a radio one (567abe4)
+- sweep the whole primary-address range from one click (077381d)
+- accept p0, the address a meter answers on before it is configured (ff98419)
+- stamp the M-Bus console with a time and a reading number (bca1b65)
+- apply wired M-Bus changes with a soft reload instead of an add-on restart (d925bb7)
+
+### Fixed
+- give the Meters tab an order that receptions cannot change (455fd13)
+- route wired meters to the M-Bus tab from the Discover panel (be22224)
+- keep M-Bus meter edits in state so typing survives and enables the buttons (a066cd4)
+- stop wiping M-Bus AES key and field lists on "Save meters" (16f2d9f)
+
+### Other (review)
+- Make radio diagnostic history opt-in (f353cc3)
+- Persist ESP radio diagnostic history (6f8910e)
+
 ## 1.5.61
 
 ### Other (review)

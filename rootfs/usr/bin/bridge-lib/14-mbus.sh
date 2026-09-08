@@ -40,12 +40,25 @@ MBUS_METERS_SKIPPED=0
 # without bound.
 MBUS_LOG_MAX_LINES=2000
 MBUS_LINES_SINCE_TRIM=0
+# Reading counter stamped on every console line. The decoder marks no boundary
+# between one reading and the next, so consecutive polls ran together into a
+# single wall of text - the one thing the bus console exists to let somebody
+# read. Counts accepted telegrams, so every line of a reading carries the same
+# number and the next reading is visible as a step. It restarts at 1 when the
+# decoder does: this is a live tail, not an audit trail.
+MBUS_READ_SEQ=0
 
 # Last id seen per configured meter name. A bus address that starts answering
 # with a different id means two meters share one primary address — the decoder
 # reports neither problem nor duplicate, it simply emits both telegrams, so the
 # detection has to live here.
 declare -A MBUS_LAST_ID=()
+# exclude_fields per configured meter NAME. It cannot go straight into
+# METER_EXCLUDE_FIELDS: that map is keyed by the id in the telegram, and a
+# wired meter's id is not its configured address - it is learned from the
+# first reply. So the patterns wait here under the name, and are moved
+# across in mbus_consume_line() once both halves are known.
+declare -A MBUS_EXCLUDE_BY_NAME=()
 declare -A MBUS_LAST_OK=()
 declare -A MBUS_CLASH=()
 
@@ -280,7 +293,7 @@ write_mbus_conf() {
 
 refresh_mbus_meter_files() {
   rm -f "${MBUS_METER_DIR}/meter-"* 2>/dev/null || true
-  local n=0 skipped=0 meter_json name addr driver driver_other key poll calc stat calc_lines stat_lines file
+  local n=0 skipped=0 meter_json name addr driver driver_other key poll calc stat excl calc_lines stat_lines file
 
   MBUS_METERS_OK=0
   MBUS_METERS_SKIPPED=0
@@ -298,8 +311,14 @@ refresh_mbus_meter_files() {
     driver_other="$(echo "${meter_json}" | jq -r '.type_other // empty')"
     key="$(echo "${meter_json}" | jq -r '.key // empty')"
     poll="$(echo "${meter_json}" | jq -r '.poll_interval // empty')"
+    excl="$(echo "${meter_json}" | jq -r '.exclude_fields // empty' | tr ',' ' ')"
     calc="$(echo "${meter_json}" | jq -r '.calculated_fields // empty')"
     stat="$(echo "${meter_json}" | jq -r '.static_fields // empty')"
+    if [[ -n "${excl}" && "${excl}" != "null" ]]; then
+      MBUS_EXCLUDE_BY_NAME["${name}"]="${excl}"
+    else
+      unset 'MBUS_EXCLUDE_BY_NAME[${name}]'
+    fi
 
     # Primary addresses are p1..p250; 0x00 is the factory "unset" value and
     # 0xFB-0xFF are reserved or broadcast. Secondary addressing uses 8 hex.
@@ -362,6 +381,22 @@ refresh_mbus_meter_files() {
   fi
 }
 
+# Append one decoder line to the console log as "HH:MM:SS<TAB>seq<TAB>line".
+# Stamped here because it cannot be recovered later: webui.py reads a finished
+# file, not a stream. mbus_consume_line still receives the untouched line, so
+# nothing that parses decoder output ever sees the prefix.
+mbus_log_console_line() {
+  local line="$1" stamp
+  # if/fi rather than "[[ ]] &&": a false test as the last statement would make
+  # this function return 1, and it runs inside a pipeline.
+  if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
+    MBUS_READ_SEQ=$(( MBUS_READ_SEQ + 1 ))
+  fi
+  # printf's %(...)T is a bash builtin; `date` would fork once per line.
+  printf -v stamp '%(%H:%M:%S)T' -1
+  printf '%s\t%s\t%s\n' "${stamp}" "${MBUS_READ_SEQ}" "${line}" >> "${MBUS_LOG}"
+}
+
 # ------------------------------------------------------------
 # Line consumer
 # ------------------------------------------------------------
@@ -397,6 +432,15 @@ mbus_consume_line() {
       # still accepted (measured on the simulator), so "when did we last hear
       # from it" is the only answer that means anything.
       MBUS_LAST_OK["${name}"]="$(epoch_now)"
+      # The id is only now known, and field_excluded_for_meter() looks the
+      # patterns up by id. Set before emit_discovery_from_json() below, or
+      # the first telegram of every run would publish the excluded fields.
+      if [[ -n "${MBUS_EXCLUDE_BY_NAME[${name}]:-}" ]]; then
+        # shellcheck disable=SC2034  # read by field_excluded_for_meter() in 08-discovery-helpers.sh
+        METER_EXCLUDE_FIELDS["${id,,}"]="${MBUS_EXCLUDE_BY_NAME[${name}]}"
+      else
+        unset 'METER_EXCLUDE_FIELDS[${id,,}]'
+      fi
     fi
 
     if [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]]; then
@@ -465,9 +509,14 @@ start_mbus_instance() {
     while true; do
       local _t0
       _t0="$(epoch_now)"
+      # tee wrote the decoder's line verbatim, with no time and no boundary
+      # between readings. Logging inside the loop instead lets the log carry a
+      # stamp while mbus_consume_line still gets the untouched line.
       ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${MBUS_BASE}" 2>&1 \
-        | tee -a "${MBUS_LOG}" \
-        | while IFS= read -r line; do mbus_consume_line "${line}"; done &
+        | while IFS= read -r line; do
+            mbus_log_console_line "${line}"
+            mbus_consume_line "${line}"
+          done &
       local pipeline_pid=$!
       wait "${pipeline_pid}" 2>/dev/null || true
       # Only an exiting process gets here. A vanished port does not end the

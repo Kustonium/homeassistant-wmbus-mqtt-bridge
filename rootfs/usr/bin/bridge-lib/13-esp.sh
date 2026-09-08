@@ -451,8 +451,15 @@ STATUS_ESP_EVENTS_FILE="${BASE}/status_esp_events.tsv"
 STATUS_ESP_SUGGESTION_FILE="${BASE}/status_esp_suggestion.json"
 STATUS_ESP_BOOT_FILE="${BASE}/status_esp_boot.json"
 touch "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
+if [[ "${ESP_DIAG_HISTORY_ENABLED:-false}" == "true" ]]; then
+  touch "${ESP_DIAG_HISTORY_FILE}" 2>/dev/null || true
+fi
 (
   _n=0
+  _diag_since_trim=0
+  if [[ "${ESP_DIAG_HISTORY_ENABLED:-false}" == "true" ]]; then
+    _trim_esp_rx_history "${ESP_DIAG_HISTORY_FILE}" 10000 9000 || true
+  fi
   while true; do
     _sub_t0="$(epoch_now)"
     while IFS=$'\t' read -r _etopic _epayload; do
@@ -469,6 +476,19 @@ touch "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
       esac
       printf '%s\t%s\t%s\t%s\n' "${_ets}" "${_evtype}" "${_etopic}" "${_epayload}" \
         >> "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
+      # The dev capture retains only evidence needed for radio-path analysis.
+      # Other summary/config/boot traffic remains available in the rolling UI
+      # log but is not duplicated into this larger persistent JSONL history.
+      if [[ "${ESP_DIAG_HISTORY_ENABLED:-false}" == "true" \
+          && ( "${_etopic}" == wmbus/*/diag/lr_fifo/* || "${_etopic}" == wmbus/*/diag/lr_drop/* ) ]]; then
+        _diag_src="${_etopic#wmbus/}"; _diag_src="${_diag_src%%/diag/*}"
+        _append_esp_diag_history "${ESP_DIAG_HISTORY_FILE}" "${_ets}" "${_diag_src}" "${_etopic}" "${_epayload}" || true
+        _diag_since_trim=$((_diag_since_trim + 1))
+        if (( _diag_since_trim >= 100 )); then
+          _trim_esp_rx_history "${ESP_DIAG_HISTORY_FILE}" 10000 9000 || true
+          _diag_since_trim=0
+        fi
+      fi
       _n=$(( _n + 1 ))
       if (( _n % 50 == 0 )); then
         tail -n 200 "${STATUS_ESP_EVENTS_FILE}" > "${STATUS_ESP_EVENTS_FILE}.tmp" 2>/dev/null \

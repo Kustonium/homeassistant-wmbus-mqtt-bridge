@@ -2,6 +2,9 @@ configuration:
   esp_rx_api_enabled:
     name: "API danych dowodowych ESP RX"
     description: "Udostępnia tylko do odczytu endpoint WebUI /api/esp-rx z podsumowaniem i ograniczoną historią RX. Domyślnie wyłączone; nigdy nie zwraca RAW, kluczy AES ani danych logowania MQTT."
+  esp_diag_history_enabled:
+    name: "Historia diagnostyki radiowej ESP (zaawansowane)"
+    description: "Zapisuje do 10 000 zdarzeń fifo_sample i pipeline_drop z MQTT, włącznie z surowymi bajtami radia. Służy wyłącznie do analizy problemów odbiornika, zwiększa użycie dysku i domyślnie jest wyłączone. Wymaga także API danych dowodowych ESP RX, aby pobrać historię."
   qds_walkby_enabled:
     name: "Blok walk-by Qundis (zaawansowane)"
     description: >-
