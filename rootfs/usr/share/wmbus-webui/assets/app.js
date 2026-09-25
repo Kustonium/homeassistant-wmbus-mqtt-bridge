@@ -247,15 +247,15 @@
     const filters = [
       ["all",         t("filter_all",         "Wszystkie")],
       ["water",       t("media_water",         "Woda")],
-      ["electricity", t("media_electricity",   "Prąd")],
-      ["heat",        t("media_heat",          "Ciepło")],
-      ["warm_water",  t("media_warm_water",    "Ciepła woda")],
+      ["electricity", t("media_electricity",   "Electricity")],
+      ["heat",        t("media_heat",          "Heat")],
+      ["warm_water",  t("media_warm_water",    "Warm water")],
       ["other",       t("media_other",         "Inne")],
     ];
     const chips = filters.map(([key, label]) =>
       `<span class="filter${key === active ? " active" : ""}" data-action="media-filter" data-filter="${key}" style="cursor:pointer;">${escapeHtml(label)}</span>`
     ).join("");
-    return `<div class="filters"><span style="color:#9eafba;font-size:12px;">${escapeHtml(t("show", "Pokaż:"))}</span> ${chips}</div>`;
+    return `<div class="filters"><span style="color:#9eafba;font-size:12px;">${escapeHtml(t("show", "Show:"))}</span> ${chips}</div>`;
   }
 
   // Filter array rows by current mediaFilter; typeField is the row property

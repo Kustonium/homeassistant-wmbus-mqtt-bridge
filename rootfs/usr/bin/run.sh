@@ -129,7 +129,7 @@ wait_for_ha_mqtt() {
 if [[ "${MQTT_MODE}" == "ha" ]]; then
   if ! wait_for_ha_mqtt; then
     run_error "no_ha_service" ""
-    bashio::log.fatal "mqtt_mode=ha, ale w Home Assistant nie wykryto usługi MQTT. Zainstaluj/uruchom Mosquitto Broker add-on albo przełącz na mqtt_mode=external."
+    bashio::log.fatal "mqtt_mode=ha, but no MQTT service was found in Home Assistant. Install/start the Mosquitto Broker add-on or switch to mqtt_mode=external."
     exit 1
   fi
   MQTT_HOST="$(bashio::services mqtt "host")"
@@ -201,10 +201,10 @@ else
       if [[ -z "${MQTT_HOST:-}" ]]; then
         if [[ -n "${DETECTED_NEEDS_AUTH}" ]]; then
           run_error "auth_required" "${DETECTED_NEEDS_AUTH}:1883"
-          bashio::log.fatal "Wykryto działający broker MQTT pod ${DETECTED_NEEDS_AUTH}:1883, ale odrzuca logowanie. Wpisz external_mqtt_username/external_mqtt_password (tryb auto ich użyje), albo ustaw mqtt_mode=external z external_mqtt_host=${DETECTED_NEEDS_AUTH} i danymi logowania."
+          bashio::log.fatal "Found a running MQTT broker at ${DETECTED_NEEDS_AUTH}:1883, but it rejects the login. Set external_mqtt_username/external_mqtt_password (auto mode will use them), or set mqtt_mode=external with external_mqtt_host=${DETECTED_NEEDS_AUTH} and the credentials."
         else
           run_error "no_broker" ""
-          bashio::log.fatal "Nie wykryto usługi MQTT w HA (Mosquitto), żadnego znanego brokera-add-onu (core-mosquitto, a0d7b954-emqx), a external_mqtt_host jest puste. Ustaw mqtt_mode=external oraz podaj external_mqtt_host, albo zainstaluj Mosquitto Broker add-on."
+          bashio::log.fatal "No MQTT service found in HA (Mosquitto), no known broker add-on (core-mosquitto, a0d7b954-emqx), and external_mqtt_host is empty. Set mqtt_mode=external and provide external_mqtt_host, or install the Mosquitto Broker add-on."
         fi
         # Pace the s6 restart loop: the auth-required FATAL can now fire
         # within seconds of start (no 60 s service wait on that path), and an
