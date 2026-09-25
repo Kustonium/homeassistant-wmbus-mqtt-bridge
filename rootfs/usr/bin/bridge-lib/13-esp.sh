@@ -441,11 +441,15 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
       _rx_meta_id="$(jq -r '.meter_id' <<< "${_rx_meta_norm}")"
       _rx_meta_boot="$(jq -r '.boot_id' <<< "${_rx_meta_norm}")"
       _rx_meta_seq="$(jq -r '.seq' <<< "${_rx_meta_norm}")"
+      _rx_meta_mode="$(jq -r '.mode' <<< "${_rx_meta_norm}")"
       _rx_meta_now="$(epoch_now)"
 
       _upsert_esp_meter_reception \
         "${STATUS_ESP_RX_RECEPTION_FILE}" "${_rx_meta_id}" "${_rx_meta_dev}" \
         "${_rx_meta_now}" "${_rx_meta_topic}" || true
+      _upsert_esp_meter_mode \
+        "${STATUS_ESP_RX_MODE_FILE}" "${_rx_meta_id}" "${_rx_meta_mode}" \
+        "${_rx_meta_now}" || true
       _append_esp_rf_rx_history \
         "${ESP_RF_RX_HISTORY_FILE}" "${_rx_meta_now}" "${_rx_meta_dev}" "${_rx_meta_norm}" || true
       _upsert_esp_rx_sequence \

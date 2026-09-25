@@ -134,6 +134,7 @@ STATUS_ESP_METER_RECEPTION_FILE = BASE / "status_esp_meter_reception.tsv"
 # Same session view populated from structured ESP RF metadata. When rows exist
 # for a meter, these replace /telegram-derived counts for that meter.
 STATUS_ESP_RX_RECEPTION_FILE = BASE / "status_esp_rx_reception.tsv"
+STATUS_ESP_RX_MODE_FILE = BASE / "status_esp_rx_mode.tsv"
 STATUS_ESP_RX_SEQUENCE_FILE = BASE / "status_esp_rx_sequence.tsv"
 STATUS_ESP_RX_BOOTS_FILE = BASE / "status_esp_rx_boots.tsv"
 STATUS_ESP_RX_CLOCK_FILE = BASE / "status_esp_rx_clock.tsv"
@@ -2863,6 +2864,26 @@ def state(include_ignored: bool = False) -> dict:
                 band_by_id[_amid] = _aband
                 band_source_by_id[_amid] = "listen_mode"
 
+    # Every band a meter's frames actually arrived on, from the per-frame /rx
+    # metadata (all meters, not only highlight_meters). A meter can transmit on
+    # more than one band - Techem sends T1 and C1 - so this is a list, busiest
+    # band first, with its frame count. It is what a node in listen_mode both
+    # needs: its configuration cannot say which band a frame was on, the frame
+    # can.
+    _modes_by_id: dict[str, dict[str, int]] = {}
+    for _mrow in read_tsv(STATUS_ESP_RX_MODE_FILE, ["id", "mode", "count", "last_seen"]):
+        _mmid = normalize_meter_id(_mrow.get("id"))
+        _mmode = _band_norm(_mrow.get("mode"))
+        _mcount = safe_int(_mrow.get("count", 0))
+        if _mmid and _mmode and _mcount > 0:
+            _per_mode = _modes_by_id.setdefault(_mmid, {})
+            _per_mode[_mmode] = _per_mode.get(_mmode, 0) + _mcount
+
+    def _bands(mid: str) -> list:
+        return [{"band": k, "count": v}
+                for k, v in sorted(_modes_by_id.get(mid, {}).items(),
+                                   key=lambda kv: (-kv[1], kv[0]))]
+
     def _rx_esps(mid: str) -> list:
         _per = reception_by_esp.get(mid)
         if not _per:
@@ -2882,6 +2903,7 @@ def state(include_ignored: bool = False) -> dict:
         # wM-Bus band the telegrams arrived on; "" when nothing can say so.
         c["band"] = band_by_id.get(normalize_meter_id(c.get("id")), "")
         c["band_source"] = band_source_by_id.get(normalize_meter_id(c.get("id")), "")
+        c["bands"] = _bands(normalize_meter_id(c.get("id")))
         # preview_active = there's a preview config for this candidate.
         # Single source of truth = filesystem; one-shot RAW decoders consume the
         # config without touching the always-on LISTEN pipeline.
@@ -2905,6 +2927,7 @@ def state(include_ignored: bool = False) -> dict:
         m["reception_esps"] = _rx_esps(normalize_meter_id(m.get("id") or m.get("meter_id")))
         m["band"] = band_by_id.get(normalize_meter_id(m.get("id") or m.get("meter_id")), "")
         m["band_source"] = band_source_by_id.get(normalize_meter_id(m.get("id") or m.get("meter_id")), "")
+        m["bands"] = _bands(normalize_meter_id(m.get("id") or m.get("meter_id")))
 
     # A wired meter's frame id is learned only from its first valid reply.  The
     # M-Bus runtime file is therefore the authoritative link between a decoded
@@ -2921,6 +2944,7 @@ def state(include_ignored: bool = False) -> dict:
             m["reception_esps"] = []
             m["band"] = ""
             m["band_source"] = ""
+            m["bands"] = []
         else:
             m["source"] = "radio"
 
