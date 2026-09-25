@@ -577,6 +577,16 @@
   function encBadge(enc, note) {
     const e = (enc || "").toLowerCase();
     if (!e) return `<span class="pill muted" title="${escapeHtml(t("enc_unknown", "Not yet analyzed"))}">?</span>`;
+    // "partial": the analysed telegram was encrypted, yet another telegram from
+    // the same meter decoded without a key. Seen on meters that transmit two
+    // telegrams - Techem sends its own plain format on T1 and an OMS AES frame
+    // on C1. The value comes from the plain one; the encrypted one is skipped.
+    if (e === "partial") {
+      // The analysis note describes the encrypted telegram only, so it is not
+      // shown here - it would contradict the value read beside it.
+      const pNote = t("enc_partial_note", "This meter sends both plain and AES-encrypted telegrams (often on two bands, e.g. Techem: plain T1, encrypted C1). The value is read from the plain ones without a key; the encrypted ones are skipped.");
+      return `<span class="pill warn" title="${escapeHtml(pNote)}">${escapeHtml(t("enc_partial", "Partly AES"))}</span>`;
+    }
     const bad     = ["encrypted", "aes_required", "aes"].includes(e);
     const unknown = e === "unknown";
     const label   = bad     ? t("enc_aes_req", "AES req.")
@@ -662,7 +672,9 @@
     const previewUnit = previewKey ? unitFromKey(previewKey) : "";
     const rawEnc = String(row.encryption || a.encryption || "").toLowerCase();
     const note = String(row.analysis_note || a.note || "");
-    const effectiveEnc = (rawEnc === "unknown" && pendingPreviewDecoded(row)) ? "no_aes" : rawEnc;
+    const effectiveEnc = (rawEnc === "unknown" && pendingPreviewDecoded(row)) ? "no_aes"
+                       : (["encrypted", "aes_required", "aes"].includes(rawEnc) && pendingPreviewDecoded(row)) ? "partial"
+                       : rawEnc;
     const mfrRaw = String(row.manufacturer || "").trim();
     const mfrCompact = compactManufacturer(mfrRaw);
     const stateText = pendingPreviewDecoded(row) || previewVal
@@ -2063,11 +2075,13 @@
                 // Parallel LISTEN decoded a valid JSON telegram without an AES key →
                 // encryption is resolved as no_aes. Override "unknown" for display only;
                 // status_candidate_analysis.tsv is updated asynchronously by bridge.sh.
-                const effectiveEnc  = (enc === "unknown" &&
-                                       (previewState === "decoded_value" ||
-                                        previewState === "decoded_without_numeric_value"))
-                                      ? "no_aes"
-                                      : enc;
+                const previewDecoded = previewState === "decoded_value" ||
+                                       previewState === "decoded_without_numeric_value";
+                // A telegram decoded without a key settles "unknown" as no AES; if
+                // the analysed telegram was encrypted, the meter sends both kinds.
+                const effectiveEnc  = (enc === "unknown" && previewDecoded) ? "no_aes"
+                                    : (["encrypted", "aes_required", "aes"].includes(enc) && previewDecoded) ? "partial"
+                                    : enc;
                 const aesRequired   = effectiveEnc === "encrypted" || effectiveEnc === "aes_required" || effectiveEnc === "aes";
                 const previewCell   = previewVal
                   ? `<span style="font-weight:700;color:#4df08d;">${escapeHtml(previewVal)}</span>${previewUnit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(previewUnit)}</span>` : ""}${previewKey ? `<div class="mono" style="font-size:10px;color:var(--muted);">${escapeHtml(previewKey)}</div>` : ""}`
