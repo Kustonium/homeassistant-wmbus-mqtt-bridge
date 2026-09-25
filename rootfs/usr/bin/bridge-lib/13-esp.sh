@@ -55,6 +55,25 @@ _rssi_tsv_upsert() {
   ) 9>"${file}.lock"
 }
 
+# True (0) for a boot not seen yet from this ESP, false (1) for a repeat.
+# The firmware publishes its boot event retained on <diag>/boot, and the diag
+# subscriber below resubscribes every 180 s (mosquitto_sub -W is a hard limit,
+# not an idle timeout), so the broker hands the same boot back each time.
+# Without this every copy was logged as a new boot - one every three minutes
+# on a board with hours of uptime - and each copy cleared the suggestion panel.
+# The payload carries the board's uptime at publish time, so a real restart
+# never repeats it. This also collapses the second copy the firmware sends on
+# the bare diag topic at the same moment.
+# State lives in the caller's associative array _ESP_BOOT_SEEN (source -> payload).
+_esp_boot_is_new() {
+  local topic="$1" payload="$2" src
+  src="${topic#wmbus/}"; src="${src%%/diag*}"
+  [[ -n "${src}" ]] || return 0
+  [[ "${_ESP_BOOT_SEEN[${src}]-}" != "${payload}" ]] || return 1
+  _ESP_BOOT_SEEN["${src}"]="${payload}"
+  return 0
+}
+
 start_esp_subscribers() {
 # Track background subscriber PIDs so the soft-reload watcher in bridge.sh can
 # exclude them from its kill — these subscribers must survive pipeline restarts
@@ -457,6 +476,7 @@ fi
 (
   _n=0
   _diag_since_trim=0
+  declare -A _ESP_BOOT_SEEN=()
   if [[ "${ESP_DIAG_HISTORY_ENABLED:-false}" == "true" ]]; then
     _trim_esp_rx_history "${ESP_DIAG_HISTORY_FILE}" 10000 9000 || true
   fi
@@ -474,6 +494,10 @@ fi
         */summary_15min) _evtype="summary_15min" ;;
         */summary_60min) _evtype="summary_60min" ;;
       esac
+      # A retained boot redelivered on resubscribe is not a restart.
+      if [[ "${_evtype}" == "boot" ]] && ! _esp_boot_is_new "${_etopic}" "${_epayload}"; then
+        continue
+      fi
       printf '%s\t%s\t%s\t%s\n' "${_ets}" "${_evtype}" "${_etopic}" "${_epayload}" \
         >> "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
       # The dev capture retains only evidence needed for radio-path analysis.
