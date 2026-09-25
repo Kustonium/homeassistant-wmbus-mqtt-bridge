@@ -172,6 +172,10 @@ ESP_RX_HISTORY_FILE="${BASE}/esp_rx_history.jsonl"
 # wmbus/<device>/rx. Kept separate from the legacy /telegram-derived history so
 # the two observation points can never be mistaken for one another.
 STATUS_ESP_RX_RECEPTION_FILE="${BASE}/status_esp_rx_reception.tsv"
+# Link mode (T1/C1/S1) each meter's /rx frames arrived on, counted per mode.
+# A meter can transmit on two bands at once (Techem sends T1 and C1), and a
+# node in listen_mode both cannot tell them apart from its configuration.
+STATUS_ESP_RX_MODE_FILE="${BASE}/status_esp_rx_mode.tsv"
 ESP_RF_RX_HISTORY_FILE="${BASE}/esp_rf_rx_history.jsonl"
 # Raw radio diagnostic evidence is intentionally separate from /rx metadata.
 # This is used by the isolated dev add-on for LR1121 FIFO/drop investigation.
@@ -235,7 +239,7 @@ RAW_RATE_CUR_MIN_COUNT=0
 # shellcheck disable=SC2034
 RAW_RATE_PREV_MIN_COUNT=0
 
-touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_METER_KEY_PROBLEM_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${STATUS_ESP_METER_DEVICE_FILE}" "${STATUS_ESP_METER_RECEPTION_FILE}" "${ESP_RX_HISTORY_FILE}" "${STATUS_ESP_RX_RECEPTION_FILE}" "${ESP_RF_RX_HISTORY_FILE}" "${ESP_DIAG_HISTORY_FILE}" "${STATUS_ESP_RX_SEQUENCE_FILE}" "${STATUS_ESP_RX_BOOTS_FILE}" "${STATUS_ESP_RX_CLOCK_FILE}" "${STATUS_ESP_CONFIG_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" "${STATUS_BROKER_ERROR_FILE}"
+touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_METER_KEY_PROBLEM_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${STATUS_ESP_METER_DEVICE_FILE}" "${STATUS_ESP_METER_RECEPTION_FILE}" "${ESP_RX_HISTORY_FILE}" "${STATUS_ESP_RX_RECEPTION_FILE}" "${STATUS_ESP_RX_MODE_FILE}" "${ESP_RF_RX_HISTORY_FILE}" "${ESP_DIAG_HISTORY_FILE}" "${STATUS_ESP_RX_SEQUENCE_FILE}" "${STATUS_ESP_RX_BOOTS_FILE}" "${STATUS_ESP_RX_CLOCK_FILE}" "${STATUS_ESP_CONFIG_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" "${STATUS_BROKER_ERROR_FILE}"
 printf '0\n' > "${STATUS_OFFICIAL_METERS_COUNT_FILE}" 2>/dev/null || true
 # Remove any orphaned pending-reload marker left by a hard stop during deferred sleep.
 rm -rf "${BASE}/.reload_listen_pending" 2>/dev/null || true
@@ -247,6 +251,7 @@ mkdir -p "${BASE}/.preview_attempts" 2>/dev/null || true
 : > "${STATUS_ESP_METER_DEVICE_FILE}" 2>/dev/null || true
 : > "${STATUS_ESP_METER_RECEPTION_FILE}" 2>/dev/null || true
 : > "${STATUS_ESP_RX_RECEPTION_FILE}" 2>/dev/null || true
+: > "${STATUS_ESP_RX_MODE_FILE}" 2>/dev/null || true
 : > "${STATUS_ESP_RX_SEQUENCE_FILE}" 2>/dev/null || true
 # Boot history and the clock view are scoped to the bridge session like every
 # other counter here. The 24 h reboot window therefore starts over when the

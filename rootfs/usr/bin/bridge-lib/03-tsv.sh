@@ -59,6 +59,35 @@ _upsert_esp_meter_reception() {
   ) 9>"${file}.lock"
 }
 
+# Per-meter link-mode counts from /rx metadata.
+# Format: id<TAB>mode<TAB>count<TAB>last_seen
+# One row per (meter, mode): a meter heard on T1 and C1 has two rows.
+_upsert_esp_meter_mode() {
+  local file="$1" id="$2" mode="$3" now="$4"
+  case "${mode}" in T1|C1|S1) ;; *) return 0 ;; esac
+  (
+    flock -x 9
+    [[ -f "${file}" ]] || : > "${file}"
+    local _tmp
+    _tmp="$(mktemp "${file}.tmp.XXXXXX")" || return 1
+    if ! awk -F $'\t' -v OFS=$'\t' -v id="${id}" -v mode="${mode}" -v now="${now}" '
+        BEGIN { updated = 0 }
+        $1 == id && $2 == mode {
+          count = ($3 ~ /^[0-9]+$/) ? $3 + 1 : 1
+          print id, mode, count, now
+          updated = 1
+          next
+        }
+        { print }
+        END { if (!updated) print id, mode, 1, now }
+      ' "${file}" > "${_tmp}"; then
+      rm -f "${_tmp}"
+      return 1
+    fi
+    mv "${_tmp}" "${file}" 2>/dev/null || { rm -f "${_tmp}"; true; }
+  ) 9>"${file}.lock"
+}
+
 # Persistent, bounded event history. The payload deliberately contains no RAW
 # telegram and no AES material: only data needed to answer when a given ESP
 # received a given meter. Appends and rotations share one lock.

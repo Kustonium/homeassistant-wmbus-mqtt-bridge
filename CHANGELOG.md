@@ -1,3 +1,8 @@
+## 1.5.65
+
+### Added
+- show every band a meter is heard on, from per-frame /rx mode (4d5adfd)
+
 ## 1.5.64
 
 ### Fixed

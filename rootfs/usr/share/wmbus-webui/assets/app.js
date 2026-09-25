@@ -527,7 +527,20 @@
     // Nothing is rendered when neither source can answer.
     const band = String(row.band || "").toUpperCase();
     let bandHtml = "";
-    if (band === "T1" || band === "C1" || band === "S1") {
+    // Preferred source: the band of every received frame (/rx metadata), one
+    // chip per band the meter was actually heard on, busiest first. A meter can
+    // transmit on several bands at once (Techem: T1 and C1), and on a node in
+    // listen_mode both this is the only source that can tell them apart.
+    const bands = asArray(row.bands).filter((b) => ["T1", "C1", "S1"].includes(String((b && b.band) || "").toUpperCase()));
+    if (bands.length) {
+      const fmtCount = (n) => n >= 1000 ? `${Math.round(n / 100) / 10}k` : String(n);
+      const bandTitle = t("band_from_frames", "link mode of the received telegrams");
+      bandHtml = `<div style="display:flex;flex-wrap:wrap;gap:4px;">${bands.map((b) => {
+        const name = String(b.band).toUpperCase();
+        const count = Number(b.count) || 0;
+        return `<span title="${escapeHtml(`${bandTitle}: ${name} · ${count}`)}" style="${pill}background:#2b3550;color:#9fb4e6;cursor:help;">📻 ${escapeHtml(name)}${bands.length > 1 ? ` · ${fmtCount(count)}` : ""}</span>`;
+      }).join("")}</div>`;
+    } else if (band === "T1" || band === "C1" || band === "S1") {
       const approx = row.band_source === "listen_mode";
       const bandTitle = approx
         ? t("band_from_listen_mode", "band inferred from the receiving ESP's listen_mode, not read from the telegram")
