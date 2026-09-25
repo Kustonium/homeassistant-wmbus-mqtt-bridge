@@ -74,6 +74,19 @@ _esp_boot_is_new() {
   return 0
 }
 
+# True (0) when a diag message is a retained replay the event log must skip.
+# The broker hands every retained topic back on each resubscribe, and the diag
+# subscriber resubscribes every 180 s. Stamped with its arrival time, a replay
+# posed as fresh activity: stale debug samples (lr_fifo/lr_drop) refilled the
+# event log, and a board removed long ago stayed in the device list through its
+# retained topics, keeping "pulse stopped" raised for it indefinitely. The
+# /diag/config snapshot is the one replay the bridge wants (it is retained so
+# each board's settings are learned on subscribe); the subscriber stores it
+# before asking this, so it never reaches the log either.
+_esp_diag_replay_ignored() {
+  [[ "$1" == "1" ]]
+}
+
 start_esp_subscribers() {
 # Track background subscriber PIDs so the soft-reload watcher in bridge.sh can
 # exclude them from its kill — these subscribers must survive pipeline restarts
@@ -482,10 +495,28 @@ fi
   fi
   while true; do
     _sub_t0="$(epoch_now)"
-    while IFS=$'\t' read -r _etopic _epayload; do
+    while IFS=$'\t' read -r _eretained _etopic _epayload; do
       [[ -n "${_etopic}" ]] || continue
       [[ -n "${_epayload}" ]] || continue
       _ets="$(date +%s 2>/dev/null || echo 0)"
+      # Retained /diag/config snapshot: keyed by ESP source name (topic
+      # segment between wmbus/ and /diag/config), refreshed once per boot.
+      # The whole file is rewritten so a removed board eventually falls off.
+      if [[ "${_etopic}" == wmbus/*/diag/config ]]; then
+        _cfg_src="${_etopic#wmbus/}"; _cfg_src="${_cfg_src%/diag/config}"
+        if [[ -n "${_cfg_src}" ]]; then
+          _cfg_cur="{}"
+          [[ -s "${STATUS_ESP_CONFIG_FILE}" ]] && _cfg_cur="$(cat "${STATUS_ESP_CONFIG_FILE}" 2>/dev/null || echo "{}")"
+          if printf '%s' "${_cfg_cur}" | jq --arg src "${_cfg_src}" --argjson t "${_ets}" --argjson pl "${_epayload}" '. + {($src): ($pl + {_bridge_rx_epoch: $t})}' 2>/dev/null > "${STATUS_ESP_CONFIG_FILE}.tmp"; then
+            mv "${STATUS_ESP_CONFIG_FILE}.tmp" "${STATUS_ESP_CONFIG_FILE}" 2>/dev/null || true
+          else
+            rm -f "${STATUS_ESP_CONFIG_FILE}.tmp" 2>/dev/null || true
+          fi
+        fi
+      fi
+      if _esp_diag_replay_ignored "${_eretained}"; then
+        continue
+      fi
       _evtype="$(printf '%s\n' "${_epayload}" | jq -r '.event // "unknown"' 2>/dev/null || echo "unknown")"
       [[ -n "${_evtype}" && "${_evtype}" != "null" ]] || _evtype="unknown"
       # summary_15min and summary_60min publish JSON with "event":"summary" (same as 60s).
@@ -525,21 +556,6 @@ fi
           && mv "${STATUS_ESP_SUGGESTION_FILE}.tmp" "${STATUS_ESP_SUGGESTION_FILE}" 2>/dev/null \
           || true
       fi
-      # Retained /diag/config snapshot: keyed by ESP source name (topic
-      # segment between wmbus/ and /diag/config), refreshed once per boot.
-      # The whole file is rewritten so a removed board eventually falls off.
-      if [[ "${_etopic}" == wmbus/*/diag/config ]]; then
-        _cfg_src="${_etopic#wmbus/}"; _cfg_src="${_cfg_src%/diag/config}"
-        if [[ -n "${_cfg_src}" ]]; then
-          _cfg_cur="{}"
-          [[ -s "${STATUS_ESP_CONFIG_FILE}" ]] && _cfg_cur="$(cat "${STATUS_ESP_CONFIG_FILE}" 2>/dev/null || echo "{}")"
-          if printf '%s' "${_cfg_cur}" | jq --arg src "${_cfg_src}" --argjson t "${_ets}" --argjson pl "${_epayload}" '. + {($src): ($pl + {_bridge_rx_epoch: $t})}' 2>/dev/null > "${STATUS_ESP_CONFIG_FILE}.tmp"; then
-            mv "${STATUS_ESP_CONFIG_FILE}.tmp" "${STATUS_ESP_CONFIG_FILE}" 2>/dev/null || true
-          else
-            rm -f "${STATUS_ESP_CONFIG_FILE}.tmp" 2>/dev/null || true
-          fi
-        fi
-      fi
       if [[ "${_evtype}" == "boot" ]]; then
         printf '%s\n' "${_epayload}" \
           | jq --argjson t "${_ets}" '. + {_bridge_rx_epoch: $t}' 2>/dev/null \
@@ -553,7 +569,7 @@ fi
     done < <(
       ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" \
         -t "wmbus/+/diag" -t "wmbus/+/diag/#" \
-        -F '%t\t%p' -W 180 2>/dev/null
+        -F '%r\t%t\t%p' -W 180 2>/dev/null
     )
     _sub_reconnect_sleep "${_sub_t0}"
   done

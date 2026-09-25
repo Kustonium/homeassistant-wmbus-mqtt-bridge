@@ -1,3 +1,8 @@
+## 1.5.64
+
+### Fixed
+- keep retained diag replays out of the event log (e3b46ae)
+
 ## 1.5.63
 
 ### Fixed
