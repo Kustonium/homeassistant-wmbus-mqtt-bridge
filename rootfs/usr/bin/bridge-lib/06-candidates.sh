@@ -65,7 +65,8 @@ preview_decode_raw_if_requested() {
   # bailed out and the preview was stuck at "pending" forever. When the caller
   # knows the real id, pass it as the hint and skip the unreliable parse.
   local raw="${1:-}" id_hint="${2:-}" id cfg lock_dir slot_dir last_file now last min_interval
-  raw="$(printf '%s' "${raw}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
+  raw="${raw//[[:space:]]/}"
+  raw="${raw^^}"
   [[ "${raw}" =~ ^[0-9A-F]+$ ]] || return 0
   if [[ "${id_hint}" =~ ^[0-9A-Fa-f]{8}$ ]]; then
     id="$(normalize_meter_id "${id_hint}")"
@@ -80,7 +81,7 @@ preview_decode_raw_if_requested() {
     # preview files we actually wrote keys the decode to the real id without any
     # per-vendor parsing. Fall back to the naive parse when nothing matches.
     local _raw_lc _pf _cand _le
-    _raw_lc="$(printf '%s' "${raw}" | tr '[:upper:]' '[:lower:]')"
+    _raw_lc="${raw,,}"
     id=""
     for _pf in "${PREVIEW_METER_DIR}"/meter-preview-*; do
       [[ -e "${_pf}" ]] || continue
@@ -172,7 +173,7 @@ candidate_autodecode_file() {
 
 candidate_type_requires_aes() {
   local type_lc
-  type_lc="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  type_lc="${1,,}"
   [[ "${type_lc}" == *not\ encrypted* || "${type_lc}" == *unencrypted* || "${type_lc}" == *no\ aes* || "${type_lc}" == *no_aes* ]] && return 1
   [[ "${type_lc}" == *encrypted* || "${type_lc}" == *aes* ]]
 }
@@ -441,7 +442,7 @@ status_analyze_candidate_from_text() {
 
   id="$(normalize_meter_id "$1")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
-  type_lc="$(echo "${type_line}" | tr '[:upper:]' '[:lower:]')"
+  type_lc="${type_line,,}"
 
   raw_row="$(status_find_recent_raw_for_id "${id}" || true)"
   raw_ts=""

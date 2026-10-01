@@ -8,10 +8,21 @@ epoch_now() {
   date +%s 2>/dev/null || echo 0
 }
 
+# Pure bash on purpose: this runs for every field of every decoded telegram, and
+# the former echo|tr|sed chain cost three processes per field — on a 5-ESP setup
+# that was most of the add-on's CPU. _obj_id sets REPLY so hot loops can skip
+# even the $(...) subshell.
+_obj_id() {
+  local s="${1,,}"
+  s="${s//[^a-z0-9_]/_}"
+  while [[ "${s}" == *__* ]]; do s="${s//__/_}"; done
+  s="${s#_}"
+  REPLY="${s%_}"
+}
+
 sanitize_obj_id() {
-  echo "$1" \
-    | tr '[:upper:]' '[:lower:]' \
-    | sed -e 's/[^a-z0-9_]/_/g' -e 's/__*/_/g' -e 's/^_//' -e 's/_$//'
+  _obj_id "$1"
+  printf '%s\n' "${REPLY}"
 }
 
 # Adaptive reconnect pause for the background mosquitto_sub loops. Call with

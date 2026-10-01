@@ -39,12 +39,16 @@ _select_primary_meter_value() {
 
 status_meter_seen() {
   local json_line="$1"
-  local id name meter media value_key value value_parts last_seen
-  id="$(normalize_meter_id "$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)")"
+  local id name meter media value_key value value_parts last_seen _id_raw
+  # One jq for the four metadata fields (runs for every decoded telegram).
+  # \x1f, not TAB: TAB is IFS whitespace, so an empty field would collapse
+  # and shift the rest.
+  IFS=$'\x1f' read -r _id_raw name meter media < <(
+    jq -r '"\(.id // "")\u001f\(.name // "")\u001f\(.meter // "")\u001f\(.media // "")"' \
+      <<<"${json_line}" 2>/dev/null || true
+  ) || true
+  id="$(normalize_meter_id "${_id_raw}")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
-  name="$(jq -r '.name // empty' <<<"${json_line}" 2>/dev/null || true)"
-  meter="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
-  media="$(jq -r '.media // empty' <<<"${json_line}" 2>/dev/null || true)"
   value_parts="$(jq -rc '
     [to_entries[]
       | select((.value|type)=="number")

@@ -106,7 +106,8 @@ status_find_recent_raw_for_id() {
   le="$(id_to_le_hex "${id}")"
   [[ -n "${le}" ]] || return 1
   tac "${STATUS_RECENT_RAW_FILE}" 2>/dev/null | while IFS=$'\t' read -r ts len raw; do
-    raw="$(echo "${raw:-}" | tr '[:upper:]' '[:lower:]')"
+    # In-process lowercase: this loop can visit all 200 rows per telegram.
+    raw="${raw,,}"
     if [[ "${raw}" == *"${le}"* ]]; then
       printf '%s\t%s\t%s\n' "${ts}" "${len}" "${raw}"
       return 0

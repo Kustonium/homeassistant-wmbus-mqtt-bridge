@@ -4,7 +4,8 @@ id_to_le_hex() {
   local id
   id="$(normalize_meter_id "$1")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || { echo ""; return 0; }
-  echo "${id:6:2}${id:4:2}${id:2:2}${id:0:2}" | tr '[:upper:]' '[:lower:]'
+  local le="${id:6:2}${id:4:2}${id:2:2}${id:0:2}"
+  echo "${le,,}"
 }
 
 status_raw_seen() {
@@ -206,7 +207,8 @@ status_raw_candidate_seen() {
   local raw="$1"
   local id mfr dev_type existing_driver
 
-  raw="$(echo "${raw}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
+  raw="${raw//[[:space:]]/}"
+  raw="${raw^^}"
   id="$(meter_id_from_raw_hex "${raw}")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
 
@@ -285,12 +287,13 @@ status_raw_candidate_seen() {
 
 normalize_meter_id() {
   local mid_raw="$1"
-  mid_raw="$(echo "${mid_raw}" | tr -d '[:space:]')"
+  # Parameter expansion instead of echo|tr: called several times per telegram.
+  mid_raw="${mid_raw//[[:space:]]/}"
   [[ -z "${mid_raw}" || "${mid_raw}" == "null" ]] && { echo ""; return 0; }
 
   mid_raw="${mid_raw#0x}"
   mid_raw="${mid_raw#0X}"
-  mid_raw="$(echo "${mid_raw}" | tr '[:lower:]' '[:upper:]')"
+  mid_raw="${mid_raw^^}"
 
   [[ "${mid_raw}" =~ ^[0-9A-F]+$ ]] || { echo ""; return 0; }
 
