@@ -35,7 +35,10 @@ inject_rssi_into_json() {
     # Key is [a-z0-9_] and the value an integer, so the object can be built
     # here and merged with ONE jq call for all boards.
     add+="${add:+,}\"${field}\":${dbm}"
-  done < <(awk -F'\t' -v id="${id}" '$1 == id {print}' "${STATUS_RSSI_FILE}" 2>/dev/null || true)
+  # Case-insensitive: the subscriber stores normalize_meter_id output
+  # (uppercase) while id is lowercased above, so a plain == never matched a
+  # meter id containing A-F.
+  done < <(awk -F'\t' -v id="${id}" 'tolower($1) == id {print}' "${STATUS_RSSI_FILE}" 2>/dev/null || true)
 
   [[ -n "${add}" ]] || { printf '%s' "${line}"; return 0; }
   jq -c --argjson add "{${add}}" '. + $add' <<<"${line}" 2>/dev/null \
@@ -187,7 +190,29 @@ STATUS_ESP_METERS_FILE="${BASE}/status_esp_meters.json"
 # is why the value has to travel out of band and be joined back by meter id.
 # The id comes from the topic rather than the payload because the ESP already
 # parses it for its whitelist; no correlation against the frame is needed.
+#
+# Only meters the DECODE instance has a meter file for are stored: the file is
+# read solely by inject_rssi_into_json, which runs for decoded telegrams. Boards
+# publish RSSI for every meter they hear (hundreds on a busy site, times every
+# board), and a locked rewrite of the TSV per message for meters that are never
+# decoded was a quarter of a CPU core on a 5-ESP install. The set of configured
+# ids is re-read from METER_DIR every 30 s (bash only, no forks), so meters added
+# by a soft reload start getting RSSI without restarting this subscriber.
 (
+  declare -A _RSSI_WANTED=()
+  _rssi_wanted_at=0
+  _rssi_load_wanted() {
+    local _mf _l
+    _RSSI_WANTED=()
+    for _mf in "${METER_DIR}"/meter-*; do
+      [[ -f "${_mf}" ]] || continue
+      while IFS= read -r _l; do
+        [[ "${_l}" == id=* ]] || continue
+        _l="${_l#id=}"
+        [[ "${_l}" =~ ^[0-9A-Fa-f]{8}$ ]] && _RSSI_WANTED["${_l^^}"]=1
+      done < "${_mf}"
+    done
+  }
   while true; do
     _rssi_t0="$(epoch_now)"
     while IFS=$'\t' read -r _rssi_topic _rssi_val; do
@@ -196,6 +221,12 @@ STATUS_ESP_METERS_FILE="${BASE}/status_esp_meters.json"
       _rssi_id="${_rssi_topic##*/rssi/}"
       [[ "${_rssi_id}" =~ ^[0-9A-Fa-f]{8}$ ]] || continue
       _rssi_id="$(normalize_meter_id "${_rssi_id}")"
+      printf -v _rssi_now '%(%s)T' -1
+      if (( _rssi_now - _rssi_wanted_at >= 30 )); then
+        _rssi_load_wanted
+        _rssi_wanted_at="${_rssi_now}"
+      fi
+      [[ -n "${_RSSI_WANTED[${_rssi_id}]+x}" ]] || continue
       # Device = topic segment between "wmbus/" and "/rssi/".
       _rssi_dev="${_rssi_topic#wmbus/}"
       _rssi_dev="${_rssi_dev%%/rssi/*}"
@@ -208,7 +239,7 @@ STATUS_ESP_METERS_FILE="${BASE}/status_esp_meters.json"
       [[ "${_rssi_val}" =~ ^-[0-9]+$ ]] || continue
       (( _rssi_val >= -125 && _rssi_val <= -1 )) || continue
       _rssi_tsv_upsert "${STATUS_RSSI_FILE}" "${_rssi_id}" "${_rssi_dev}" \
-        "$(printf '%s\t%s\t%s\t%s' "${_rssi_id}" "${_rssi_val}" "${_rssi_dev}" "$(epoch_now)")"
+        "$(printf '%s\t%s\t%s\t%s' "${_rssi_id}" "${_rssi_val}" "${_rssi_dev}" "${_rssi_now}")"
     done < <(
       ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/rssi/+" -F '%t\t%p' -W 90 2>/dev/null
     )
@@ -444,11 +475,16 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
       IFS='/' read -ra _RX_META_PARTS <<< "${_rx_meta_topic}"
       _rx_meta_dev="${_RX_META_PARTS[1]:-}"
       [[ -n "${_rx_meta_dev}" ]] || continue
-      _rx_meta_id="$(jq -r '.meter_id' <<< "${_rx_meta_norm}")"
-      _rx_meta_boot="$(jq -r '.boot_id' <<< "${_rx_meta_norm}")"
-      _rx_meta_seq="$(jq -r '.seq' <<< "${_rx_meta_norm}")"
-      _rx_meta_mode="$(jq -r '.mode' <<< "${_rx_meta_norm}")"
-      _rx_meta_now="$(epoch_now)"
+      # One jq for every field used below (was five per message). \x1f, not
+      # TAB: an empty received_at must stay an empty last field, and TAB is
+      # IFS whitespace. received_at is empty when the board had no clock yet;
+      # the clock tracker counts those separately.
+      IFS=$'\x1f' read -r _rx_meta_id _rx_meta_boot _rx_meta_seq _rx_meta_mode _rx_meta_rcv < <(
+        jq -r '[.meter_id, .boot_id, .seq, .mode,
+                (try (if .received_at then (.received_at | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601) else "" end) catch "")]
+               | map(tostring) | join("\u001f")' <<< "${_rx_meta_norm}" 2>/dev/null || true
+      ) || true
+      printf -v _rx_meta_now '%(%s)T' -1
 
       _upsert_esp_meter_reception \
         "${STATUS_ESP_RX_RECEPTION_FILE}" "${_rx_meta_id}" "${_rx_meta_dev}" \
@@ -464,9 +500,6 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
       _upsert_esp_rx_boot \
         "${STATUS_ESP_RX_BOOTS_FILE}" "${_rx_meta_dev}" "${_rx_meta_boot}" \
         "${_rx_meta_now}" || true
-      # Empty when the board had no clock yet; the tracker counts those
-      # separately so "no timestamps at all" is visible as a state.
-      _rx_meta_rcv="$(jq -r 'if .received_at then (.received_at | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601) else "" end' <<< "${_rx_meta_norm}" 2>/dev/null || echo "")"
       _upsert_esp_rx_clock \
         "${STATUS_ESP_RX_CLOCK_FILE}" "${_rx_meta_dev}" "${_rx_meta_rcv}" \
         "${_rx_meta_now}" || true
