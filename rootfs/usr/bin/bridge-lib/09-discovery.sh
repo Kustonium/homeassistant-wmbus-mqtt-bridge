@@ -32,15 +32,40 @@ emit_discovery_from_json() {
   local json_line="$1"
   [[ "${DISCOVERY_ENABLED}" == "true" ]] || return 0
 
-  local id name meter media
-  id="$(normalize_meter_id "$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)")"
+  # This function runs for EVERY decoded telegram, and in steady state every
+  # config is already cached, so it must be cheap when it has nothing to do.
+  # One jq call yields the metadata (first line) and the field list (rest);
+  # it used to be six separate jq processes plus per-field forks.
+  local id name meter media has_status _id_raw _feed
+  local -a _fields=()
+  _feed="$(jq -r '
+      "\(.id // "")\u001f\(.name // .id // "wmbus")\u001f\(.meter // "")\u001f\(.media // "")\u001f\(has("status"))",
+      ( to_entries[]
+        | select(.key as $k
+          | ($k != "_")
+          and ($k != "id")
+          and ($k != "name")
+          and ($k != "meter")
+          and ($k != "media")
+          and ($k != "timestamp")
+          and ($k != "device_date_time")
+          and ($k != "rssi")
+          and ($k != "lqi")
+          and ($k != "status")
+        )
+        | select((.value|type) != "object" and (.value|type) != "array")
+        | "\(.value|type)\t\(.key)" )
+    ' <<<"${json_line}" 2>/dev/null || true)"
+  [[ -n "${_feed}" ]] || return 0
+  # \x1f, not TAB: TAB is IFS whitespace, so an empty meter/media would
+  # collapse and shift the following fields.
+  IFS=$'\x1f' read -r _id_raw name meter media has_status <<<"${_feed%%$'\n'*}"
+  [[ "${_feed}" == *$'\n'* ]] && mapfile -t _fields <<<"${_feed#*$'\n'}"
+
+  id="$(normalize_meter_id "${_id_raw}")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
 
   clean_legacy_entities "${id}"
-
-  name="$(jq -r '.name // .id // "wmbus"' <<<"${json_line}" 2>/dev/null || true)"
-  meter="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
-  media="$(jq -r '.media // empty' <<<"${json_line}" 2>/dev/null || true)"
 
   local uniq="wmbus_${id}"
   local state_topic="${STATE_PREFIX}/${id}/state"
@@ -85,12 +110,16 @@ emit_discovery_from_json() {
   # this never disables an entity that already exists; entity_category IS
   # re-applied on every config update, so previously created fields do move
   # into the device's Diagnostics section.
-  while IFS=$'\t' read -r ftype key; do
-    [[ -n "${key}" ]] || continue
+  local _f ftype key
+  for _f in "${_fields[@]}"; do
+    ftype="${_f%%$'\t'*}"
+    key="${_f#*$'\t'}"
+    [[ -n "${key}" && "${key}" != "${_f}" ]] || continue
 
     local obj cache_key key_lc unit device_class state_class entity_category cfg_topic unique_id sensor_name payload field_desc
 
-    obj="$(sanitize_obj_id "${key}")"
+    _obj_id "${key}"
+    obj="${REPLY}"
     [[ -n "${obj}" ]] || continue
 
     # Field excluded by this meter's configuration. Clearing the retained config
@@ -109,7 +138,12 @@ emit_discovery_from_json() {
       continue
     fi
 
-    key_lc="$(echo "${key}" | tr '[:upper:]' '[:lower:]')"
+    # Already published with this expire_after -> nothing to do. Checked before
+    # any classification work: in steady state every field takes this exit.
+    cache_key="${id}|${obj}|${expire_after}"
+    [[ -n "${DISCOVERY_SENT_FIELD[${cache_key}]+x}" ]] && continue
+
+    key_lc="${key,,}"
     if [[ "${ftype}" == "number" ]]; then
       unit="$(guess_unit "${key}")"
       device_class="$(guess_device_class "${key_lc}" "${unit}" "${media}")"
@@ -133,9 +167,6 @@ emit_discovery_from_json() {
     # Looked up here rather than per telegram: the block below runs once per
     # entity, guarded by the DISCOVERY_SENT_FIELD cache.
     field_desc="$(field_description "${meter}" "${key}")"
-
-    cache_key="${id}|${obj}|${expire_after}"
-    [[ -n "${DISCOVERY_SENT_FIELD[${cache_key}]+x}" ]] && continue
 
     payload="$(jq -c -n \
       --arg name "${sensor_name}" \
@@ -192,25 +223,7 @@ emit_discovery_from_json() {
     else
       warn "discovery: failed to publish config for id=${id} field=${key} (will retry on next telegram)"
     fi
-  done < <(
-    jq -r '
-      to_entries[]
-      | select(.key as $k
-        | ($k != "_")
-        and ($k != "id")
-        and ($k != "name")
-        and ($k != "meter")
-        and ($k != "media")
-        and ($k != "timestamp")
-        and ($k != "device_date_time")
-        and ($k != "rssi")
-        and ($k != "lqi")
-        and ($k != "status")
-      )
-      | select((.value|type) != "object" and (.value|type) != "array")
-      | "\(.value|type)\t\(.key)"
-    ' <<<"${json_line}" 2>/dev/null || true
-  )
+  done
 
   # --- status diagnostic entities ---
   # The wmbusmeters "status" field is a string (OK, or space-separated error
@@ -220,8 +233,6 @@ emit_discovery_from_json() {
   # (device_class problem) that is ON for any non-OK value. Passthrough only --
   # the text shown is exactly what wmbusmeters emits; the only literal is the
   # OK baseline (wmbusmeters' default_message for the error-flags lookup).
-  local has_status
-  has_status="$(jq -r 'has("status")' <<<"${json_line}" 2>/dev/null || echo false)"
   if [[ "${has_status}" == "true" ]] && ! field_excluded_for_meter "${id}" "status"; then
     local st_cache st_cfg st_payload bp_cache bp_cfg bp_payload
 

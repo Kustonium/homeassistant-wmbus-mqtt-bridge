@@ -2,7 +2,7 @@
 
 guess_unit() {
   local k
-  k="$(echo "$1" | tr '[:upper:]' '[:lower:]')"
+  k="${1,,}"
   case "${k}" in
     *_kvarh)   echo "kVARh";;
     *_kvah)    echo "kVAh";;

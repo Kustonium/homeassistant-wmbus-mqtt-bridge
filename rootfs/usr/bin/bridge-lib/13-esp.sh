@@ -16,9 +16,8 @@ RSSI_MAX_AGE_S=300
 inject_rssi_into_json() {
   local id="${1,,}" line="$2"
   [[ -s "${STATUS_RSSI_FILE}" ]] || { printf '%s' "${line}"; return 0; }
-  local _rid dbm src ts now src_key field result
+  local _rid dbm src ts now src_key field add=""
   now="$(epoch_now)"
-  result="${line}"
   while IFS=$'\t' read -r _rid dbm src ts; do
     [[ "${dbm}" =~ ^-[0-9]+$ && "${ts}" =~ ^[0-9]+$ ]] || continue
     # Same range as the subscriber: a sentinel that slipped into the file (an
@@ -27,16 +26,20 @@ inject_rssi_into_json() {
     (( now - ts <= RSSI_MAX_AGE_S )) || continue
     # MQTT's `+` topic segment becomes a stable JSON/HA field suffix. Keep the
     # board name recognizable while removing punctuation that cannot belong in
-    # a portable entity id (e.g. "xiao-seed" -> "xiao_seed").
-    src_key="$(printf '%s' "${src}" | tr '[:upper:]' '[:lower:]' \
-      | sed -e 's/[^a-z0-9_]/_/g' -e 's/__*/_/g' -e 's/^_*//' -e 's/_*$//')"
+    # a portable entity id (e.g. "xiao-seed" -> "xiao_seed"). Same rule as
+    # sanitize_obj_id, done in-process: this runs per board per telegram.
+    _obj_id "${src}"
+    src_key="${REPLY}"
     [[ -n "${src_key}" ]] || continue
     field="rssi_${src_key}_dbm"
-    result="$(jq -c --arg k "${field}" --argjson r "${dbm}" '. + {($k): $r}' \
-      <<<"${result}" 2>/dev/null)" || { printf '%s' "${line}"; return 0; }
+    # Key is [a-z0-9_] and the value an integer, so the object can be built
+    # here and merged with ONE jq call for all boards.
+    add+="${add:+,}\"${field}\":${dbm}"
   done < <(awk -F'\t' -v id="${id}" '$1 == id {print}' "${STATUS_RSSI_FILE}" 2>/dev/null || true)
 
-  printf '%s' "${result}"
+  [[ -n "${add}" ]] || { printf '%s' "${line}"; return 0; }
+  jq -c --argjson add "{${add}}" '. + $add' <<<"${line}" 2>/dev/null \
+    || printf '%s' "${line}"
 }
 
 # Atomic upsert keyed by meter id AND ESP device. Unlike the generic TSV helper,
@@ -369,7 +372,10 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
         # L-field and returns "" when the frame does not parse as a standard
         # wM-Bus DLL header, so Diehl/IZAR-style frames simply get no fallback
         # band rather than a wrong one.
-        _md_id="$(meter_id_from_raw_hex "$(printf '%s' "${_tg_payload}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')")"
+        # Whitespace strip + uppercase in-process: this runs for every telegram
+        # from every ESP.
+        _md_hex="${_tg_payload//[[:space:]]/}"
+        _md_id="$(meter_id_from_raw_hex "${_md_hex^^}")"
         if [[ "${_md_id}" =~ ^[0-9A-F]{8}$ && "${_MD_LAST[${_md_id}]:-}" != "${_dev}" ]]; then
           _MD_LAST["${_md_id}"]="${_dev}"
           _md_tmp="${STATUS_ESP_METER_DEVICE_FILE}.tmp"
