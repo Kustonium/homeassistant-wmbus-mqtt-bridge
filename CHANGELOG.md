@@ -1,3 +1,8 @@
+## 1.5.69
+
+### Changed
+- match preview files without subshells on every RAW telegram (ee7a849)
+
 ## 1.5.68
 
 ### Changed
