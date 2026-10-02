@@ -806,10 +806,13 @@ _THREE_LETTERS = re.compile(r"[A-Z]{3}")
 _AES_TYPE = re.compile(r"encrypted|(^|[^a-z])aes([^a-z]|$)", re.IGNORECASE)
 
 
-def candidate_fill_manufacturer(path: str, meter: str, code: str) -> None:
-    """candidate_fill_manufacturer_code: fill column 9 when empty or a bare code."""
+def candidate_fill_manufacturer(path: str, meter: str, code: str) -> bool:
+    """candidate_fill_manufacturer_code: fill column 9 when empty or a bare code.
+
+    True when a fillable row was found and the file rewritten.
+    """
     if not _ID8.fullmatch(meter) or not code or not os.path.isfile(path):
-        return
+        return False
     k = _b(meter)
 
     def fillable(line: bytes) -> bool:
@@ -818,7 +821,7 @@ def candidate_fill_manufacturer(path: str, meter: str, code: str) -> None:
         f = line.split(b"\t")
         return len(f) < 9 or f[8] == b"" or bool(_THREE_LETTERS.fullmatch(_s(f[8])))
     if not any(fillable(ln) for ln in _read_lines(path)):  # lock-free pre-check, as in bash
-        return
+        return False
     with locked(path):
         out = []
         for line in _read_lines(path):
@@ -831,6 +834,7 @@ def candidate_fill_manufacturer(path: str, meter: str, code: str) -> None:
                 line = _b("\t".join(f))
             out.append(line)
         _replace_with(path, out)
+    return True
 
 
 def _bash_read_tab_pair(text: str) -> Tuple[str, str]:
@@ -927,13 +931,25 @@ def seen_stats(path: str, meter: str) -> Tuple[int, int, int, int]:
 
 
 def upsert_candidate_row(path: str, meter: str, driver: str, type_line: str, last_seen: str,
-                         stats: Tuple[int, int, int, int], manufacturer: str = "") -> None:
-    """_upsert_candidate_row: the row moves to the end; an empty manufacturer keeps the old one."""
+                         stats: Tuple[int, int, int, int], manufacturer: str = "",
+                         expect: Optional[Tuple[str, str]] = None) -> bool:
+    """_upsert_candidate_row: the row moves to the end; an empty manufacturer keeps the old one.
+
+    With `expect`, the first row of the id must still hold that driver and
+    type under the lock, or nothing is written and False is returned: another
+    writer (a preview one-shot, a bash registration) changed it after the
+    caller read it, and its newer classification must not be overwritten.
+    """
     k = _b(meter)
     with locked(path):
+        lines = _read_lines(path)
+        if expect is not None:
+            row = next((_s(ln).split("\t") for ln in lines if _first_field(ln) == k), None)
+            if row is None or (_field(row, 2), _field(row, 3)) != expect:
+                return False
         final = manufacturer
         out = []
-        for line in _read_lines(path):
+        for line in lines:
             if _first_field(line) == k:
                 f = _s(line).split("\t")
                 if final == "" and len(f) >= 9 and f[8] != "":
@@ -943,6 +959,7 @@ def upsert_candidate_row(path: str, meter: str, driver: str, type_line: str, las
         out.append(_b("\t".join([meter, driver, type_line, last_seen]
                                 + [str(n) for n in stats] + [final])))
         _replace_with(path, out)
+    return True
 
 
 def find_recent_raw(path: str, meter: str) -> Optional[Tuple[str, str, str]]:
@@ -988,29 +1005,40 @@ def analyze_candidate_from_text(files: CandidateFiles, meter: str, type_line: st
 
 
 def candidate_seen_refresh(files: CandidateFiles, meter: str, driver: str, type_line: str,
-                           manufacturer: str = "") -> None:
+                           manufacturer: str = "") -> bool:
     """status_candidate_seen for a candidate that is already registered.
 
     The reception row (2 s threshold), the stats, the candidate row and the
     RAW analysis, written as the bash function writes them. What is left of
     status_candidate_seen stays in bash: the "Candidate detected" event of a
     new row, the preview config and its state machine (ensure_candidate_autodecode)
-    and status.json. Call it only when autodecode_unchanged() holds.
+    and status.json. Call it only when autodecode_unchanged() holds and the
+    row holds this driver and type; that is checked again under the lock, and
+    when another writer changed the row in between, nothing more is written
+    and False is returned - the caller then hands the telegram to bash.
     """
     record_seen(files.seen, meter, "candidate")
     last_seen = iso_now()
-    upsert_candidate_row(files.candidates, meter, driver, type_line, last_seen,
-                         seen_stats(files.seen, meter), manufacturer)
+    if not upsert_candidate_row(files.candidates, meter, driver, type_line, last_seen,
+                                seen_stats(files.seen, meter), manufacturer,
+                                expect=(driver, type_line)):
+        return False
     analyze_candidate_from_text(files, meter, type_line)
+    return True
+
+
+def official_meter(meter_dir: str, meter: str) -> bool:
+    """`grep -ql "^id=<id>$" meter-*`: the candidate is a configured meter."""
+    line = _b(f"id={meter.lower()}")
+    return any(os.path.isfile(p) and line in _read_lines(p)
+               for p in glob.glob(os.path.join(meter_dir, "meter-*")))
 
 
 def autodecode_unchanged(files: CandidateFiles, meter: str, driver: str, type_line: str) -> bool:
     """True when ensure_candidate_autodecode would change nothing for this candidate."""
     preview = os.path.join(files.preview_meter_dir, f"meter-preview-{meter}")
-    official = _b(f"id={meter.lower()}")
-    for path in glob.glob(os.path.join(files.meter_dir, "meter-*")):
-        if os.path.isfile(path) and official in _read_lines(path):
-            return not os.path.isfile(preview)  # bash removes the preview of an official meter
+    if official_meter(files.meter_dir, meter):
+        return not os.path.isfile(preview)  # bash removes the preview of an official meter
     if candidate_type_requires_aes(type_line):
         return not os.path.isfile(preview)  # ... and the preview of an AES meter
     expected = f"name=preview_{meter}\nid={meter.lower()}\n"
@@ -1041,6 +1069,16 @@ def raw_is_encrypted(raw: str) -> bool:
         return False
     cfg_hi = raw[28:30]
     return bool(re.fullmatch(r"[0-9A-F]{2}", cfg_hi)) and int(cfg_hi, 16) & 0x1F != 0
+
+
+def preview_state(path: str, meter: str) -> str:
+    """`awk '$1 == id { s = $2 } END { print s }'` on the preview state file."""
+    k, state = _b(meter), ""
+    for line in _read_lines(path):
+        f = line.split(b"\t")
+        if f[0] == k:
+            state = _s(f[1]) if len(f) > 1 else ""
+    return state
 
 
 class RawBook:
@@ -1141,8 +1179,8 @@ class RawBook:
             new_driver = "auto"
             new_type = map_device_type(dev_type) + (" encrypted" if raw_is_encrypted(norm) else "")
         if (driver == new_driver and type_line == new_type
-                and autodecode_unchanged(self.candidates, meter, new_driver, new_type)):
-            candidate_seen_refresh(self.candidates, meter, new_driver, new_type)
+                and autodecode_unchanged(self.candidates, meter, new_driver, new_type)
+                and candidate_seen_refresh(self.candidates, meter, new_driver, new_type)):
             return
         self.request("sap", raw)
 
@@ -1172,6 +1210,9 @@ class RawBook:
             return
         last = _digits_or_zero(os.path.join(a.preview_last_dir, meter))
         if int(now()) - int(last) < a.preview_min_interval:
+            return
+        if (int(now()) - int(last) < a.preview_decoded_min_interval
+                and preview_state(a.preview_state_file, meter) == "decoded_value"):
             return
         self.request("preview", raw, meter)
 
@@ -1256,6 +1297,137 @@ def run_lines(book: "RawBook", stream=None, err=None) -> None:
             print(f"[wmbus-bridge][WARN] ledger: RAW telegram skipped: {exc!r}", file=err, flush=True)
 
 
+# ── parallel LISTEN output (parse_listen_candidates) ────────────────────────
+
+_LISTEN_RECEIVED = re.compile(r"Received telegram from: ([0-9A-Fa-f]{8})")
+_LISTEN_TYPE = re.compile(r"[ \t\n\v\f\r]*type:[ \t\n\v\f\r]*(.*)")
+_LISTEN_DRIVER = re.compile(r"[ \t\n\v\f\r]*driver: ([a-zA-Z0-9_]+)")
+_LISTEN_MANUFACTURER = re.compile(r"[ \t\n\v\f\r]*manufacturer:[ \t\n\v\f\r]*(.*)")
+
+
+class ListenBook:
+    """parse_listen_candidates: the candidate bookkeeping of the pure LISTEN instance.
+
+    Collects one text block per telegram (id, type, driver, manufacturer) and
+    books it when the next block starts, as the bash parser does. A candidate
+    that is already registered with the same driver and type, whose preview
+    config would stay as it is and that was already announced, is refreshed
+    here with candidate_seen_refresh. Everything else is asked of the bash loop
+    behind it (see _listen_parse_stage), one request per line, fields
+    separated by 0x1F so that empty fields survive `read`: a new or changed
+    candidate ("snippet": emit_snippet_if_new), SEARCH ("search":
+    search_cache_candidate) and decoded JSON ("json").
+    """
+
+    SEP = "\x1f"
+
+    def __init__(self, a: argparse.Namespace, out=None, err=None) -> None:
+        self.a = a
+        self.out = out if out is not None else sys.stdout
+        self.err = err if err is not None else sys.stderr
+        self.candidates = CandidateFiles(a.candidates_file, a.seen_file, a.recent_raw_file,
+                                         a.candidate_raw_file, a.candidate_analysis_file,
+                                         a.preview_meter_dir, a.meter_dir)
+        self.block = ("", "", "", "")
+
+    def request(self, *fields: str) -> None:
+        try:
+            self.out.write(self.SEP.join(fields) + "\n")
+            self.out.flush()
+        except OSError:
+            pass
+
+    def log(self, level: str, message: str) -> None:
+        """log_debug / log_verbose: printed only at those log levels."""
+        if self.a.loglevel == "debug" or (level == "verbose" and self.a.loglevel == "verbose"):
+            print(f"[wmbus-bridge] {message}", file=self.err, flush=True)
+
+    def line(self, text: str) -> None:
+        if text.startswith("{") and '"_":"telegram"' in text:
+            self.request("json", text)
+            return
+        meter, driver, type_line, manufacturer = self.block
+        m = _LISTEN_RECEIVED.match(text)
+        if m:
+            self.flush()
+            self.block = (m.group(1).upper(), "", "", "")
+        elif _LISTEN_TYPE.match(text):
+            self.block = (meter, driver, _LISTEN_TYPE.match(text).group(1), manufacturer)
+        elif _LISTEN_DRIVER.match(text):
+            self.block = (meter, _LISTEN_DRIVER.match(text).group(1), type_line, manufacturer)
+        elif _LISTEN_MANUFACTURER.match(text):
+            self.block = (meter, driver, type_line, _LISTEN_MANUFACTURER.match(text).group(1))
+
+    def official_meters(self) -> int:
+        """official_meters_count_current."""
+        try:
+            with open(self.a.official_count_file, "rb") as fh:
+                text = _s(fh.read()).rstrip("\n")
+        except OSError:
+            text = self.a.official_count_default
+        return int(text) if re.fullmatch(r"[0-9]+", text) else 0
+
+    def flush(self) -> None:
+        """_process_listen_text_block for the block collected so far."""
+        meter, driver, type_line, manufacturer = self.block
+        self.block = ("", "", "", "")
+        if meter and manufacturer:  # candidate_update_manufacturer_text
+            if candidate_fill_manufacturer(self.candidates.candidates, meter, manufacturer):
+                self.log("debug", f"[DIAG] candidate {meter}: updated manufacturer text "
+                                  f"from LISTEN block to {manufacturer}")
+        if not meter or not driver:
+            return
+        if self.official_meters() <= 0:
+            return
+        if self.a.search_mode == "true" and self.a.search_expected != "0":
+            self.request("search", meter, driver, type_line)
+            return
+        if not self.refresh(meter, driver, type_line or "listen", manufacturer):
+            self.request("snippet", meter, driver, type_line, manufacturer)
+
+    def refresh(self, meter: str, driver: str, type_line: str, manufacturer: str) -> bool:
+        """emit_snippet_if_new for a known, announced candidate; False leaves it to bash."""
+        files = self.candidates
+        if _b(meter) not in _read_lines(self.a.snippet_file):
+            return False
+        k = _b(meter)
+        row = next((_s(ln).split("\t") for ln in _read_lines(files.candidates)
+                    if _first_field(ln) == k), None)
+        if row is None or _field(row, 2) != driver or _field(row, 3) != type_line:
+            return False
+        if not autodecode_unchanged(files, meter, driver, type_line):
+            return False
+        if not candidate_seen_refresh(files, meter, driver, type_line, manufacturer):
+            return False
+        # What ensure_candidate_autodecode logs for an unchanged candidate.
+        preview = os.path.join(files.preview_meter_dir, f"meter-preview-{meter}")
+        if not official_meter(files.meter_dir, meter):
+            self.log("debug", f"[DIAG] autodecode {meter}: file={preview} driver={driver} "
+                              f"type={type_line} reload=true")
+            if candidate_type_requires_aes(type_line):
+                self.log("verbose", f"[DIAG] autodecode {meter}: AES required, skipping preview")
+            else:
+                self.log("debug", f"[DIAG] autodecode {meter}: {preview} unchanged, no reload triggered")
+        return True
+
+
+def run_listen(book: ListenBook, stream=None, err=None) -> None:
+    """The parser loop (`while IFS= read -r line`), then the flush of the last block."""
+    stream = stream if stream is not None else sys.stdin.buffer
+    err = err if err is not None else sys.stderr
+    for raw in stream:
+        if not raw.endswith(b"\n"):  # `read` does not hand over an unterminated last line
+            continue
+        try:
+            book.line(_s(raw[:-1]))
+        except Exception as exc:  # one bad line must not stop the parser
+            print(f"[wmbus-bridge][WARN] ledger: LISTEN line skipped: {exc!r}", file=err, flush=True)
+    try:
+        book.flush()
+    except Exception as exc:
+        print(f"[wmbus-bridge][WARN] ledger: LISTEN block skipped: {exc!r}", file=err, flush=True)
+
+
 def run(handler: Handler, stream=None, err=None) -> None:
     """Feed every line of stream to handler until EOF; a failing message is skipped."""
     stream = stream if stream is not None else sys.stdin.buffer
@@ -1290,12 +1462,23 @@ def _parser() -> argparse.ArgumentParser:
     raw.add_argument("--preview-meter-dir", required=True)
     raw.add_argument("--preview-last-dir", required=True)
     raw.add_argument("--preview-min-interval", type=int, default=20)
+    raw.add_argument("--preview-state-file", default="")
+    raw.add_argument("--preview-decoded-min-interval", type=int, default=300)
     # Values the counter subshell inherits when the pipeline starts; they go
     # into status.json unchanged, as the bash counter wrote them.
     for name in ("raw-topic", "state-prefix", "discovery-prefix", "search-mode", "loglevel",
                  "mqtt-host", "mqtt-port", "decoded-count", "last-decoded-seen",
                  "last-error", "last-event", "discovery-published", "discovery-published-at"):
         raw.add_argument(f"--{name}", default="")
+    listen = modes.add_parser("listen", help="output of the pure LISTEN wmbusmeters instance")
+    for name in ("candidates", "seen", "recent-raw", "candidate-raw", "candidate-analysis",
+                 "snippet", "official-count"):
+        listen.add_argument(f"--{name}-file", required=True)
+    listen.add_argument("--meter-dir", required=True)
+    listen.add_argument("--preview-meter-dir", required=True)
+    # Values the parser subshell inherits when the LISTEN instance starts.
+    for name in ("official-count-default", "search-mode", "search-expected", "loglevel"):
+        listen.add_argument(f"--{name}", default="")
     rx = modes.add_parser("rx", help="wmbus/<board>/rx messages")
     for name in ("reception", "mode", "history", "sequence", "boots", "clock"):
         rx.add_argument(f"--{name}-file", required=True)
@@ -1311,6 +1494,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         run(RssiBook(args.meter_dir, args.rssi_file))
     elif args.mode == "raw":
         run_lines(RawBook(args))
+    elif args.mode == "listen":
+        run_listen(ListenBook(args))
     elif args.mode == "tracker":
         run(TrackerBook(args.dev_pos, args.devices_file, args.meter_device_file,
                         args.reception_file, args.history_file))

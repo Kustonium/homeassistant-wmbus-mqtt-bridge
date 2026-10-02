@@ -64,7 +64,7 @@ preview_decode_raw_if_requested() {
   # never matches the preview config keyed by the candidate id, so the one-shot
   # bailed out and the preview was stuck at "pending" forever. When the caller
   # knows the real id, pass it as the hint and skip the unreliable parse.
-  local raw="${1:-}" id_hint="${2:-}" id cfg lock_dir slot_dir last_file now last min_interval
+  local raw="${1:-}" id_hint="${2:-}" id cfg lock_dir slot_dir last_file now last min_interval decoded_interval
   raw="${raw//[[:space:]]/}"
   raw="${raw^^}"
   [[ "${raw}" =~ ^[0-9A-F]+$ ]] || return 0
@@ -109,6 +109,17 @@ preview_decode_raw_if_requested() {
   last="$(cat "${last_file}" 2>/dev/null || echo 0)"
   [[ "${last}" =~ ^[0-9]+$ ]] || last=0
   if (( now - last < min_interval )); then
+    return 0
+  fi
+  # A candidate whose preview already shows a value is decoded again at most
+  # every PREVIEW_DECODED_MIN_INTERVAL_SECONDS (default 300 s): the one-shot
+  # only refreshes that value. States and transitions stay as they are; any
+  # change of the preview config sets "pending" first, which decodes at once.
+  decoded_interval="${PREVIEW_DECODED_MIN_INTERVAL_SECONDS:-300}"
+  [[ "${decoded_interval}" =~ ^[0-9]+$ ]] || decoded_interval=300
+  if (( now - last < decoded_interval )) \
+     && [[ "$(awk -F '\t' -v id="${id}" '$1 == id { s = $2 } END { print s }' \
+              "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" 2>/dev/null)" == "decoded_value" ]]; then
     return 0
   fi
   mkdir "${lock_dir}" 2>/dev/null || return 0
