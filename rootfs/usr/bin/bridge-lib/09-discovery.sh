@@ -470,7 +470,7 @@ publish_esp_coverage() {
   (( _now - ESP_COVERAGE_LAST_S >= ESP_COVERAGE_INTERVAL_S )) || return 0
   ESP_COVERAGE_LAST_S="${_now}"
 
-  # Column 1 = meter id, column 2 = source board (_upsert_esp_meter_reception).
+  # Column 1 = meter id, column 2 = source board (bridge_ledger.py rx/tracker).
   local _total
   _total="$(awk -F '\t' 'NF>=2 && $1!="" {a[$1]=1} END{print length(a)+0}' "${STATUS_ESP_RX_RECEPTION_FILE}" 2>/dev/null || echo 0)"
   [[ "${_total}" =~ ^[0-9]+$ ]] && (( _total > 0 )) || return 0

@@ -27,20 +27,6 @@ emit_snippet_if_new() {
 }
 
 # ------------------------------------------------------------
-# parse_listen_candidates
-# Reads wmbusmeters listen-mode stdout from stdin and emits candidate
-# updates (status_candidates.tsv, status_candidate_analysis.tsv, events).
-# Mirrors the inline listen logic from run_once() (lines that match
-# "Received telegram from:" / type: / driver:), but lives in a parallel
-# subshell so it can run alongside the main DECODE pipeline.
-#
-# write_status_json is overridden to a no-op here — the candidate
-# subshell holds a stale snapshot of the parent's STATUS_* vars at fork
-# time, so letting it write status.json would clobber the parent's
-# decoded-counter / last-seen state. The TSV files are still updated
-# directly (status_candidate_seen writes them via awk+mv), which is
-# what the WebGUI actually reads for the candidate panel.
-# ------------------------------------------------------------
 # _store_candidate_value: extracts (id, primary_numeric_value, value_key) from a
 # decoded wmbusmeters JSON telegram and writes/updates a single row in
 # status_candidate_values.tsv. Called only for telegrams from candidates that
@@ -143,34 +129,6 @@ status_candidate_seen_from_json() {
   status_candidate_seen "${id}" "${driver}" "${type_line}" "true" "" "false"
 }
 
-# Process one completed text-output block from the parallel LISTEN instance.
-# Called with a delayed flush — when the next "Received telegram from:" line
-# arrives — so manufacturer: (which follows driver: in wmbusmeters output)
-# is always captured before the block is dispatched.
-# Arguments: id  driver  type  manufacturer
-_process_listen_text_block() {
-  local _id="$1" _drv="$2" _type="$3" _mfr="$4"
-  # Update manufacturer from text output before the driver guard so that the
-  # full text name (e.g. "(NES) NORA ELK MALZ SAN ve TIC") is stored even when
-  # wmbusmeters omits the driver: line (encrypted or unrecognised telegrams).
-  # candidate_update_manufacturer_text only overwrites empty or bare 3-letter
-  # codes; full names already in the TSV are left untouched.
-  [[ -n "${_id}" && -n "${_mfr}" ]] && candidate_update_manufacturer_text "${_id}" "${_mfr}"
-  [[ -n "${_id}" && -n "${_drv}" ]] || return 0
-  # When there are no official meters, the primary pipeline already runs in
-  # LISTEN mode and updates candidate stats. A secondary LISTEN may still be
-  # running for preview decoding; do not double-count candidate receptions.
-  if [[ "$(official_meters_count_current)" -gt 0 ]]; then
-    if [[ "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
-      search_cache_candidate "${_id}" "${_drv}" "${_type}"
-    else
-      emit_snippet_if_new "${_id}" "${_drv}" "${_type}" "${_mfr}"
-    fi
-  fi
-  # Preview decoding is handled from RAW frames by one-shot workers.
-
-}
-
 # Defensive legacy path: pure LISTEN should not emit decoded JSON because its
 # config directory is empty. Keep handling it safely in case a stale external
 # file appears; normal preview decoding runs through one-shot RAW workers.
@@ -184,43 +142,6 @@ _process_listen_json_line() {
   _store_candidate_value "${line}"
 }
 
-parse_listen_candidates() {
-  # Suppress status.json writes from this subshell to prevent races
-  # with the parent shell's pipeline writes.
-  write_status_json() { :; }
-
-  local last_id="" last_driver="" last_type="" last_manufacturer=""
-  while IFS= read -r line; do
-    if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
-      _process_listen_json_line "${line}"
-      continue
-    fi
-    # Plain listen-mode text output — extract candidate metadata.
-    # Flush the previous block when a new telegram starts so manufacturer:
-    # (which follows driver: in wmbusmeters output) is captured before dispatch.
-    if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9A-Fa-f]{8}) ]]; then
-      # Capture the match BEFORE the flush — _process_listen_text_block runs its
-      # own [[ =~ ]] internally (candidate_update_manufacturer_text /
-      # emit_snippet_if_new), which clobbers BASH_REMATCH and would otherwise
-      # trip "BASH_REMATCH[1]: unbound variable" under set -u on the next block.
-      local _new_id="${BASH_REMATCH[1]}"
-      _process_listen_text_block "${last_id}" "${last_driver}" "${last_type}" "${last_manufacturer}"
-      last_id="$(normalize_meter_id "${_new_id}")"
-      last_type=""
-      last_driver=""
-      last_manufacturer=""
-    elif [[ "${line}" =~ ^[[:space:]]*type:[[:space:]]*(.*)$ ]]; then
-      last_type="${BASH_REMATCH[1]}"
-    elif [[ "${line}" =~ ^[[:space:]]*driver:\ ([a-zA-Z0-9_]+) ]]; then
-      last_driver="${BASH_REMATCH[1]}"
-    elif [[ "${line}" =~ ^[[:space:]]*manufacturer:[[:space:]]*(.*)$ ]]; then
-      last_manufacturer="${BASH_REMATCH[1]}"
-    fi
-  done
-  # Flush the last block after the stream ends.
-  _process_listen_text_block "${last_id}" "${last_driver}" "${last_type}" "${last_manufacturer}"
-}
-
 # The parser behind the pure LISTEN instance. bridge_ledger.py parses the
 # output and books every telegram of a candidate that is already registered
 # with the same driver and type, already announced and whose preview config
@@ -230,12 +151,13 @@ parse_listen_candidates() {
 # separated by 0x1F, which `read` does not treat as whitespace, so empty ones
 # survive. python3 exits 0 only at the end of its input; any other exit is a
 # crash and it is started again on the same input, losing at most the block
-# being collected. WMBUS_LEDGER=bash runs parse_listen_candidates instead.
+# being collected.
+#
+# write_status_json is a no-op in the loop: this subshell holds a stale
+# snapshot of the parent's STATUS_* variables from fork time, so writing
+# status.json here would clobber the decoded counter and last-seen state. The
+# candidate TSV files, which the WebUI reads, are written as usual.
 _listen_parse_stage() {
-  if [[ "${WMBUS_LEDGER:-python}" == "bash" ]]; then
-    parse_listen_candidates
-    return 0
-  fi
   # --name=value: a value starting with "-" must not read as an option.
   until python3 -u "${BRIDGE_LEDGER}" listen \
       --candidates-file="${STATUS_CANDIDATES_FILE}" \
@@ -253,7 +175,7 @@ _listen_parse_stage() {
       --loglevel="${LOGLEVEL:-}"; do
     sleep 1
   done | {
-    # As in parse_listen_candidates: no status.json from this subshell.
+    # No status.json from this subshell (see above).
     # shellcheck disable=SC2329  # overrides the one status_candidate_seen calls
     write_status_json() { :; }
     while IFS=$'\x1f' read -r _act _a _b _c _d; do

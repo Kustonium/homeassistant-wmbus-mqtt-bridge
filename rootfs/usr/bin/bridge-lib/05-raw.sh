@@ -8,77 +8,16 @@ id_to_le_hex() {
   echo "${le,,}"
 }
 
-status_raw_seen() {
-  local raw="${1:-}"
-  # If a RAW telegram arrived from mosquitto_sub, MQTT and the input pipeline
-  # are alive even if no configured meter JSON has been decoded yet.
-  # shellcheck disable=SC2034
-  STATUS_MQTT_CONNECTED="true"
-  # Live traffic proves the credentials work — clear the broker-error marker
-  # (guarded by -s so this hot path normally does zero writes).
-  if [[ -s "${STATUS_BROKER_ERROR_FILE}" ]]; then
-    : > "${STATUS_BROKER_ERROR_FILE}" 2>/dev/null || true
-  fi
-  # shellcheck disable=SC2034
-  STATUS_WMBUSMETERS_RUNNING="true"
-  status_store_raw_seen "$(iso_now)"
-  status_store_recent_raw "${raw}"
-  status_raw_candidate_seen "${raw}"
-  # Preview decoding is deliberately separate from the always-on LISTEN
-  # pipeline. If this RAW belongs to a candidate with a preview config, schedule
-  # a throttled one-shot decode without blocking the RAW counter path.
-  preview_decode_raw_if_requested "${raw}"
-  if (( STATUS_RAW_COUNT == 1 || STATUS_RAW_COUNT % 25 == 0 )); then
-    status_add_event "ok" "RAW telegram received (${#raw} hex chars)"
-  fi
-
-  # Per-minute rate tracking for the WebGUI live dashboard.
-  # Telegrams arriving within the same 60-second bucket increment current_min.
-  # When the minute turns, current_min is rotated into prev_min and reset to 1.
-  local _now_epoch _cur_min
-  _now_epoch="$(epoch_now)"
-  _cur_min=$(( _now_epoch / 60 ))
-  if [[ "${RAW_RATE_CUR_MIN_EPOCH}" -ne "${_cur_min}" ]]; then
-    # Minute boundary crossed: archive the finished minute's count into the
-    # 15-entry rolling history (skip when there was no previous minute yet —
-    # RAW_RATE_CUR_MIN_EPOCH==0 means this is the very first telegram). The
-    # _prev_min epoch lets the WebGUI place each bar correctly on the axis.
-    if [[ "${RAW_RATE_CUR_MIN_EPOCH}" -ne 0 ]]; then
-      local _hist_tmp="${STATUS_RATE_HISTORY_FILE}.tmp"
-      {
-        tail -n 14 "${STATUS_RATE_HISTORY_FILE}" 2>/dev/null || true
-        printf '%d\t%d\n' "${RAW_RATE_CUR_MIN_EPOCH}" "${RAW_RATE_CUR_MIN_COUNT}"
-      } > "${_hist_tmp}" 2>/dev/null \
-        && mv "${_hist_tmp}" "${STATUS_RATE_HISTORY_FILE}" 2>/dev/null || true
-    fi
-    RAW_RATE_PREV_MIN_COUNT="${RAW_RATE_CUR_MIN_COUNT}"
-    RAW_RATE_CUR_MIN_COUNT=1
-    RAW_RATE_CUR_MIN_EPOCH="${_cur_min}"
-  else
-    RAW_RATE_CUR_MIN_COUNT=$(( RAW_RATE_CUR_MIN_COUNT + 1 ))
-  fi
-  printf '{"current_min":%d,"prev_min":%d,"epoch":%d}\n' \
-    "${RAW_RATE_CUR_MIN_COUNT}" "${RAW_RATE_PREV_MIN_COUNT}" "${_now_epoch}" \
-    > "${STATUS_RATE_1M_FILE}.tmp" 2>/dev/null \
-    && mv "${STATUS_RATE_1M_FILE}.tmp" "${STATUS_RATE_1M_FILE}" 2>/dev/null || true
-
-  write_status_json
-}
-
-# The RAW counter fed by the decode pipeline's tee: status_raw_seen for every
-# telegram. bridge_ledger.py does that bookkeeping in one process, including
+# The RAW counter fed by the decode pipeline's tee, for every telegram.
+# bridge_ledger.py does that bookkeeping in one process (`raw` mode), including
 # the reception refresh of an already registered Diehl/SAP candidate; the loop
 # after it runs the two things that stay in bash - registering a new Diehl/SAP
 # candidate or changing its driver/type, and starting a preview one-shot -
 # when it asks for them. python3
 # exits 0 only at the end of its input, so any other exit is a crash and it is
 # started again on the same input: the counter cannot stop for the rest of the
-# pipeline's life. WMBUS_LEDGER=bash runs status_raw_seen per line instead.
+# pipeline's life.
 _raw_counter_stage() {
-  if [[ "${WMBUS_LEDGER:-python}" == "bash" ]]; then
-    while IFS= read -r raw_line; do status_raw_seen "${raw_line}"; done >/dev/null
-    return 0
-  fi
   # --name=value: a value starting with "-" must not read as an option.
   until python3 -u "${BRIDGE_LEDGER}" raw \
       --raw-count-file="${STATUS_RAW_COUNT_FILE}" \
@@ -287,7 +226,8 @@ status_raw_candidate_seen() {
     candidate_fill_manufacturer_code "${id}" "${_mfct_full:-${_mfct_code}}"
   fi
 
-  # This runs on EVERY raw telegram (status_raw_seen). In pure LISTEN mode (no
+  # bridge_ledger.py asks for this on a Diehl/SAP raw telegram that would
+  # change a candidate (see RawBook.candidate). In pure LISTEN mode (no
   # official meters) the run_once inline parser already registers every candidate
   # with its real driver/media from wmbusmeters listen output, so RAW only needs
   # the Diehl/SAP IZAR special case (mfct 0x304C), which sometimes does NOT

@@ -78,28 +78,6 @@ status_read_last_raw_seen() {
   cat "${STATUS_LAST_RAW_FILE}" 2>/dev/null || true
 }
 
-status_store_raw_seen() {
-  local now="$1"
-  local count tmp
-  count="$(status_read_raw_count)"
-  count=$((count + 1))
-  tmp="${STATUS_RAW_COUNT_FILE}.tmp"
-  printf '%s\n' "${count}" > "${tmp}" 2>/dev/null && mv "${tmp}" "${STATUS_RAW_COUNT_FILE}" 2>/dev/null || true
-  printf '%s\n' "${now}" > "${STATUS_LAST_RAW_FILE}" 2>/dev/null || true
-  STATUS_RAW_COUNT="${count}"
-  STATUS_LAST_RAW_SEEN="${now}"
-}
-
-status_store_recent_raw() {
-  local raw="${1:-}"
-  local now
-  [[ -n "${raw}" ]] || return 0
-  [[ "${raw}" =~ ^[0-9A-Fa-f]+$ ]] || return 0
-  now="$(iso_now)"
-  printf '%s\t%s\t%s\n' "${now}" "${#raw}" "${raw}" >> "${STATUS_RECENT_RAW_FILE}" 2>/dev/null || true
-  tail -n 200 "${STATUS_RECENT_RAW_FILE}" > "${STATUS_RECENT_RAW_FILE}.tmp" 2>/dev/null && mv "${STATUS_RECENT_RAW_FILE}.tmp" "${STATUS_RECENT_RAW_FILE}" 2>/dev/null || true
-}
-
 status_find_recent_raw_for_id() {
   local id="$1"
   local le raw

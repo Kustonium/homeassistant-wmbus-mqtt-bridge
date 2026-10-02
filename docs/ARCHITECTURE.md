@@ -272,12 +272,25 @@ The bridge selects one cumulative numeric field for its compact meter table,
 but does not remove fields from the MQTT state payload. The WebUI's published
 fields view reads the last complete decoder JSON.
 
+Before the payloads reach the decoder, a `tee` hands every one of them to the
+RAW counter stage (`bridge_ledger.py raw`, see 5.3): RAW count, last-seen
+time, the recent-RAW ring, the per-minute rate, `status.json`, the
+manufacturer fill and the Diehl/SAP fallback for candidates, and the decision
+to start a preview one-shot. The per-board tracker (`bridge_ledger.py
+tracker`) subscribes to the same topic on its own.
+
 ### 4.2 Unconfigured meter path: LISTEN and preview
 
 A second, always-on `wmbusmeters` instance runs with an empty meter directory.
 It exists only to observe traffic and report candidate IDs, media, manufacturer,
 encryption hints, and the upstream suggested driver. It continues running even
 when configured meters exist.
+
+Its text output is parsed by `bridge_ledger.py listen` (see 5.3): one block
+per telegram it has not just seen - every new telegram of every meter; only
+the copies from several boards are dropped by the decoder. A known candidate
+is booked by Python; a new or changed one goes to bash, which registers it,
+announces it and creates its preview config.
 
 When a candidate needs a value preview, the bridge creates a preview meter file
 and runs a bounded, one-shot decoder for a matching RAW frame. Preview decoders
@@ -365,38 +378,55 @@ The main script also owns a heartbeat ticker and the restart loop around the
 DECODE pipeline. Background subscribers and LISTEN are long-lived workers, not
 children that should be replaced on every meter change.
 
-Bookkeeping that runs for every MQTT message is moving out of bash into
-`bridge_ledger.py`, one path at a time: bash started tens of processes per
-message for it, which on a busy multi-ESP site kept a CPU core busy. The
-subscriber loop stays in bash and pipes `mosquitto_sub` into the Python
-process; if Python dies, the loop restarts it like a dropped connection.
-Python reads the subscription through a descriptor, so the loop holds
-`mosquitto_sub`'s PID and stops it the moment Python ends - a plain pipe is not
-enough where SIGPIPE is ignored. Formats and locks stay those described in
-Appendix A; the `/rx` history is written byte for byte as jq writes it, number
-literals included. Moved so far: the `rssi/<meter_id>` and `/rx` subscribers,
-the per-board `/telegram` tracker, and the RAW counter at the DECODE pipeline's
-`tee` (`status_raw_seen`). For the counter, two things stay in bash and are
-handed back by the Python process, one request per line, to a bash loop in the
-same stage: registering a new Diehl/SAP candidate from its RAW frame (or
-changing its driver or type) and starting a preview one-shot decode. Python
-asks only when the bash code would get past its own cheap checks, and is
-restarted by the stage if it dies. A Diehl/SAP candidate that bash would
-register again exactly as it is - real IZAR frames carry device type 01, so
-they re-register as `auto` on every telegram - is refreshed by Python itself:
-`candidate_seen_refresh` writes the reception row, the stats, the candidate row
-and the RAW analysis as `status_candidate_seen` does, as long as the preview
-config would stay unchanged. The "Candidate detected" event, the preview config
-and its state machine stay in bash. The parser of the pure LISTEN instance
-(`_listen_parse_stage`) works the same way: Python collects each text block and
-books a candidate that is already registered with the same driver and type,
-already announced in `seen_ids.txt` and whose preview config would stay
-unchanged, through the same `candidate_seen_refresh`; new or changed candidates
-(`emit_snippet_if_new`), SEARCH and decoded JSON lines go to a bash loop in the
-same stage. The inline listen parser of the DECODE loop, active only while no
+Bookkeeping that runs for every MQTT message is done by `bridge_ledger.py`,
+one long-lived Python process per path: in bash it started tens of processes
+per message, which on a busy multi-ESP site kept CPU cores busy. Bash keeps
+the loops around it and everything that is not per message.
+
+| Mode | Fed by | Writes |
+|---|---|---|
+| `rssi` | `wmbus/+/rssi/+` subscriber | `status_rssi.tsv` (configured meters only) |
+| `rx` | `wmbus/+/rx` subscriber | `/rx` reception, mode, sequence, boots, clock, `esp_rf_rx_history.jsonl` |
+| `tracker` | `raw_topic` subscriber | per-board devices, meter-device, reception, `esp_rx_history.jsonl` |
+| `raw` | `tee` before the DECODE `wmbusmeters` | RAW counter files, rate, `status.json`, candidate refresh |
+| `listen` | output of the pure LISTEN `wmbusmeters` | candidate refresh |
+
+The subscribers pipe `mosquitto_sub` into Python through a descriptor, so the
+loop holds `mosquitto_sub`'s PID and stops it the moment Python ends - a plain
+pipe is not enough where SIGPIPE is ignored; both then start again like a
+dropped connection. The `raw` and `listen` stages run Python under
+`until ...; do sleep 1; done`: it exits 0 only at the end of its input, so any
+other exit restarts it on the same input, losing at most the message (or the
+LISTEN block) it held. Formats and locks are those described in Appendix A;
+the `/rx` history is written byte for byte as jq wrote it, number literals
+included.
+
+Two stages hand work back to bash, one request per line, to a loop in the
+same stage. Python asks only when the bash code would get past its own cheap
+checks; bash repeats them.
+
+- `raw`: registering a new Diehl/SAP candidate from its RAW frame, or changing
+  its driver or type (`status_raw_candidate_seen`), and starting a preview
+  one-shot (`preview_decode_raw_if_requested`, which keeps the preview
+  throttle and its state machine).
+- `listen` (fields separated by 0x1F so empty ones survive `read`): a new or
+  changed candidate (`emit_snippet_if_new`: registration, the "Candidate
+  detected" event, the announcement, the preview config and `pending`),
+  SEARCH (`search_cache_candidate`) and decoded JSON lines.
+
+A candidate that is already registered with exactly the driver and type bash
+would write, already announced in `seen_ids.txt` and whose preview config
+would stay unchanged, is booked by Python itself through one shared function,
+`candidate_seen_refresh`: the reception row, the stats, the candidate row and
+the RAW analysis, as `status_candidate_seen` writes them. The candidate row is
+checked again under its lock, so a reclassification that another writer (a
+preview one-shot) made in between is not overwritten; the telegram then goes
+to bash. The inline listen parser of the DECODE loop, active only while no
 meter is configured, stays in bash.
-`WMBUS_LEDGER=bash` selects the previous in-shell handlers while the move is in
-progress.
+
+The bash implementations of these paths were removed after the move. What
+they wrote for the test corpora is kept in `tests/fixtures/ledger/`; the
+`tests/test_ledger_*.sh` equivalence tests compare `bridge_ledger.py` with it.
 
 ### 5.4 Wired M-Bus: a third instance, not a second transport
 
@@ -914,22 +944,30 @@ for understanding the system.
 | `.reload_pipeline`, `.reload_listen*` | pipeline/LISTEN lifecycle requests |
 | `.discovery_doctor_request`, `.factory_reset_request` | asynchronous WebUI-to-bridge requests |
 
-Keyed updates performed through `_tsv_upsert` use a lock, temporary file, and
-atomic rename. `bridge_ledger.py` takes the same `<file>.lock` with
-`fcntl.flock`, which serialises with `flock(1)` in bash, and writes the same
-bytes; it compares keys as strings, where BusyBox awk in the bash helpers
-compares numeric-looking keys numerically. `status_seen.tsv` is appended and
-trimmed by bash without a lock (a fixed `.tmp` name); Python takes
-`status_seen.tsv.lock`, which only serialises its own writers. Other state files use their own append, tail, direct-write, or
+Keyed updates performed through `_tsv_upsert` and `_upsert_candidate_row` use
+a lock, temporary file, and atomic rename. `bridge_ledger.py` (which writes the
+per-message files listed in 5.3) takes the same `<file>.lock` with
+`fcntl.flock`, which serialises with `flock(1)` in bash - the candidate files,
+the preview state and the history trims at subscriber start are still written
+by bash too; `tests/test_ledger_lock_interop.sh` runs both sides at once. It
+compares keys as strings, where BusyBox awk in the bash helpers compares
+numeric-looking keys numerically. `status_seen.tsv` is appended and trimmed by
+bash without a lock (a fixed `.tmp` name); Python takes `status_seen.tsv.lock`,
+which only serialises its own writers. Other state files use their own append, tail, direct-write, or
 temporary-rename patterns; there is no global transaction across files. Several
 writers run in subshells, so counters and cross-process flags that must remain
 authoritative are file-backed rather than shell-variable-only.
 
 ## Appendix B: invariants worth preserving
 
-- Per-message bookkeeping does not start processes per message;
-  `tests/test_perf_fork_budget.sh` measures every such path and fails when its
-  cost grows or exceeds its budget.
+- Per-message bookkeeping does not start processes per message, whatever the
+  number of meters on air or of boards hearing the same telegrams;
+  `tests/test_perf_fork_budget.sh` measures every such path (and the
+  decoded-telegram steps still in bash, per call) and fails when its cost
+  grows or exceeds its budget.
+- The per-message files keep the bytes the bash implementation wrote:
+  `tests/fixtures/ledger/` holds that output for the test corpora, and a
+  change there is a change of file format, to be reviewed as one.
 - `wmbusmeters`, not the bridge, owns decode semantics and upstream drivers.
 - The build-generated WebUI catalog must include built-in and XMQ drivers.
 - LISTEN stays a zero-meter, always-on process; previews are one-shot decoders.

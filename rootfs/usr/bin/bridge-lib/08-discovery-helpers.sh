@@ -230,12 +230,28 @@ guess_state_class() {
     fi
   fi
 
+  # Energy, water and gas are never "measurement": Home Assistant accepts only
+  # total and total_increasing for these device classes and rejects the
+  # entity's statistics otherwise ("impossible considering device class",
+  # seen with vario451 current_kwh / previous_kwh) - DEVICE_CLASS_STATE_CLASSES
+  # in homeassistant/components/sensor/const.py. current_* is the consumption
+  # so far in the billing period: it only grows and drops back at the period's
+  # start, which total_increasing reads as a reset. Anything else (previous_*,
+  # historic_*, target_*, a value at a past date) is a snapshot, not a
+  # counter - no state_class.
+  if [[ "${device_class}" == "energy" || "${device_class}" == "water" || "${device_class}" == "gas" ]]; then
+    if [[ "${key_lc}" == current_* ]]; then
+      echo "total_increasing"; return 0
+    fi
+    echo ""; return 0
+  fi
+
   # measurement — only for fields where a long-term statistic actually
   # makes sense. Unknown numeric fields (error codes, status flags,
   # index numbers, version strings cast to int) get no state_class so
   # HA doesn't graph them as time series.
   case "${device_class}" in
-    temperature|humidity|power|voltage|current|frequency|signal_strength|battery|water|gas|energy)
+    temperature|humidity|power|voltage|current|frequency|signal_strength|battery)
       echo "measurement"; return 0
       ;;
   esac
