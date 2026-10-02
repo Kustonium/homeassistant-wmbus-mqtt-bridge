@@ -66,9 +66,11 @@ status_raw_seen() {
 }
 
 # The RAW counter fed by the decode pipeline's tee: status_raw_seen for every
-# telegram. bridge_ledger.py does that bookkeeping in one process; the loop
-# after it runs the two things that stay in bash - registering a Diehl/SAP
-# candidate and starting a preview one-shot - when it asks for them. python3
+# telegram. bridge_ledger.py does that bookkeeping in one process, including
+# the reception refresh of an already registered Diehl/SAP candidate; the loop
+# after it runs the two things that stay in bash - registering a new Diehl/SAP
+# candidate or changing its driver/type, and starting a preview one-shot -
+# when it asks for them. python3
 # exits 0 only at the end of its input, so any other exit is a crash and it is
 # started again on the same input: the counter cannot stop for the rest of the
 # pipeline's life. WMBUS_LEDGER=bash runs status_raw_seen per line instead.
@@ -84,6 +86,10 @@ _raw_counter_stage() {
       --recent-raw-file="${STATUS_RECENT_RAW_FILE}" \
       --broker-error-file="${STATUS_BROKER_ERROR_FILE}" \
       --candidates-file="${STATUS_CANDIDATES_FILE}" \
+      --seen-file="${STATUS_SEEN_FILE}" \
+      --candidate-raw-file="${STATUS_CANDIDATE_RAW_FILE}" \
+      --candidate-analysis-file="${STATUS_CANDIDATE_ANALYSIS_FILE}" \
+      --meter-dir="${METER_DIR}" \
       --events-file="${STATUS_EVENTS_FILE}" \
       --rate-file="${STATUS_RATE_1M_FILE}" \
       --rate-history-file="${STATUS_RATE_HISTORY_FILE}" \
