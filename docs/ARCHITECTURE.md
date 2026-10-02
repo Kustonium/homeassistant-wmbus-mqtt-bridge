@@ -359,6 +359,19 @@ The main script also owns a heartbeat ticker and the restart loop around the
 DECODE pipeline. Background subscribers and LISTEN are long-lived workers, not
 children that should be replaced on every meter change.
 
+Bookkeeping that runs for every MQTT message is moving out of bash into
+`bridge_ledger.py`, one path at a time: bash started tens of processes per
+message for it, which on a busy multi-ESP site kept a CPU core busy. The
+subscriber loop stays in bash and pipes `mosquitto_sub` into the Python
+process; if Python dies, the loop restarts it like a dropped connection.
+Python reads the subscription through a descriptor, so the loop holds
+`mosquitto_sub`'s PID and stops it the moment Python ends - a plain pipe is not
+enough where SIGPIPE is ignored. Formats and locks stay those described in
+Appendix A; the `/rx` history is written byte for byte as jq writes it, number
+literals included. Moved so far: the `rssi/<meter_id>` and `/rx` subscribers.
+`WMBUS_LEDGER=bash` selects the previous in-shell handlers while the move is in
+progress.
+
 ### 5.4 Wired M-Bus: a third instance, not a second transport
 
 DECODE and LISTEN are both fed through `stdin:hex` — frames arrive over MQTT and
@@ -876,13 +889,19 @@ for understanding the system.
 | `.discovery_doctor_request`, `.factory_reset_request` | asynchronous WebUI-to-bridge requests |
 
 Keyed updates performed through `_tsv_upsert` use a lock, temporary file, and
-atomic rename. Other state files use their own append, tail, direct-write, or
+atomic rename. `bridge_ledger.py` takes the same `<file>.lock` with
+`fcntl.flock`, which serialises with `flock(1)` in bash, and writes the same
+bytes; it compares keys as strings, where BusyBox awk in the bash helpers
+compares numeric-looking keys numerically. Other state files use their own append, tail, direct-write, or
 temporary-rename patterns; there is no global transaction across files. Several
 writers run in subshells, so counters and cross-process flags that must remain
 authoritative are file-backed rather than shell-variable-only.
 
 ## Appendix B: invariants worth preserving
 
+- Per-message bookkeeping does not start processes per message;
+  `tests/test_perf_fork_budget.sh` measures every such path and fails when its
+  cost grows or exceeds its budget.
 - `wmbusmeters`, not the bridge, owns decode semantics and upstream drivers.
 - The build-generated WebUI catalog must include built-in and XMQ drivers.
 - LISTEN stays a zero-meter, always-on process; previews are one-shot decoders.
