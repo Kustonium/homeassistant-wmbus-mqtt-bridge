@@ -372,9 +372,16 @@ literals included. Moved so far: the `rssi/<meter_id>` and `/rx` subscribers,
 the per-board `/telegram` tracker, and the RAW counter at the DECODE pipeline's
 `tee` (`status_raw_seen`). For the counter, two things stay in bash and are
 handed back by the Python process, one request per line, to a bash loop in the
-same stage: registering a Diehl/SAP candidate from its RAW frame and starting a
-preview one-shot decode. Python asks only when the bash code would get past its
-own cheap checks, and is restarted by the stage if it dies.
+same stage: registering a new Diehl/SAP candidate from its RAW frame (or
+changing its driver or type) and starting a preview one-shot decode. Python
+asks only when the bash code would get past its own cheap checks, and is
+restarted by the stage if it dies. A Diehl/SAP candidate that bash would
+register again exactly as it is - real IZAR frames carry device type 01, so
+they re-register as `auto` on every telegram - is refreshed by Python itself:
+`candidate_seen_refresh` writes the reception row, the stats, the candidate row
+and the RAW analysis as `status_candidate_seen` does, as long as the preview
+config would stay unchanged. The "Candidate detected" event, the preview config
+and its state machine stay in bash.
 `WMBUS_LEDGER=bash` selects the previous in-shell handlers while the move is in
 progress.
 
@@ -898,7 +905,9 @@ Keyed updates performed through `_tsv_upsert` use a lock, temporary file, and
 atomic rename. `bridge_ledger.py` takes the same `<file>.lock` with
 `fcntl.flock`, which serialises with `flock(1)` in bash, and writes the same
 bytes; it compares keys as strings, where BusyBox awk in the bash helpers
-compares numeric-looking keys numerically. Other state files use their own append, tail, direct-write, or
+compares numeric-looking keys numerically. `status_seen.tsv` is appended and
+trimmed by bash without a lock (a fixed `.tmp` name); Python takes
+`status_seen.tsv.lock`, which only serialises its own writers. Other state files use their own append, tail, direct-write, or
 temporary-rename patterns; there is no global transaction across files. Several
 writers run in subshells, so counters and cross-process flags that must remain
 authoritative are file-backed rather than shell-variable-only.

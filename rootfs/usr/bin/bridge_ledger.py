@@ -843,17 +843,219 @@ def _bash_read_tab_pair(text: str) -> Tuple[str, str]:
 _ID8 = re.compile(r"[0-9A-Fa-f]{8}")
 
 
+# ── candidate registry (status_candidate_seen) ──────────────────────────────
+
+class CandidateFiles:
+    """The files status_candidate_seen reads and writes (paths from bridge.sh)."""
+
+    def __init__(self, candidates: str, seen: str, recent_raw: str, candidate_raw: str,
+                 analysis: str, preview_meter_dir: str, meter_dir: str) -> None:
+        self.candidates, self.seen, self.recent_raw = candidates, seen, recent_raw
+        self.candidate_raw, self.analysis = candidate_raw, analysis
+        self.preview_meter_dir, self.meter_dir = preview_meter_dir, meter_dir
+
+
+def _bash_read_tabs(line: str, count: int) -> List[str]:
+    """`IFS=$'\\t' read -r f1 .. fN`: TAB is IFS whitespace, the last field takes the rest."""
+    line = line.split("\n", 1)[0].strip("\t")
+    out: List[str] = []
+    while len(out) < count - 1 and line:
+        field, _, line = line.partition("\t")
+        out.append(field)
+        line = line.lstrip("\t")
+    out.append(line)
+    return out + [""] * (count - len(out))
+
+
+def _seen_epoch(fields: List[bytes]) -> Optional[int]:
+    """`$3 ~ /^[0-9]+$/ { ts = $3 + 0 }`."""
+    if len(fields) < 3 or not re.fullmatch(rb"[0-9]+", fields[2]):
+        return None
+    return int(fields[2])
+
+
+def record_seen(path: str, meter: str, kind: str) -> None:
+    """status_record_seen: one row per reception, none within 2 s of the last.
+
+    bash appends and trims this file without a lock; here the lock is taken
+    so that python writers serialise among themselves.
+    """
+    ts = int(now())
+    k, kind_b = _b(meter), _b(kind)
+    with locked(path):
+        last = 0
+        for line in _read_lines(path):
+            f = line.split(b"\t")
+            if f[0] == k and len(f) > 1 and f[1] == kind_b:
+                epoch = _seen_epoch(f)
+                if epoch is not None:
+                    last = epoch
+        if last and ts - last < 2:
+            return
+        with open(path, "ab") as fh:
+            fh.write(_b(f"{meter}\t{kind}\t{ts}") + b"\n")
+        _replace_with(path, _read_lines(path)[-5000:])
+
+
+def seen_stats(path: str, meter: str) -> Tuple[int, int, int, int]:
+    """status_seen_stats: count, avg interval, last 15 min, last 60 min - all kinds."""
+    ts_now = int(now())
+    k = _b(meter)
+    count = seen15 = seen60 = intervals = 0
+    total = 0
+    prev = 0
+    for line in _read_lines(path):
+        f = line.split(b"\t")
+        if f[0] != k:
+            continue
+        ts = _seen_epoch(f)
+        if ts is None:
+            continue
+        if prev > 0 and 0 <= ts - prev < 2:
+            continue
+        count += 1
+        if ts >= ts_now - 900:
+            seen15 += 1
+        if ts >= ts_now - 3600:
+            seen60 += 1
+        if prev > 0 and ts >= prev:
+            total += ts - prev
+            intervals += 1
+        prev = ts
+    avg = int(total / intervals + 0.5) if intervals else 0
+    return count, avg, seen15, seen60
+
+
+def upsert_candidate_row(path: str, meter: str, driver: str, type_line: str, last_seen: str,
+                         stats: Tuple[int, int, int, int], manufacturer: str = "") -> None:
+    """_upsert_candidate_row: the row moves to the end; an empty manufacturer keeps the old one."""
+    k = _b(meter)
+    with locked(path):
+        final = manufacturer
+        out = []
+        for line in _read_lines(path):
+            if _first_field(line) == k:
+                f = _s(line).split("\t")
+                if final == "" and len(f) >= 9 and f[8] != "":
+                    final = f[8]
+                continue
+            out.append(line)
+        out.append(_b("\t".join([meter, driver, type_line, last_seen]
+                                + [str(n) for n in stats] + [final])))
+        _replace_with(path, out)
+
+
+def find_recent_raw(path: str, meter: str) -> Optional[Tuple[str, str, str]]:
+    """status_find_recent_raw_for_id: the newest ring row carrying the id, RAW in lower case."""
+    le = (meter[6:8] + meter[4:6] + meter[2:4] + meter[0:2]).lower()
+    for line in reversed(_read_lines(path)):
+        ts, length, raw = _bash_read_tabs(_s(line), 3)
+        raw = raw.lower()
+        if le in raw:
+            return ts, length, raw
+    return None
+
+
+def candidate_type_requires_aes(type_line: str) -> bool:
+    """06-candidates.sh candidate_type_requires_aes."""
+    t = type_line.lower()
+    if "not encrypted" in t or "unencrypted" in t or "no aes" in t or "no_aes" in t:
+        return False
+    return "encrypted" in t or "aes" in t
+
+
+def analyze_candidate_from_text(files: CandidateFiles, meter: str, type_line: str) -> None:
+    """status_analyze_candidate_from_text: the candidate's last RAW and its AES verdict."""
+    found = find_recent_raw(files.recent_raw, meter)
+    raw_len, raw, ci = "0", "", ""
+    if found:
+        raw_ts, raw_len, raw = found
+        if raw:  # status_record_candidate_raw
+            tsv_upsert(files.candidate_raw, meter,
+                       f"{meter}\t{raw_ts or iso_now()}\t{len(raw)}\t{raw}")
+        ci = raw[20:22] if len(raw) >= 22 else ""
+    if candidate_type_requires_aes(type_line):
+        encryption = "aes_required"
+        note = "wmbusmeters/listen output explicitly reports encrypted/AES telegram"
+    elif raw:
+        encryption = "unknown"
+        note = "RAW was mapped to this candidate, but no backend security parser has classified AES yet"
+    else:
+        encryption = "unknown"
+        note = "No RAW/security analysis mapped to this candidate yet"
+    tsv_upsert(files.analysis, meter,
+               f"{meter}\t{encryption}\t{note}\t{ci}\t\t{raw_len or '0'}\t{iso_now()}")
+
+
+def candidate_seen_refresh(files: CandidateFiles, meter: str, driver: str, type_line: str,
+                           manufacturer: str = "") -> None:
+    """status_candidate_seen for a candidate that is already registered.
+
+    The reception row (2 s threshold), the stats, the candidate row and the
+    RAW analysis, written as the bash function writes them. What is left of
+    status_candidate_seen stays in bash: the "Candidate detected" event of a
+    new row, the preview config and its state machine (ensure_candidate_autodecode)
+    and status.json. Call it only when autodecode_unchanged() holds.
+    """
+    record_seen(files.seen, meter, "candidate")
+    last_seen = iso_now()
+    upsert_candidate_row(files.candidates, meter, driver, type_line, last_seen,
+                         seen_stats(files.seen, meter), manufacturer)
+    analyze_candidate_from_text(files, meter, type_line)
+
+
+def autodecode_unchanged(files: CandidateFiles, meter: str, driver: str, type_line: str) -> bool:
+    """True when ensure_candidate_autodecode would change nothing for this candidate."""
+    preview = os.path.join(files.preview_meter_dir, f"meter-preview-{meter}")
+    official = _b(f"id={meter.lower()}")
+    for path in glob.glob(os.path.join(files.meter_dir, "meter-*")):
+        if os.path.isfile(path) and official in _read_lines(path):
+            return not os.path.isfile(preview)  # bash removes the preview of an official meter
+    if candidate_type_requires_aes(type_line):
+        return not os.path.isfile(preview)  # ... and the preview of an AES meter
+    expected = f"name=preview_{meter}\nid={meter.lower()}\n"
+    if driver and driver not in ("auto", "unknown"):
+        expected += f"driver={driver}\n"
+    try:
+        with open(preview, "rb") as fh:
+            return fh.read() == _b(expected)
+    except OSError:
+        return False
+
+
+_DEVICE_TYPES = {"02": "Electricity meter (0x02)", "03": "Gas meter (0x03)",
+                 "04": "Heat meter (0x04)", "06": "Warm water meter (0x06)",
+                 "07": "Water meter (0x07)", "08": "Heat Cost Allocator (0x08)",
+                 "0C": "Heat meter inlet (0x0C)", "16": "Cold water meter (0x16)"}
+
+
+def map_device_type(dev_type: str) -> str:
+    """05-raw.sh map_device_type."""
+    dt = _ascii_upper(dev_type)
+    return _DEVICE_TYPES.get(dt, f"Unknown meter type (0x{dt})")
+
+
+def raw_is_encrypted(raw: str) -> bool:
+    """05-raw.sh raw_is_encrypted: CI 0x7A with a non-zero CFG security mode."""
+    if len(raw) < 30 or raw[20:22] != "7A":
+        return False
+    cfg_hi = raw[28:30]
+    return bool(re.fullmatch(r"[0-9A-F]{2}", cfg_hi)) and int(cfg_hi, 16) & 0x1F != 0
+
+
 class RawBook:
     """status_raw_seen: the bookkeeping of every RAW telegram, in one process.
 
     Writes the RAW counter, last-seen time, the recent-RAW ring, the candidate
-    manufacturer fill, the every-25th event, the per-minute rate and
-    status.json exactly as the bash function did. Two things stay in bash and
-    are asked for on stdout, one request per line, for the bash loop that
-    reads it (see _raw_counter_stage): registering a Diehl/SAP (0x304C)
-    candidate ("sap<TAB>raw") and starting a preview one-shot decode
-    ("preview<TAB>raw<TAB>id"). Each request is sent only when the bash code
-    would get past its own cheap checks, which it then repeats.
+    manufacturer fill, the every-25th event, the per-minute rate, status.json
+    and the reception refresh of a Diehl/SAP candidate that would be
+    registered again exactly as it is, as the bash functions did. Two things
+    stay in bash and are asked for on stdout, one request per line, for the
+    bash loop that reads it (see _raw_counter_stage): registering a new
+    Diehl/SAP (0x304C) candidate or changing its driver/type ("sap<TAB>raw")
+    and starting a preview one-shot decode ("preview<TAB>raw<TAB>id"). Each
+    request is sent only when the bash code would get past its own cheap
+    checks, which it then repeats.
     """
 
     def __init__(self, a: argparse.Namespace, out=None) -> None:
@@ -865,6 +1067,9 @@ class RawBook:
         self.rate_epoch = 0
         self.rate_count = 0
         self.rate_prev = 0
+        self.candidates = CandidateFiles(a.candidates_file, a.seen_file, a.recent_raw_file,
+                                         a.candidate_raw_file, a.candidate_analysis_file,
+                                         a.preview_meter_dir, a.meter_dir)
 
     def request(self, *fields: str) -> None:
         # A lost reader must not stop the counting itself.
@@ -924,6 +1129,20 @@ class RawBook:
         if driver and driver != "auto":
             return
         if _AES_TYPE.search(type_line):
+            return
+        # What bash would register. A Diehl/SAP frame that is not a water meter
+        # registers as "auto" again on every telegram; when the row already says
+        # exactly that, only the reception stats change and they are written
+        # here. New rows and driver/type changes still go to bash.
+        dev_type = norm[18:20]
+        if dev_type == "07":
+            new_driver, new_type = "izarv2", "Water meter (0x07)"
+        else:
+            new_driver = "auto"
+            new_type = map_device_type(dev_type) + (" encrypted" if raw_is_encrypted(norm) else "")
+        if (driver == new_driver and type_line == new_type
+                and autodecode_unchanged(self.candidates, meter, new_driver, new_type)):
+            candidate_seen_refresh(self.candidates, meter, new_driver, new_type)
             return
         self.request("sap", raw)
 
@@ -1065,6 +1284,9 @@ def _parser() -> argparse.ArgumentParser:
     for name in ("raw-count", "last-raw", "recent-raw", "broker-error", "candidates",
                  "events", "rate", "rate-history", "status-json", "discovery-flag"):
         raw.add_argument(f"--{name}-file", required=True)
+    for name in ("seen", "candidate-raw", "candidate-analysis"):
+        raw.add_argument(f"--{name}-file", required=True)
+    raw.add_argument("--meter-dir", required=True)
     raw.add_argument("--preview-meter-dir", required=True)
     raw.add_argument("--preview-last-dir", required=True)
     raw.add_argument("--preview-min-interval", type=int, default=20)

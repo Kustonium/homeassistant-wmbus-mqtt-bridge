@@ -1,3 +1,8 @@
+## 1.5.72
+
+### Changed
+- refresh registered Diehl/SAP candidates in bridge_ledger.py (3938da5)
+
 ## 1.5.71
 
 ### Changed
