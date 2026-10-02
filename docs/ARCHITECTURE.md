@@ -282,7 +282,13 @@ when configured meters exist.
 When a candidate needs a value preview, the bridge creates a preview meter file
 and runs a bounded, one-shot decoder for a matching RAW frame. Preview decoders
 are rate-limited and concurrency-limited; the always-on LISTEN instance remains
-pure listen and is not polluted with preview meter files.
+pure listen and is not polluted with preview meter files. A candidate is
+decoded at most every 20 s (`PREVIEW_DECODE_MIN_INTERVAL_SECONDS`); once its
+preview shows a value (`decoded_value`), at most every 300 s
+(`PREVIEW_DECODED_MIN_INTERVAL_SECONDS`) - the one-shot then only refreshes
+the value, and on a site with hundreds of candidates it was the largest cost
+of the RAW stage. Any change of the preview config sets `pending` first,
+which decodes at once.
 
 Candidate preview states are explicit:
 
@@ -381,7 +387,14 @@ they re-register as `auto` on every telegram - is refreshed by Python itself:
 `candidate_seen_refresh` writes the reception row, the stats, the candidate row
 and the RAW analysis as `status_candidate_seen` does, as long as the preview
 config would stay unchanged. The "Candidate detected" event, the preview config
-and its state machine stay in bash.
+and its state machine stay in bash. The parser of the pure LISTEN instance
+(`_listen_parse_stage`) works the same way: Python collects each text block and
+books a candidate that is already registered with the same driver and type,
+already announced in `seen_ids.txt` and whose preview config would stay
+unchanged, through the same `candidate_seen_refresh`; new or changed candidates
+(`emit_snippet_if_new`), SEARCH and decoded JSON lines go to a bash loop in the
+same stage. The inline listen parser of the DECODE loop, active only while no
+meter is configured, stays in bash.
 `WMBUS_LEDGER=bash` selects the previous in-shell handlers while the move is in
 progress.
 

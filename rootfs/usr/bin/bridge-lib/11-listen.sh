@@ -171,6 +171,19 @@ _process_listen_text_block() {
 
 }
 
+# Defensive legacy path: pure LISTEN should not emit decoded JSON because its
+# config directory is empty. Keep handling it safely in case a stale external
+# file appears; normal preview decoding runs through one-shot RAW workers.
+_process_listen_json_line() {
+  local line="$1"
+  log_debug "[DIAG] LISTEN-parse: JSON telegram received: ${line:0:160}"
+  if [[ "$(official_meters_count_current)" -gt 0 ]]; then
+    status_candidate_seen_from_json "${line}"
+  fi
+  log_debug "[DIAG] LISTEN-parse: calling _store_candidate_value"
+  _store_candidate_value "${line}"
+}
+
 parse_listen_candidates() {
   # Suppress status.json writes from this subshell to prevent races
   # with the parent shell's pipeline writes.
@@ -178,16 +191,8 @@ parse_listen_candidates() {
 
   local last_id="" last_driver="" last_type="" last_manufacturer=""
   while IFS= read -r line; do
-    # Defensive legacy path: pure LISTEN should not emit decoded JSON because its
-    # config directory is empty. Keep handling it safely in case a stale external
-    # file appears; normal preview decoding runs through one-shot RAW workers.
     if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
-      log_debug "[DIAG] LISTEN-parse: JSON telegram received: ${line:0:160}"
-      if [[ "$(official_meters_count_current)" -gt 0 ]]; then
-        status_candidate_seen_from_json "${line}"
-      fi
-      log_debug "[DIAG] LISTEN-parse: calling _store_candidate_value"
-      _store_candidate_value "${line}"
+      _process_listen_json_line "${line}"
       continue
     fi
     # Plain listen-mode text output — extract candidate metadata.
@@ -214,6 +219,51 @@ parse_listen_candidates() {
   done
   # Flush the last block after the stream ends.
   _process_listen_text_block "${last_id}" "${last_driver}" "${last_type}" "${last_manufacturer}"
+}
+
+# The parser behind the pure LISTEN instance. bridge_ledger.py parses the
+# output and books every telegram of a candidate that is already registered
+# with the same driver and type, already announced and whose preview config
+# would stay as it is; the loop after it runs what stays in bash, when asked:
+# a new or changed candidate (emit_snippet_if_new, with the preview config and
+# its states), SEARCH (search_cache_candidate) and decoded JSON. Fields are
+# separated by 0x1F, which `read` does not treat as whitespace, so empty ones
+# survive. python3 exits 0 only at the end of its input; any other exit is a
+# crash and it is started again on the same input, losing at most the block
+# being collected. WMBUS_LEDGER=bash runs parse_listen_candidates instead.
+_listen_parse_stage() {
+  if [[ "${WMBUS_LEDGER:-python}" == "bash" ]]; then
+    parse_listen_candidates
+    return 0
+  fi
+  # --name=value: a value starting with "-" must not read as an option.
+  until python3 -u "${BRIDGE_LEDGER}" listen \
+      --candidates-file="${STATUS_CANDIDATES_FILE}" \
+      --seen-file="${STATUS_SEEN_FILE}" \
+      --recent-raw-file="${STATUS_RECENT_RAW_FILE}" \
+      --candidate-raw-file="${STATUS_CANDIDATE_RAW_FILE}" \
+      --candidate-analysis-file="${STATUS_CANDIDATE_ANALYSIS_FILE}" \
+      --snippet-file="${SNIPPET_STATE}" \
+      --official-count-file="${STATUS_OFFICIAL_METERS_COUNT_FILE}" \
+      --meter-dir="${METER_DIR}" \
+      --preview-meter-dir="${PREVIEW_METER_DIR}" \
+      --official-count-default="${OFFICIAL_METERS_COUNT:-0}" \
+      --search-mode="${SEARCH_MODE:-false}" \
+      --search-expected="${SEARCH_EXPECTED_VALUE_M3:-0}" \
+      --loglevel="${LOGLEVEL:-}"; do
+    sleep 1
+  done | {
+    # As in parse_listen_candidates: no status.json from this subshell.
+    # shellcheck disable=SC2329  # overrides the one status_candidate_seen calls
+    write_status_json() { :; }
+    while IFS=$'\x1f' read -r _act _a _b _c _d; do
+      case "${_act}" in
+        snippet) emit_snippet_if_new "${_a}" "${_b}" "${_c}" "${_d}" ;;
+        search) search_cache_candidate "${_a}" "${_b}" "${_c}" ;;
+        json) _process_listen_json_line "${_a}" ;;
+      esac
+    done
+  }
 }
 
 # ────────────────────────────────────────────────────────────────────────
@@ -251,7 +301,7 @@ start_listen_instance() {
             }
           ' \
         | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${LISTEN_BASE}" 2>&1 \
-        | parse_listen_candidates &
+        | _listen_parse_stage &
       pipeline_pid=$!
       log_debug "[DIAG] LISTEN supervisor: pure-listen pipeline started (pid=${pipeline_pid})"
       wait "${pipeline_pid}" 2>/dev/null || true
