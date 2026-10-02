@@ -368,7 +368,13 @@ Python reads the subscription through a descriptor, so the loop holds
 `mosquitto_sub`'s PID and stops it the moment Python ends - a plain pipe is not
 enough where SIGPIPE is ignored. Formats and locks stay those described in
 Appendix A; the `/rx` history is written byte for byte as jq writes it, number
-literals included. Moved so far: the `rssi/<meter_id>` and `/rx` subscribers.
+literals included. Moved so far: the `rssi/<meter_id>` and `/rx` subscribers,
+the per-board `/telegram` tracker, and the RAW counter at the DECODE pipeline's
+`tee` (`status_raw_seen`). For the counter, two things stay in bash and are
+handed back by the Python process, one request per line, to a bash loop in the
+same stage: registering a Diehl/SAP candidate from its RAW frame and starting a
+preview one-shot decode. Python asks only when the bash code would get past its
+own cheap checks, and is restarted by the stage if it dies.
 `WMBUS_LEDGER=bash` selects the previous in-shell handlers while the move is in
 progress.
 

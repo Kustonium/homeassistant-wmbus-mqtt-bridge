@@ -65,6 +65,55 @@ status_raw_seen() {
   write_status_json
 }
 
+# The RAW counter fed by the decode pipeline's tee: status_raw_seen for every
+# telegram. bridge_ledger.py does that bookkeeping in one process; the loop
+# after it runs the two things that stay in bash - registering a Diehl/SAP
+# candidate and starting a preview one-shot - when it asks for them. python3
+# exits 0 only at the end of its input, so any other exit is a crash and it is
+# started again on the same input: the counter cannot stop for the rest of the
+# pipeline's life. WMBUS_LEDGER=bash runs status_raw_seen per line instead.
+_raw_counter_stage() {
+  if [[ "${WMBUS_LEDGER:-python}" == "bash" ]]; then
+    while IFS= read -r raw_line; do status_raw_seen "${raw_line}"; done >/dev/null
+    return 0
+  fi
+  # --name=value: a value starting with "-" must not read as an option.
+  until python3 -u "${BRIDGE_LEDGER}" raw \
+      --raw-count-file="${STATUS_RAW_COUNT_FILE}" \
+      --last-raw-file="${STATUS_LAST_RAW_FILE}" \
+      --recent-raw-file="${STATUS_RECENT_RAW_FILE}" \
+      --broker-error-file="${STATUS_BROKER_ERROR_FILE}" \
+      --candidates-file="${STATUS_CANDIDATES_FILE}" \
+      --events-file="${STATUS_EVENTS_FILE}" \
+      --rate-file="${STATUS_RATE_1M_FILE}" \
+      --rate-history-file="${STATUS_RATE_HISTORY_FILE}" \
+      --status-json-file="${STATUS_JSON}" \
+      --discovery-flag-file="${STATUS_DISCOVERY_FLAG}" \
+      --preview-meter-dir="${PREVIEW_METER_DIR}" \
+      --preview-last-dir="${BASE}/.preview_decode_last" \
+      --preview-min-interval="${PREVIEW_DECODE_MIN_INTERVAL_SECONDS:-20}" \
+      --raw-topic="${RAW_TOPIC:-}" \
+      --state-prefix="${STATE_PREFIX:-}" \
+      --discovery-prefix="${DISCOVERY_PREFIX:-}" \
+      --search-mode="${SEARCH_MODE:-false}" \
+      --loglevel="${LOGLEVEL:-}" \
+      --mqtt-host="${MQTT_HOST:-}" \
+      --mqtt-port="${MQTT_PORT:-}" \
+      --decoded-count="${STATUS_DECODED_COUNT}" \
+      --last-decoded-seen="${STATUS_LAST_DECODED_SEEN}" \
+      --last-error="${STATUS_LAST_ERROR}" \
+      --last-event="${STATUS_LAST_EVENT}" \
+      --discovery-published="${STATUS_DISCOVERY_PUBLISHED}" \
+      --discovery-published-at="${STATUS_DISCOVERY_PUBLISHED_AT}"; do
+    sleep 1
+  done | while IFS=$'\t' read -r _act _raw _id; do
+    case "${_act}" in
+      sap) status_raw_candidate_seen "${_raw}" ;;
+      preview) preview_decode_raw_if_requested "${_raw}" "${_id}" ;;
+    esac
+  done >/dev/null
+}
+
 meter_id_from_raw_hex() {
   local raw="$1"
   local byte_count lfield id_le
