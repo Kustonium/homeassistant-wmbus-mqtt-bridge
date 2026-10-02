@@ -1,3 +1,16 @@
+## 1.5.70
+
+### Added
+- add bridge_ledger.py with lock-compatible TSV helpers (4530cb9)
+
+### Changed
+- book /rx messages in bridge_ledger.py (d547f21)
+- book rssi/<id> messages in bridge_ledger.py (5391c3a)
+- move per-message bodies of the tracker, /rx and rssi subscribers into functions (939c249)
+
+### Fixed
+- stop the rssi subscription when bridge_ledger.py ends (36e2b4f)
+
 ## 1.5.69
 
 ### Changed
