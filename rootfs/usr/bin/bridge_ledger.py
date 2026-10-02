@@ -42,6 +42,7 @@ import tempfile
 import time
 from decimal import Decimal
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 # The clock every handler reads. Tests replace it to get fixed timestamps.
@@ -621,6 +622,420 @@ class RxBook:
             self.since_trim = 0
 
 
+# ── per-board /telegram tracker ─────────────────────────────────────────────
+
+_HEX_UPPER = re.compile(r"[0-9A-F]+")
+_BASH_SPACE = re.compile(r"[ \t\n\v\f\r]")
+_ID8_UPPER = re.compile(r"[0-9A-F]{8}")
+
+
+def meter_id_from_raw_hex(raw: str) -> str:
+    """05-raw.sh meter_id_from_raw_hex: the A-field id of a standard wM-Bus frame.
+
+    `raw` is already upper-case hex; "" unless the L-field matches the length.
+    """
+    if not _HEX_UPPER.fullmatch(raw) or len(raw) < 22 or len(raw) % 2:
+        return ""
+    if int(raw[0:2], 16) != len(raw) // 2 - 1:
+        return ""
+    le = raw[8:16]
+    return le[6:8] + le[4:6] + le[2:4] + le[0:2]
+
+
+def bash_split(text: str, sep: str) -> List[str]:
+    """`IFS=<sep> read -ra parts <<< text` for a non-whitespace separator."""
+    parts = text.split(sep)
+    if text.endswith(sep):
+        parts.pop()
+    return parts
+
+
+def _awk_nf(line: bytes) -> int:
+    return 0 if not line else line.count(b"\t") + 1
+
+
+def _rewrite_unlocked(path: str, rows: Callable[[List[bytes]], List[bytes]]) -> None:
+    """awk ... file > file.tmp && mv: the tracker is the only writer, no lock.
+
+    awk fails on a missing file, so nothing is written then (bridge.sh creates
+    these files at start).
+    """
+    if not os.path.isfile(path):
+        return
+    _replace_with(path, rows(_read_lines(path)))
+
+
+class TrackerBook:
+    """_esp_tracker_handle_message: which board delivered which meter, and when.
+
+    status_esp_telegram_devices.tsv  board<TAB>last_epoch<TAB>topic<TAB>count
+    status_esp_meter_device.tsv      id<TAB>board<TAB>epoch (rewritten only when
+                                     a meter's board changes, as in bash)
+    status_esp_meter_reception.tsv   id board first last count topic
+    esp_rx_history.jsonl             {"time","source","meter_id","topic"}
+    """
+
+    TRIM_EVERY = 1000
+
+    def __init__(self, dev_pos: int, devices: str, meter_device: str,
+                 reception: str, history: str) -> None:
+        self.dev_pos = dev_pos
+        self.devices, self.meter_device = devices, meter_device
+        self.reception, self.history = reception, history
+        # Last board per meter, like the subscriber's _MD_LAST: in memory, so
+        # it starts empty again when this process is restarted.
+        self.last_board: Dict[str, str] = {}
+        self.since_trim = 0
+
+    def __call__(self, topic_b: bytes, payload_b: bytes) -> None:
+        if not topic_b:
+            return
+        topic = _s(topic_b)
+        parts = bash_split(topic, "/")
+        board = parts[self.dev_pos] if 0 <= self.dev_pos < len(parts) else ""
+        if not board:
+            return
+        ts = int(now())
+        meter = meter_id_from_raw_hex(_ascii_upper(_BASH_SPACE.sub("", _s(payload_b))))
+        valid = bool(_ID8_UPPER.fullmatch(meter))
+        if valid and self.last_board.get(meter) != board:
+            self.last_board[meter] = board
+            row = _b(f"{meter}\t{board}\t{ts}")
+            k = _b(meter)
+
+            def meter_rows(lines: List[bytes]) -> List[bytes]:
+                out = [row if _first_field(ln) == k else ln for ln in lines]
+                if not any(_first_field(ln) == k for ln in lines):
+                    out.append(row)
+                return out
+            _rewrite_unlocked(self.meter_device, meter_rows)
+        if valid:
+            upsert_meter_reception(self.reception, meter, board, ts, topic)
+            append_locked(self.history, jq_dumps(
+                {"time": ts, "source": board, "meter_id": meter, "topic": topic}))
+            self.since_trim += 1
+            if self.since_trim >= self.TRIM_EVERY:
+                trim_locked(self.history, 100000, 90000)
+                self.since_trim = 0
+        k_board = _b(board)
+
+        def device_rows(lines: List[bytes]) -> List[bytes]:
+            out: List[bytes] = []
+            updated = False
+            for ln in lines:
+                if _first_field(ln) == k_board:
+                    nf = _awk_nf(ln)
+                    count = _awk_str(_awk_num(_s(ln.split(b"\t")[3])) + 1) if nf >= 4 else "1"
+                    out.append(_b(f"{board}\t{ts}\t{topic}\t{count}"))
+                    updated = True
+                else:
+                    out.append(ln)
+            if not updated:
+                out.append(_b(f"{board}\t{ts}\t{topic}\t1"))
+            return out
+        _rewrite_unlocked(self.devices, device_rows)
+
+
+# ── RAW telegram counter (status_raw_seen) ──────────────────────────────────
+
+def iso_now() -> str:
+    """`date -Iseconds` as BusyBox prints it in the image: 2026-10-02T15:09:23+02:00."""
+    return datetime.fromtimestamp(now()).astimezone().isoformat(timespec="seconds")
+
+
+def _jq_pretty(value: Any, indent: int = 0) -> str:
+    """`jq -n '{...}'` output: two-space indent, "key": value."""
+    if isinstance(value, dict):
+        if not value:
+            return "{}"
+        pad = " " * (indent + 2)
+        items = [pad + _jq_string(k) + ": " + _jq_pretty(v, indent + 2) for k, v in value.items()]
+        return "{\n" + ",\n".join(items) + "\n" + " " * indent + "}"
+    return jq_dumps(value)
+
+
+def _write_replace(path: str, data: bytes) -> None:
+    """printf ... > file.tmp && mv file.tmp file (single writer per file here)."""
+    directory, base = os.path.split(path)
+    fd, tmp = tempfile.mkstemp(prefix=base + ".tmp.", dir=directory or ".")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _tail_lines(path: str, count: int) -> List[bytes]:
+    lines = _read_lines(path)
+    return lines[-count:] if count > 0 else []
+
+
+def _digits_or_zero(path: str) -> str:
+    """status_read_raw_count: the file's text when it is all digits, else 0."""
+    try:
+        with open(path, "rb") as fh:
+            text = _s(fh.read()).rstrip("\n")
+    except OSError:
+        return "0"
+    return text if re.fullmatch(r"[0-9]+", text) else "0"
+
+
+def mfct_code_from_raw_hex(raw: str) -> str:
+    """05-raw.sh mfct_code_from_raw_hex: the EN 13757 three-letter code of the M-field."""
+    raw = _BASH_SPACE.sub("", raw)
+    if len(raw) < 8:
+        return ""
+    m = raw[4:8]
+    if not re.fullmatch(r"[0-9A-Fa-f]{4}", m):
+        return ""
+    val = int(m[2:4] + m[0:2], 16)
+    letters = [(val >> 10) & 0x1F, (val >> 5) & 0x1F, val & 0x1F]
+    if not all(1 <= x <= 26 for x in letters):
+        return ""
+    return "".join(chr(64 + x) for x in letters)
+
+
+_MFCT_NAMES = {"BMT": "(BMT) BMETERS", "NES": "(NES) NORA ELK MALZ SAN ve TIC",
+               "SAP": "(SAP) Diehl Metering", "QDS": "(QDS) Qundis", "TCH": "(TCH) Techem"}
+_THREE_LETTERS = re.compile(r"[A-Z]{3}")
+_AES_TYPE = re.compile(r"encrypted|(^|[^a-z])aes([^a-z]|$)", re.IGNORECASE)
+
+
+def candidate_fill_manufacturer(path: str, meter: str, code: str) -> None:
+    """candidate_fill_manufacturer_code: fill column 9 when empty or a bare code."""
+    if not _ID8.fullmatch(meter) or not code or not os.path.isfile(path):
+        return
+    k = _b(meter)
+
+    def fillable(line: bytes) -> bool:
+        if _first_field(line) != k:
+            return False
+        f = line.split(b"\t")
+        return len(f) < 9 or f[8] == b"" or bool(_THREE_LETTERS.fullmatch(_s(f[8])))
+    if not any(fillable(ln) for ln in _read_lines(path)):  # lock-free pre-check, as in bash
+        return
+    with locked(path):
+        out = []
+        for line in _read_lines(path):
+            if _first_field(line) == k:
+                f = _s(line).split("\t") if line else []
+                while len(f) < 9:
+                    f.append("")
+                if f[8] == "" or _THREE_LETTERS.fullmatch(f[8]):
+                    f[8] = code
+                line = _b("\t".join(f))
+            out.append(line)
+        _replace_with(path, out)
+
+
+def _bash_read_tab_pair(text: str) -> Tuple[str, str]:
+    """`IFS=$'\t' read -r a b`: TAB is IFS whitespace, so an empty first field vanishes."""
+    text = text.strip("\t")
+    a, _, b = text.partition("\t")
+    return a, b.lstrip("\t")
+
+
+_ID8 = re.compile(r"[0-9A-Fa-f]{8}")
+
+
+class RawBook:
+    """status_raw_seen: the bookkeeping of every RAW telegram, in one process.
+
+    Writes the RAW counter, last-seen time, the recent-RAW ring, the candidate
+    manufacturer fill, the every-25th event, the per-minute rate and
+    status.json exactly as the bash function did. Two things stay in bash and
+    are asked for on stdout, one request per line, for the bash loop that
+    reads it (see _raw_counter_stage): registering a Diehl/SAP (0x304C)
+    candidate ("sap<TAB>raw") and starting a preview one-shot decode
+    ("preview<TAB>raw<TAB>id"). Each request is sent only when the bash code
+    would get past its own cheap checks, which it then repeats.
+    """
+
+    def __init__(self, a: argparse.Namespace, out=None) -> None:
+        self.a = a
+        self.out = out if out is not None else sys.stdout
+        self.last_event = a.last_event
+        # The rate state starts at zero, like the RAW_RATE_* variables each
+        # pipeline's counter subshell inherits.
+        self.rate_epoch = 0
+        self.rate_count = 0
+        self.rate_prev = 0
+
+    def request(self, *fields: str) -> None:
+        # A lost reader must not stop the counting itself.
+        try:
+            self.out.write("\t".join(fields) + "\n")
+            self.out.flush()
+        except OSError:
+            pass
+
+    def line(self, raw_b: bytes) -> None:
+        a = self.a
+        raw = _s(raw_b)
+        if os.path.isfile(a.broker_error_file) and os.path.getsize(a.broker_error_file) > 0:
+            with open(a.broker_error_file, "wb"):
+                pass
+        # status_store_raw_seen
+        seen = iso_now()
+        count = int(_digits_or_zero(a.raw_count_file)) + 1
+        _write_replace(a.raw_count_file, f"{count}\n".encode())
+        try:
+            with open(a.last_raw_file, "wb") as fh:
+                fh.write(_b(seen) + b"\n")
+        except OSError:
+            pass
+        # status_store_recent_raw
+        if raw and re.fullmatch(r"[0-9A-Fa-f]+", raw):
+            ring = _read_lines(a.recent_raw_file)
+            ring.append(_b(f"{iso_now()}\t{len(raw)}\t{raw}"))
+            _replace_with(a.recent_raw_file, ring[-200:])
+        self.candidate(raw)
+        self.preview(raw)
+        if count == 1 or count % 25 == 0:
+            self.add_event("ok", f"RAW telegram received ({len(raw)} hex chars)")
+        self.rate()
+        self.status_json()
+
+    def candidate(self, raw: str) -> None:
+        """status_raw_candidate_seen up to the point where bash takes over."""
+        a = self.a
+        norm = _ascii_upper(_BASH_SPACE.sub("", raw))
+        meter = meter_id_from_raw_hex(norm)
+        if not _ID8.fullmatch(meter):
+            return
+        code = mfct_code_from_raw_hex(norm)
+        if code:
+            candidate_fill_manufacturer(a.candidates_file, meter, _MFCT_NAMES.get(code) or code)
+        if norm[4:8] != "304C":
+            return
+        driver, type_line = "", ""
+        k = _b(meter)
+        for line in _read_lines(a.candidates_file):
+            if _first_field(line) == k:
+                f = _s(line).split("\t")
+                driver, type_line = _bash_read_tab_pair(
+                    (f[1] if len(f) > 1 else "") + "\t" + (f[2] if len(f) > 2 else ""))
+                break
+        if driver and driver != "auto":
+            return
+        if _AES_TYPE.search(type_line):
+            return
+        self.request("sap", raw)
+
+    def preview(self, raw: str) -> None:
+        """preview_decode_raw_if_requested up to its throttle; bash decides the rest."""
+        a = self.a
+        norm = _ascii_upper(_BASH_SPACE.sub("", raw))
+        if not _HEX_UPPER.fullmatch(norm):
+            return
+        lower = norm.lower()
+        meter = ""
+        for path in sorted(glob.glob(os.path.join(a.preview_meter_dir, "meter-preview-*"))):
+            if not os.path.exists(path):  # [[ -e ]]: follows symlinks
+                continue
+            cand = os.path.basename(path)[len("meter-preview-"):]
+            if not _ID8.fullmatch(cand):
+                continue
+            le = cand[6:8] + cand[4:6] + cand[2:4] + cand[0:2]
+            if le.lower() in lower:
+                meter = cand.upper()
+                break
+        if not meter:
+            meter = meter_id_from_raw_hex(norm)
+        if not _ID8.fullmatch(meter):
+            return
+        if not os.path.isfile(os.path.join(a.preview_meter_dir, f"meter-preview-{meter}")):
+            return
+        last = _digits_or_zero(os.path.join(a.preview_last_dir, meter))
+        if int(now()) - int(last) < a.preview_min_interval:
+            return
+        self.request("preview", raw, meter)
+
+    def add_event(self, level: str, message: str) -> None:
+        """status_add_event: append, then keep the last 40 lines."""
+        a = self.a
+        self.last_event = message
+        try:
+            with open(a.events_file, "ab") as fh:
+                fh.write(_b(f"{iso_now()}\t{level}\t{message}") + b"\n")
+            _replace_with(a.events_file, _tail_lines(a.events_file, 40))
+        except OSError:
+            pass
+
+    def rate(self) -> None:
+        a = self.a
+        ts = int(now())
+        minute = ts // 60
+        if self.rate_epoch != minute:
+            if self.rate_epoch != 0:
+                history = _tail_lines(a.rate_history_file, 14)
+                history.append(f"{self.rate_epoch}\t{self.rate_count}".encode())
+                _replace_with(a.rate_history_file, history)
+            self.rate_prev = self.rate_count
+            self.rate_count = 1
+            self.rate_epoch = minute
+        else:
+            self.rate_count += 1
+        _write_replace(a.rate_file, (
+            f'{{"current_min":{self.rate_count},"prev_min":{self.rate_prev},"epoch":{ts}}}\n').encode())
+
+    def status_json(self) -> None:
+        """write_status_json as the counter subshell writes it."""
+        a = self.a
+        raw_count = _digits_or_zero(a.raw_count_file)
+        try:
+            with open(a.last_raw_file, "rb") as fh:
+                last_raw = _s(fh.read()).rstrip("\n")
+        except OSError:
+            last_raw = ""
+        pub, pub_at = a.discovery_published, a.discovery_published_at
+        if os.path.isfile(a.discovery_flag_file) and os.path.getsize(a.discovery_flag_file) > 0:
+            pub = "true"
+            pub_at = _s(_read_lines(a.discovery_flag_file)[0]) if _read_lines(a.discovery_flag_file) else ""
+        doc = {
+            "updated_at": iso_now(),
+            "config": {"raw_topic": a.raw_topic, "state_prefix": a.state_prefix,
+                       "discovery_prefix": a.discovery_prefix,
+                       "search_mode": a.search_mode == "true", "loglevel": a.loglevel},
+            "mqtt": {"host": a.mqtt_host, "port": a.mqtt_port, "connected": True},
+            "pipeline": {"raw_count": _jq_tonumber(raw_count),
+                         "decoded_count": _jq_tonumber(a.decoded_count),
+                         "wmbusmeters_running": True,
+                         "discovery_published": pub == "true",
+                         "discovery_published_at": pub_at,
+                         "last_raw_seen": last_raw,
+                         "last_decoded_seen": a.last_decoded_seen,
+                         "last_error": a.last_error,
+                         "last_event": self.last_event},
+        }
+        _write_replace(a.status_json_file, _b(_jq_pretty(doc)) + b"\n")
+
+
+def _jq_tonumber(text: str) -> Any:
+    """`$x | tonumber? // 0` for the counters."""
+    values = jq_values(text) if text.strip(_JQ_WS) else []
+    if len(values) == 1 and isinstance(values[0], Decimal):
+        return values[0]
+    return 0
+
+
+def run_lines(book: "RawBook", stream=None, err=None) -> None:
+    """The counter loop: one RAW line per message (`IFS= read -r raw_line`)."""
+    stream = stream if stream is not None else sys.stdin.buffer
+    err = err if err is not None else sys.stderr
+    for raw in stream:
+        if not raw.endswith(b"\n"):  # `read` does not hand over an unterminated last line
+            continue
+        try:
+            book.line(raw[:-1])
+        except Exception as exc:  # one bad telegram must not stop the counter
+            print(f"[wmbus-bridge][WARN] ledger: RAW telegram skipped: {exc!r}", file=err, flush=True)
+
 
 def run(handler: Handler, stream=None, err=None) -> None:
     """Feed every line of stream to handler until EOF; a failing message is skipped."""
@@ -641,6 +1056,24 @@ def _parser() -> argparse.ArgumentParser:
     rssi = modes.add_parser("rssi", help="wmbus/<board>/rssi/<meter_id> messages")
     rssi.add_argument("--meter-dir", required=True)
     rssi.add_argument("--rssi-file", required=True)
+    tracker = modes.add_parser("tracker", help="RAW_TOPIC messages, per-board tracker")
+    tracker.add_argument("--dev-pos", type=int, required=True,
+                         help="index of the '+' segment of RAW_TOPIC")
+    for name in ("devices", "meter-device", "reception", "history"):
+        tracker.add_argument(f"--{name}-file", required=True)
+    raw = modes.add_parser("raw", help="RAW telegrams from the decode pipeline's tee")
+    for name in ("raw-count", "last-raw", "recent-raw", "broker-error", "candidates",
+                 "events", "rate", "rate-history", "status-json", "discovery-flag"):
+        raw.add_argument(f"--{name}-file", required=True)
+    raw.add_argument("--preview-meter-dir", required=True)
+    raw.add_argument("--preview-last-dir", required=True)
+    raw.add_argument("--preview-min-interval", type=int, default=20)
+    # Values the counter subshell inherits when the pipeline starts; they go
+    # into status.json unchanged, as the bash counter wrote them.
+    for name in ("raw-topic", "state-prefix", "discovery-prefix", "search-mode", "loglevel",
+                 "mqtt-host", "mqtt-port", "decoded-count", "last-decoded-seen",
+                 "last-error", "last-event", "discovery-published", "discovery-published-at"):
+        raw.add_argument(f"--{name}", default="")
     rx = modes.add_parser("rx", help="wmbus/<board>/rx messages")
     for name in ("reception", "mode", "history", "sequence", "boots", "clock"):
         rx.add_argument(f"--{name}-file", required=True)
@@ -654,6 +1087,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         return int(exc.code or 0)
     if args.mode == "rssi":
         run(RssiBook(args.meter_dir, args.rssi_file))
+    elif args.mode == "raw":
+        run_lines(RawBook(args))
+    elif args.mode == "tracker":
+        run(TrackerBook(args.dev_pos, args.devices_file, args.meter_device_file,
+                        args.reception_file, args.history_file))
     elif args.mode == "rx":
         run(RxBook(args.reception_file, args.mode_file, args.history_file,
                    args.sequence_file, args.boots_file, args.clock_file))

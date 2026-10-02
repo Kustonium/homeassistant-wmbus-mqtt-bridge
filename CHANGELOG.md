@@ -1,3 +1,9 @@
+## 1.5.71
+
+### Changed
+- count RAW telegrams in bridge_ledger.py (8b0b483)
+- book the per-board /telegram tracker in bridge_ledger.py (7bfbbcf)
+
 ## 1.5.70
 
 ### Added

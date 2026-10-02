@@ -325,6 +325,64 @@ _esp_rx_subscriber() {
   done
 }
 
+# The per-ESP /telegram tracker loop (see start_esp_subscribers).
+_esp_tracker_subscriber() {
+  # Pre-compute which segment of RAW_TOPIC holds the device name.
+  IFS='/' read -ra _RT_PARTS <<< "${RAW_TOPIC}"
+  _RT_DEV_POS=-1
+  for _i in "${!_RT_PARTS[@]}"; do
+    if [[ "${_RT_PARTS[$_i]}" == "+" ]]; then
+      _RT_DEV_POS="${_i}"
+      break
+    fi
+  done
+
+  if [[ "${_RT_DEV_POS}" -ge 0 ]]; then
+    log "ESP-device tracker: device name at topic segment ${_RT_DEV_POS} of '${RAW_TOPIC}'"
+    _rx_history_since_trim=0
+    _trim_esp_rx_history "${ESP_RX_HISTORY_FILE}" 100000 90000 || true
+    # Last device recorded per meter id, kept in this subshell only. The TSV is
+    # written ONLY when a meter's device changes (or is seen for the first time),
+    # so a steady multi-meter installation does zero extra disk writes per
+    # telegram — this loop already upserts the per-device row on every message
+    # and a second unconditional rewrite here would double that cost.
+    declare -A _MD_LAST=()
+    while true; do
+      _sub_t0="$(epoch_now)"
+      if [[ "${WMBUS_LEDGER:-python}" == "bash" ]]; then
+        # Read via process substitution, not a pipe: with set -euo pipefail a
+        # mosquitto_sub timeout/disconnect would otherwise kill this tracker.
+        # -F '%t\t%p' (was '%t'): the payload is needed to attribute the telegram
+        # to a meter id, which is what gives the band fallback something to key on.
+        while IFS=$'\t' read -r _tg_topic _tg_payload; do
+          _esp_tracker_handle_message "${_tg_topic}" "${_tg_payload}"
+        done < <(
+          ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%t\t%p' 2>/dev/null
+        )
+      else
+        # As for the rssi and /rx subscribers: python3 reads through a
+        # descriptor and mosquitto_sub is stopped as soon as python3 ends (no
+        # -W here either). The last board per meter lives in python3 then, so
+        # after a restart each meter's board row is written once more.
+        exec {_tg_fd}< <(
+          ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%t\t%p' 2>/dev/null
+        )
+        _tg_sub_pid=$!
+        python3 -u "${BRIDGE_LEDGER}" tracker --dev-pos "${_RT_DEV_POS}" \
+          --devices-file "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" \
+          --meter-device-file "${STATUS_ESP_METER_DEVICE_FILE}" \
+          --reception-file "${STATUS_ESP_METER_RECEPTION_FILE}" \
+          --history-file "${ESP_RX_HISTORY_FILE}" <&"${_tg_fd}" || true
+        kill "${_tg_sub_pid}" 2>/dev/null || true
+        exec {_tg_fd}<&-
+      fi
+      _sub_reconnect_sleep "${_sub_t0}"
+    done
+  else
+    log "ESP-device tracker: RAW_TOPIC '${RAW_TOPIC}' has no '+' wildcard — per-device tracking disabled."
+  fi
+}
+
 start_esp_subscribers() {
 # Track background subscriber PIDs so the soft-reload watcher in bridge.sh can
 # exclude them from its kill — these subscribers must survive pipeline restarts
@@ -550,44 +608,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 # "wmbus/xiaoseed/telegram" → device "xiaoseed"). If RAW_TOPIC has no
 # wildcard at all, this loop still runs but produces no device data
 # (and the WebGUI falls back to diag-based detection as before).
-(
-  # Pre-compute which segment of RAW_TOPIC holds the device name.
-  IFS='/' read -ra _RT_PARTS <<< "${RAW_TOPIC}"
-  _RT_DEV_POS=-1
-  for _i in "${!_RT_PARTS[@]}"; do
-    if [[ "${_RT_PARTS[$_i]}" == "+" ]]; then
-      _RT_DEV_POS="${_i}"
-      break
-    fi
-  done
-
-  if [[ "${_RT_DEV_POS}" -ge 0 ]]; then
-    log "ESP-device tracker: device name at topic segment ${_RT_DEV_POS} of '${RAW_TOPIC}'"
-    _rx_history_since_trim=0
-    _trim_esp_rx_history "${ESP_RX_HISTORY_FILE}" 100000 90000 || true
-    # Last device recorded per meter id, kept in this subshell only. The TSV is
-    # written ONLY when a meter's device changes (or is seen for the first time),
-    # so a steady multi-meter installation does zero extra disk writes per
-    # telegram — this loop already upserts the per-device row on every message
-    # and a second unconditional rewrite here would double that cost.
-    declare -A _MD_LAST=()
-    while true; do
-      _sub_t0="$(epoch_now)"
-      # Read via process substitution, not a pipe: with set -euo pipefail a
-      # mosquitto_sub timeout/disconnect would otherwise kill this tracker.
-      # -F '%t\t%p' (was '%t'): the payload is needed to attribute the telegram
-      # to a meter id, which is what gives the band fallback something to key on.
-      while IFS=$'\t' read -r _tg_topic _tg_payload; do
-        _esp_tracker_handle_message "${_tg_topic}" "${_tg_payload}"
-      done < <(
-        ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%t\t%p' 2>/dev/null
-      )
-      _sub_reconnect_sleep "${_sub_t0}"
-    done
-  else
-    log "ESP-device tracker: RAW_TOPIC '${RAW_TOPIC}' has no '+' wildcard — per-device tracking disabled."
-  fi
-) &
+_esp_tracker_subscriber &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 
 # Structured per-frame RF metadata. New firmware publishes this in addition to
