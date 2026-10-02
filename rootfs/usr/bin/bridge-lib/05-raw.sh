@@ -102,8 +102,9 @@ mfct_code_from_raw_hex() {
   l3=$(( val & 0x1f ))
   (( l1 >= 1 && l1 <= 26 && l2 >= 1 && l2 <= 26 && l3 >= 1 && l3 <= 26 )) \
     || { echo ""; return 0; }
-  awk -v a="$((l1 + 64))" -v b="$((l2 + 64))" -v c="$((l3 + 64))" \
-    'BEGIN { printf "%c%c%c", a, b, c }'
+  # Index into A..Z instead of an awk printf: runs for every RAW telegram.
+  local _az="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  printf '%s' "${_az:l1-1:1}${_az:l2-1:1}${_az:l3-1:1}"
 }
 
 # Map a 3-letter EN 13757 FLAG manufacturer code to the full "(CODE) Vendor"

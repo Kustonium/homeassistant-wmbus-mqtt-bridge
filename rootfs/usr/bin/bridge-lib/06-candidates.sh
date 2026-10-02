@@ -87,9 +87,12 @@ preview_decode_raw_if_requested() {
       [[ -e "${_pf}" ]] || continue
       _cand="${_pf##*/meter-preview-}"
       [[ "${_cand}" =~ ^[0-9A-Fa-f]{8}$ ]] || continue
-      _le="$(id_to_le_hex "${_cand}")"
-      [[ -n "${_le}" && "${_raw_lc}" == *"${_le}"* ]] || continue
-      id="$(normalize_meter_id "${_cand}")"
+      # Same value as id_to_le_hex, computed in-process: this loop visits every
+      # preview file for every RAW telegram, and two subshells per file made it
+      # the most expensive thing the add-on did on a busy site.
+      _le="${_cand:6:2}${_cand:4:2}${_cand:2:2}${_cand:0:2}"
+      [[ "${_raw_lc}" == *"${_le,,}"* ]] || continue
+      id="${_cand^^}"
       break
     done
     [[ -n "${id}" ]] || id="$(meter_id_from_raw_hex "${raw}")"
