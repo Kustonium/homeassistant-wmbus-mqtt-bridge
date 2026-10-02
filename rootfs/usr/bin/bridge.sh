@@ -95,8 +95,8 @@ FACTORY_RESET_REQUEST_FILE="${BASE}/.factory_reset_request"
 # successfully decoded JSON (status_meter_seen). Read by webui.py.
 # Format: id<TAB>reason<TAB>iso_timestamp
 STATUS_METER_KEY_PROBLEM_FILE="${BASE}/status_meter_key_problem.tsv"
-# Per-candidate decoded value preview — written by parse_listen_candidates when
-# the parallel LISTEN instance has a meter-preview-<id> file in its config dir.
+# Per-candidate decoded value preview — written by _store_candidate_value when
+# a preview one-shot decodes a candidate's RAW frame.
 # Format: id<TAB>value<TAB>value_key<TAB>iso_timestamp
 STATUS_CANDIDATE_VALUES_FILE="${BASE}/status_candidate_values.tsv"
 # Per-candidate preview lifecycle state: pending | decoded_value | decoded_without_numeric_value
@@ -232,12 +232,6 @@ STATUS_BRIDGE_START_FILE="${BASE}/status_bridge_start.txt"
 # Filled by an opt-in ESP publication (wmbus/<dev>/rssi/<meter_id>); absent
 # unless the firmware is configured to send it, which is the normal case.
 STATUS_RSSI_FILE="${BASE}/status_rssi.tsv"
-# shellcheck disable=SC2034
-RAW_RATE_CUR_MIN_EPOCH=0
-# shellcheck disable=SC2034
-RAW_RATE_CUR_MIN_COUNT=0
-# shellcheck disable=SC2034
-RAW_RATE_PREV_MIN_COUNT=0
 
 touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_METER_KEY_PROBLEM_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${STATUS_ESP_METER_DEVICE_FILE}" "${STATUS_ESP_METER_RECEPTION_FILE}" "${ESP_RX_HISTORY_FILE}" "${STATUS_ESP_RX_RECEPTION_FILE}" "${STATUS_ESP_RX_MODE_FILE}" "${ESP_RF_RX_HISTORY_FILE}" "${ESP_DIAG_HISTORY_FILE}" "${STATUS_ESP_RX_SEQUENCE_FILE}" "${STATUS_ESP_RX_BOOTS_FILE}" "${STATUS_ESP_RX_CLOCK_FILE}" "${STATUS_ESP_CONFIG_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" "${STATUS_BROKER_ERROR_FILE}"
 printf '0\n' > "${STATUS_OFFICIAL_METERS_COUNT_FILE}" 2>/dev/null || true
@@ -617,8 +611,9 @@ RELOAD_FLAG="${BASE}/.reload_pipeline"
 rm -f "${RELOAD_FLAG}" 2>/dev/null || true
 
 # Initial meter registration before the restart loop kicks in. Without
-# this, OFFICIAL_METERS_COUNT would stay at 0 and parse_listen_candidates
-# would mis-guard candidate double-counting on the first pipeline start.
+# this, OFFICIAL_METERS_COUNT would stay at 0 and the LISTEN parser
+# (_listen_parse_stage) would mis-guard candidate double-counting on the first
+# pipeline start.
 refresh_meter_files
 
 # ------------------------------------------------------------

@@ -8,8 +8,12 @@ the per-board tracker, the /rx and rssi/<id> subscribers and the LISTEN block
 handler. Each of them started tens of processes per message (awk, jq, mv,
 mktemp, flock, date and $(...) subshells - see tests/test_perf_fork_budget.sh),
 which on a 5-ESP site kept a CPU core busy doing nothing but process start-up.
-This module does the same bookkeeping in-process. It is introduced one path at
-a time; each path keeps its bash implementation until it is switched over.
+This module does the same bookkeeping in-process, for every path: the rssi/<id>
+and /rx subscribers, the per-board /telegram tracker, the RAW counter and the
+pure LISTEN parser. The bash implementations were removed once every site ran
+on this; the docstrings below still name the bash function each piece
+replaced, and what those functions wrote for the test corpora is kept in
+tests/fixtures/ledger/, which the equivalence tests compare against.
 
 CONTRACT
 --------
@@ -1100,8 +1104,8 @@ class RawBook:
         self.a = a
         self.out = out if out is not None else sys.stdout
         self.last_event = a.last_event
-        # The rate state starts at zero, like the RAW_RATE_* variables each
-        # pipeline's counter subshell inherits.
+        # The rate state starts at zero with every pipeline, as the bash
+        # counter's did.
         self.rate_epoch = 0
         self.rate_count = 0
         self.rate_prev = 0

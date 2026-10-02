@@ -54,7 +54,7 @@ CANDIDATE_ANALYSIS_TSV = BASE / "status_candidate_analysis.tsv"
 # Last raw telegram per candidate, written by status_record_candidate_raw
 # (bridge-lib/06-candidates.sh). Feeds the "export for issue report" action.
 CANDIDATE_RAW_TSV = BASE / "status_candidate_raw.tsv"
-# Rolling RAW frames (tail 200), written by status_raw_seen — used to find a
+# Rolling RAW frames (tail 200), written by bridge_ledger.py raw — used to find a
 # configured meter's last frame (by little-endian id substring) for the
 # on-demand driver comparison.
 RECENT_RAW_TSV = BASE / "status_recent_raw.tsv"

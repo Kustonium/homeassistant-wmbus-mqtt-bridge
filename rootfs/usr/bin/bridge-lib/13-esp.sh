@@ -45,22 +45,6 @@ inject_rssi_into_json() {
     || printf '%s' "${line}"
 }
 
-# Atomic upsert keyed by meter id AND ESP device. Unlike the generic TSV helper,
-# this deliberately retains several rows with the same meter id so every board
-# can produce its own Home Assistant RSSI entity.
-_rssi_tsv_upsert() {
-  local file="$1" id="$2" src="$3" row="$4"
-  (
-    flock -x 9
-    local _tmp
-    _tmp="$(mktemp "${file}.tmp.XXXXXX")" || return 1
-    awk -F'\t' -v id="${id}" -v src="${src}" '$1 != id || $3 != src {print}' \
-      "${file}" 2>/dev/null > "${_tmp}" || true
-    printf '%s\n' "${row}" >> "${_tmp}"
-    mv "${_tmp}" "${file}" 2>/dev/null || { rm -f "${_tmp}"; true; }
-  ) 9>"${file}.lock"
-}
-
 # True (0) for a boot not seen yet from this ESP, false (1) for a repeat.
 # The firmware publishes its boot event retained on <diag>/boot, and the diag
 # subscriber below resubscribes every 180 s (mosquitto_sub -W is a hard limit,
@@ -93,234 +77,58 @@ _esp_diag_replay_ignored() {
   [[ "$1" == "1" ]]
 }
 
-# Per-message handlers of the background subscribers below. They are named
-# functions rather than inline loop bodies so the fork-budget test can call them
-# with one message each. They run inside each subscriber's subshell and keep its
-# state in that subshell's variables, exactly as the inline bodies did.
-
-# Configured meter ids the RSSI subscriber stores rows for (see there).
-# The caller must hold an associative array _RSSI_WANTED.
-_rssi_load_wanted() {
-  local _mf _l
-  _RSSI_WANTED=()
-  for _mf in "${METER_DIR}"/meter-*; do
-    [[ -f "${_mf}" ]] || continue
-    while IFS= read -r _l; do
-      [[ "${_l}" == id=* ]] || continue
-      _l="${_l#id=}"
-      [[ "${_l}" =~ ^[0-9A-Fa-f]{8}$ ]] && _RSSI_WANTED["${_l^^}"]=1
-    done < "${_mf}"
-  done
-}
-
-# One wmbus/<dev>/rssi/<meter_id> message. State: _RSSI_WANTED, _rssi_wanted_at.
-_esp_rssi_handle_message() {
-  local _rssi_topic="$1" _rssi_val="$2"
-  [[ -n "${_rssi_val}" ]] || return 0
-  # Topic tail after ".../rssi/" is the meter id.
-  _rssi_id="${_rssi_topic##*/rssi/}"
-  [[ "${_rssi_id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
-  _rssi_id="$(normalize_meter_id "${_rssi_id}")"
-  printf -v _rssi_now '%(%s)T' -1
-  if (( _rssi_now - _rssi_wanted_at >= 30 )); then
-    _rssi_load_wanted
-    _rssi_wanted_at="${_rssi_now}"
-  fi
-  [[ -n "${_RSSI_WANTED[${_rssi_id}]+x}" ]] || return 0
-  # Device = topic segment between "wmbus/" and "/rssi/".
-  _rssi_dev="${_rssi_topic#wmbus/}"
-  _rssi_dev="${_rssi_dev%%/rssi/*}"
-  # Accept only a plausible measured level. The firmware uses distinct
-  # "no data" sentinels per topic (1 in health, 0 in the window topics,
-  # -127 = RSSI_NOT_MEASURED in the driver), and its own consumers treat
-  # anything <= -126 as unmeasured. Publishing a sentinel as a reading would
-  # be worse than publishing nothing, so the range is enforced here and
-  # again at join time.
-  [[ "${_rssi_val}" =~ ^-[0-9]+$ ]] || return 0
-  (( _rssi_val >= -125 && _rssi_val <= -1 )) || return 0
-  _rssi_tsv_upsert "${STATUS_RSSI_FILE}" "${_rssi_id}" "${_rssi_dev}" \
-    "$(printf '%s\t%s\t%s\t%s' "${_rssi_id}" "${_rssi_val}" "${_rssi_dev}" "${_rssi_now}")"
-}
-
-# One RAW_TOPIC message for the per-ESP tracker. State: _RT_DEV_POS, _MD_LAST,
-# _rx_history_since_trim.
-_esp_tracker_handle_message() {
-  local _tg_topic="$1" _tg_payload="$2"
-  [[ -n "${_tg_topic}" ]] || return 0
-  IFS='/' read -ra _T_PARTS <<< "${_tg_topic}"
-  _dev="${_T_PARTS[${_RT_DEV_POS}]:-}"
-  [[ -n "${_dev}" ]] || return 0
-  _now=$(date +%s 2>/dev/null || echo 0)
-
-  # Meter -> ESP device attribution. meter_id_from_raw_hex validates the
-  # L-field and returns "" when the frame does not parse as a standard
-  # wM-Bus DLL header, so Diehl/IZAR-style frames simply get no fallback
-  # band rather than a wrong one.
-  # Whitespace strip + uppercase in-process: this runs for every telegram
-  # from every ESP.
-  _md_hex="${_tg_payload//[[:space:]]/}"
-  _md_id="$(meter_id_from_raw_hex "${_md_hex^^}")"
-  if [[ "${_md_id}" =~ ^[0-9A-F]{8}$ && "${_MD_LAST[${_md_id}]:-}" != "${_dev}" ]]; then
-    _MD_LAST["${_md_id}"]="${_dev}"
-    _md_tmp="${STATUS_ESP_METER_DEVICE_FILE}.tmp"
-    awk -F'\t' -v id="${_md_id}" -v dev="${_dev}" -v now="${_now}" '
-      BEGIN { upd = 0 }
-      $1 == id { print id "\t" dev "\t" now; upd = 1; next }
-      { print }
-      END { if (!upd) print id "\t" dev "\t" now }
-    ' "${STATUS_ESP_METER_DEVICE_FILE}" 2>/dev/null > "${_md_tmp}" \
-      && mv "${_md_tmp}" "${STATUS_ESP_METER_DEVICE_FILE}" 2>/dev/null \
-      || true
-  fi
-  if [[ "${_md_id}" =~ ^[0-9A-F]{8}$ ]]; then
-    _upsert_esp_meter_reception \
-      "${STATUS_ESP_METER_RECEPTION_FILE}" "${_md_id}" "${_dev}" "${_now}" "${_tg_topic}" || true
-    _append_esp_rx_history \
-      "${ESP_RX_HISTORY_FILE}" "${_now}" "${_dev}" "${_md_id}" "${_tg_topic}" || true
-    _rx_history_since_trim=$((_rx_history_since_trim + 1))
-    if (( _rx_history_since_trim >= 1000 )); then
-      _trim_esp_rx_history "${ESP_RX_HISTORY_FILE}" 100000 90000 || true
-      _rx_history_since_trim=0
-    fi
-  fi
-
-  _tmp="${STATUS_ESP_TELEGRAM_DEVICES_FILE}.tmp"
-  # Upsert the row for this device — increment count if exists,
-  # otherwise append a fresh row with count=1.
-  awk -F'\t' -v dev="${_dev}" -v now="${_now}" -v tg="${_tg_topic}" '
-    BEGIN { upd=0 }
-    $1 == dev {
-      cnt = (NF >= 4 ? $4+1 : 1)
-      print dev "\t" now "\t" tg "\t" cnt
-      upd=1
-      next
-    }
-    { print }
-    END { if (!upd) print dev "\t" now "\t" tg "\t1" }
-  ' "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" 2>/dev/null > "${_tmp}" \
-    && mv "${_tmp}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" 2>/dev/null \
-    || true
-}
-
-# One wmbus/<dev>/rx message. State: _rx_meta_since_trim.
-_esp_rx_handle_message() {
-  local _rx_meta_topic="$1" _rx_meta_payload="$2"
-  [[ -n "${_rx_meta_topic}" && -n "${_rx_meta_payload}" ]] || return 0
-  _rx_meta_norm="$(_normalize_esp_rx_payload <<< "${_rx_meta_payload}" || true)"
-  [[ -n "${_rx_meta_norm}" ]] || return 0
-
-  IFS='/' read -ra _RX_META_PARTS <<< "${_rx_meta_topic}"
-  _rx_meta_dev="${_RX_META_PARTS[1]:-}"
-  [[ -n "${_rx_meta_dev}" ]] || return 0
-  # One jq for every field used below (was five per message). \x1f, not
-  # TAB: an empty received_at must stay an empty last field, and TAB is
-  # IFS whitespace. received_at is empty when the board had no clock yet;
-  # the clock tracker counts those separately.
-  IFS=$'\x1f' read -r _rx_meta_id _rx_meta_boot _rx_meta_seq _rx_meta_mode _rx_meta_rcv < <(
-    jq -r '[.meter_id, .boot_id, .seq, .mode,
-            (try (if .received_at then (.received_at | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601) else "" end) catch "")]
-           | map(tostring) | join("\u001f")' <<< "${_rx_meta_norm}" 2>/dev/null || true
-  ) || true
-  printf -v _rx_meta_now '%(%s)T' -1
-
-  _upsert_esp_meter_reception \
-    "${STATUS_ESP_RX_RECEPTION_FILE}" "${_rx_meta_id}" "${_rx_meta_dev}" \
-    "${_rx_meta_now}" "${_rx_meta_topic}" || true
-  _upsert_esp_meter_mode \
-    "${STATUS_ESP_RX_MODE_FILE}" "${_rx_meta_id}" "${_rx_meta_mode}" \
-    "${_rx_meta_now}" || true
-  _append_esp_rf_rx_history \
-    "${ESP_RF_RX_HISTORY_FILE}" "${_rx_meta_now}" "${_rx_meta_dev}" "${_rx_meta_norm}" || true
-  _upsert_esp_rx_sequence \
-    "${STATUS_ESP_RX_SEQUENCE_FILE}" "${_rx_meta_dev}" "${_rx_meta_boot}" \
-    "${_rx_meta_seq}" "${_rx_meta_now}" || true
-  _upsert_esp_rx_boot \
-    "${STATUS_ESP_RX_BOOTS_FILE}" "${_rx_meta_dev}" "${_rx_meta_boot}" \
-    "${_rx_meta_now}" || true
-  _upsert_esp_rx_clock \
-    "${STATUS_ESP_RX_CLOCK_FILE}" "${_rx_meta_dev}" "${_rx_meta_rcv}" \
-    "${_rx_meta_now}" || true
-
-  _rx_meta_since_trim=$((_rx_meta_since_trim + 1))
-  if (( _rx_meta_since_trim >= 1000 )); then
-    _trim_esp_rx_history "${ESP_RF_RX_HISTORY_FILE}" 100000 90000 || true
-    _rx_meta_since_trim=0
-  fi
-}
-
-# Per-message bookkeeping that has moved out of bash lives in this long-lived
-# Python process (see its header). WMBUS_LEDGER=bash runs the in-shell
-# handlers instead; it is kept while the move is watched on real sites.
+# Per-message bookkeeping of the subscribers below lives in a long-lived
+# Python process per subscription (see its header).
 BRIDGE_LEDGER="${BRIDGE_LEDGER:-${BRIDGE_SCRIPT_DIR:-/usr/bin}/bridge_ledger.py}"
 
 # The rssi/<id> subscriber loop (see start_esp_subscribers for what it stores
 # and why only for configured meters).
 _esp_rssi_subscriber() {
-  declare -A _RSSI_WANTED=()
-  _rssi_wanted_at=0
   while true; do
     _rssi_t0="$(epoch_now)"
-    if [[ "${WMBUS_LEDGER:-python}" == "bash" ]]; then
-      while IFS=$'\t' read -r _rssi_topic _rssi_val; do
-        _esp_rssi_handle_message "${_rssi_topic}" "${_rssi_val}"
-      done < <(
-        ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/rssi/+" -F '%t\t%p' -W 90 2>/dev/null
-      )
-    else
-      # python3 reads the subscription through a descriptor rather than a
-      # pipe, so the loop holds mosquitto_sub's PID and stops it as soon as
-      # python3 ends, for whatever reason; both then start again after the
-      # usual reconnect pause, like a dropped connection. A plain pipe is not
-      # enough: where SIGPIPE is ignored (service managers and CI runners can
-      # leave it so), mosquitto_sub keeps writing into the dead pipe until its
-      # -W timeout. Rows already written stay; only the message being handled
-      # when python3 died is lost. `|| true` keeps set -e from ending the loop.
-      exec {_rssi_fd}< <(
-        ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/rssi/+" -F '%t\t%p' -W 90 2>/dev/null
-      )
-      _rssi_sub_pid=$!
-      python3 -u "${BRIDGE_LEDGER}" rssi \
-        --meter-dir "${METER_DIR}" --rssi-file "${STATUS_RSSI_FILE}" <&"${_rssi_fd}" || true
-      kill "${_rssi_sub_pid}" 2>/dev/null || true
-      exec {_rssi_fd}<&-
-    fi
+    # python3 reads the subscription through a descriptor rather than a pipe,
+    # so the loop holds mosquitto_sub's PID and stops it as soon as python3
+    # ends, for whatever reason; both then start again after the usual
+    # reconnect pause, like a dropped connection. A plain pipe is not enough:
+    # where SIGPIPE is ignored (service managers and CI runners can leave it
+    # so), mosquitto_sub keeps writing into the dead pipe until its -W timeout.
+    # Rows already written stay; only the message being handled when python3
+    # died is lost. `|| true` keeps set -e from ending the loop.
+    exec {_rssi_fd}< <(
+      ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/rssi/+" -F '%t\t%p' -W 90 2>/dev/null
+    )
+    _rssi_sub_pid=$!
+    python3 -u "${BRIDGE_LEDGER}" rssi \
+      --meter-dir "${METER_DIR}" --rssi-file "${STATUS_RSSI_FILE}" <&"${_rssi_fd}" || true
+    kill "${_rssi_sub_pid}" 2>/dev/null || true
+    exec {_rssi_fd}<&-
     _sub_reconnect_sleep "${_rssi_t0}"
   done
 }
 
 # The wmbus/+/rx subscriber loop (see start_esp_subscribers).
 _esp_rx_subscriber() {
-  _rx_meta_since_trim=0
   _trim_esp_rx_history "${ESP_RF_RX_HISTORY_FILE}" 100000 90000 || true
   while true; do
     _sub_t0="$(epoch_now)"
-    if [[ "${WMBUS_LEDGER:-python}" == "bash" ]]; then
-      while IFS=$'\t' read -r _rx_meta_topic _rx_meta_payload; do
-        _esp_rx_handle_message "${_rx_meta_topic}" "${_rx_meta_payload}"
-      done < <(
-        ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" \
-          -t 'wmbus/+/rx' -F '%t\t%p' 2>/dev/null
-      )
-    else
-      # Same arrangement as the rssi subscriber: python3 reads through a
-      # descriptor and mosquitto_sub is stopped as soon as python3 ends. It
-      # matters even more here: this subscription has no -W timeout, so a
-      # writer left running into a dead pipe would never reconnect.
-      exec {_rx_fd}< <(
-        ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" \
-          -t 'wmbus/+/rx' -F '%t\t%p' 2>/dev/null
-      )
-      _rx_sub_pid=$!
-      python3 -u "${BRIDGE_LEDGER}" rx \
-        --reception-file "${STATUS_ESP_RX_RECEPTION_FILE}" \
-        --mode-file "${STATUS_ESP_RX_MODE_FILE}" \
-        --history-file "${ESP_RF_RX_HISTORY_FILE}" \
-        --sequence-file "${STATUS_ESP_RX_SEQUENCE_FILE}" \
-        --boots-file "${STATUS_ESP_RX_BOOTS_FILE}" \
-        --clock-file "${STATUS_ESP_RX_CLOCK_FILE}" <&"${_rx_fd}" || true
-      kill "${_rx_sub_pid}" 2>/dev/null || true
-      exec {_rx_fd}<&-
-    fi
+    # Same arrangement as the rssi subscriber: python3 reads through a
+    # descriptor and mosquitto_sub is stopped as soon as python3 ends. It
+    # matters even more here: this subscription has no -W timeout, so a
+    # writer left running into a dead pipe would never reconnect.
+    exec {_rx_fd}< <(
+      ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" \
+        -t 'wmbus/+/rx' -F '%t\t%p' 2>/dev/null
+    )
+    _rx_sub_pid=$!
+    python3 -u "${BRIDGE_LEDGER}" rx \
+      --reception-file "${STATUS_ESP_RX_RECEPTION_FILE}" \
+      --mode-file "${STATUS_ESP_RX_MODE_FILE}" \
+      --history-file "${ESP_RF_RX_HISTORY_FILE}" \
+      --sequence-file "${STATUS_ESP_RX_SEQUENCE_FILE}" \
+      --boots-file "${STATUS_ESP_RX_BOOTS_FILE}" \
+      --clock-file "${STATUS_ESP_RX_CLOCK_FILE}" <&"${_rx_fd}" || true
+    kill "${_rx_sub_pid}" 2>/dev/null || true
+    exec {_rx_fd}<&-
     _sub_reconnect_sleep "${_sub_t0}"
   done
 }
@@ -339,43 +147,25 @@ _esp_tracker_subscriber() {
 
   if [[ "${_RT_DEV_POS}" -ge 0 ]]; then
     log "ESP-device tracker: device name at topic segment ${_RT_DEV_POS} of '${RAW_TOPIC}'"
-    _rx_history_since_trim=0
     _trim_esp_rx_history "${ESP_RX_HISTORY_FILE}" 100000 90000 || true
-    # Last device recorded per meter id, kept in this subshell only. The TSV is
-    # written ONLY when a meter's device changes (or is seen for the first time),
-    # so a steady multi-meter installation does zero extra disk writes per
-    # telegram — this loop already upserts the per-device row on every message
-    # and a second unconditional rewrite here would double that cost.
-    declare -A _MD_LAST=()
     while true; do
       _sub_t0="$(epoch_now)"
-      if [[ "${WMBUS_LEDGER:-python}" == "bash" ]]; then
-        # Read via process substitution, not a pipe: with set -euo pipefail a
-        # mosquitto_sub timeout/disconnect would otherwise kill this tracker.
-        # -F '%t\t%p' (was '%t'): the payload is needed to attribute the telegram
-        # to a meter id, which is what gives the band fallback something to key on.
-        while IFS=$'\t' read -r _tg_topic _tg_payload; do
-          _esp_tracker_handle_message "${_tg_topic}" "${_tg_payload}"
-        done < <(
-          ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%t\t%p' 2>/dev/null
-        )
-      else
-        # As for the rssi and /rx subscribers: python3 reads through a
-        # descriptor and mosquitto_sub is stopped as soon as python3 ends (no
-        # -W here either). The last board per meter lives in python3 then, so
-        # after a restart each meter's board row is written once more.
-        exec {_tg_fd}< <(
-          ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%t\t%p' 2>/dev/null
-        )
-        _tg_sub_pid=$!
-        python3 -u "${BRIDGE_LEDGER}" tracker --dev-pos "${_RT_DEV_POS}" \
-          --devices-file "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" \
-          --meter-device-file "${STATUS_ESP_METER_DEVICE_FILE}" \
-          --reception-file "${STATUS_ESP_METER_RECEPTION_FILE}" \
-          --history-file "${ESP_RX_HISTORY_FILE}" <&"${_tg_fd}" || true
-        kill "${_tg_sub_pid}" 2>/dev/null || true
-        exec {_tg_fd}<&-
-      fi
+      # As for the rssi and /rx subscribers: python3 reads through a
+      # descriptor and mosquitto_sub is stopped as soon as python3 ends (no
+      # -W here either). -F '%t\t%p': the payload attributes the telegram to
+      # a meter id. The last board per meter lives in python3, so after a
+      # restart each meter's board row is written once more.
+      exec {_tg_fd}< <(
+        ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%t\t%p' 2>/dev/null
+      )
+      _tg_sub_pid=$!
+      python3 -u "${BRIDGE_LEDGER}" tracker --dev-pos "${_RT_DEV_POS}" \
+        --devices-file "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" \
+        --meter-device-file "${STATUS_ESP_METER_DEVICE_FILE}" \
+        --reception-file "${STATUS_ESP_METER_RECEPTION_FILE}" \
+        --history-file "${ESP_RX_HISTORY_FILE}" <&"${_tg_fd}" || true
+      kill "${_tg_sub_pid}" 2>/dev/null || true
+      exec {_tg_fd}<&-
       _sub_reconnect_sleep "${_sub_t0}"
     done
   else
