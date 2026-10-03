@@ -632,10 +632,6 @@ touch "${SNIPPET_STATE}"
 log "Starting wmbusmeters..."
 
 run_once() {
-  last_id=""
-  last_driver=""
-  last_type=""
-  last_manufacturer=""
 
   # ─── Soft-reload flag watcher ────────────────────────────────────────
   # Polls for ${RELOAD_FLAG} every 2 s. When present, removes it and kills
@@ -726,33 +722,14 @@ run_once() {
         echo "${line}"
         status_detect_key_problem "${line}" || true
 
-        if [[ "$(official_meters_count_current)" -eq 0 && "${SEARCH_USING_TEMP_METERS}" != "true" ]]; then
-          if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9A-Fa-f]{8}) ]]; then
-            last_id="$(normalize_meter_id "${BASH_REMATCH[1]}")"
-            last_type=""
-            last_driver=""
-            last_manufacturer=""
-          fi
-          if [[ "${line}" =~ ^[[:space:]]*type:[[:space:]]*(.*)$ ]]; then
-            last_type="${BASH_REMATCH[1]}"
-          fi
-          if [[ "${line}" =~ ^[[:space:]]*manufacturer:[[:space:]]*(.*)$ ]]; then
-            last_manufacturer="${BASH_REMATCH[1]}"
-          fi
-          if [[ "${line}" =~ ^[[:space:]]*driver:\ ([a-zA-Z0-9_]+) ]]; then
-            last_driver="${BASH_REMATCH[1]}"
-          fi
-          if [[ -n "${last_id}" && -n "${last_driver}" ]]; then
-            if [[ "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
-              search_cache_candidate "${last_id}" "${last_driver}" "${last_type}"
-            else
-              emit_snippet_if_new "${last_id}" "${last_driver}" "${last_type}" "${last_manufacturer}"
-            fi
-            last_id=""
-            last_driver=""
-            last_type=""
-            last_manufacturer=""
-          fi
+        # While no meter is configured this instance prints a "Received
+        # telegram from:" block per telegram; bridge_ledger.py books them (the
+        # same parser as the parallel LISTEN instance, which books nothing
+        # then) and hands new candidates and SEARCH back to bash. It reads the
+        # official count file per block, so with meters it books nothing.
+        if [[ "${SEARCH_USING_TEMP_METERS}" != "true" ]]; then
+          [[ -n "${_zero_fd:-}" ]] || exec {_zero_fd}> >(_listen_parse_stage zero)
+          printf '%s\n' "${line}" >&"${_zero_fd}"
         fi
 
 done
