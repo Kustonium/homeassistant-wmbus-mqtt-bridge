@@ -158,6 +158,9 @@ _process_listen_json_line() {
 # status.json here would clobber the decoded counter and last-seen state. The
 # candidate TSV files, which the WebUI reads, are written as usual.
 _listen_parse_stage() {
+  # $1: "nonzero" (default, the parallel LISTEN instance) or "zero" (the main
+  # instance's listen output while no meter is configured; see run_once).
+  local official="${1:-nonzero}"
   # --name=value: a value starting with "-" must not read as an option.
   until python3 -u "${BRIDGE_LEDGER}" listen \
       --candidates-file="${STATUS_CANDIDATES_FILE}" \
@@ -169,6 +172,7 @@ _listen_parse_stage() {
       --official-count-file="${STATUS_OFFICIAL_METERS_COUNT_FILE}" \
       --meter-dir="${METER_DIR}" \
       --preview-meter-dir="${PREVIEW_METER_DIR}" \
+      --official="${official}" \
       --official-count-default="${OFFICIAL_METERS_COUNT:-0}" \
       --search-mode="${SEARCH_MODE:-false}" \
       --search-expected="${SEARCH_EXPECTED_VALUE_M3:-0}" \
@@ -223,7 +227,7 @@ start_listen_instance() {
             }
           ' \
         | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${LISTEN_BASE}" 2>&1 \
-        | _listen_parse_stage &
+        | _listen_parse_stage nonzero &
       pipeline_pid=$!
       log_debug "[DIAG] LISTEN supervisor: pure-listen pipeline started (pid=${pipeline_pid})"
       wait "${pipeline_pid}" 2>/dev/null || true

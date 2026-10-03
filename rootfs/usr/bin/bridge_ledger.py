@@ -1542,7 +1542,11 @@ class ListenBook:
                                   f"from LISTEN block to {manufacturer}")
         if not meter or not driver:
             return
-        if self.official_meters() <= 0:
+        # The parallel LISTEN instance books only while meters are configured;
+        # the main instance prints these blocks only while none is, and then
+        # books them (--official zero). One count file decides for both, per
+        # block, so a block is never booked twice when the count changes.
+        if (self.official_meters() > 0) != (self.a.official == "nonzero"):
             return
         if self.a.search_mode == "true" and self.a.search_expected != "0":
             self.request("search", meter, driver, type_line)
@@ -1649,6 +1653,9 @@ def _parser() -> argparse.ArgumentParser:
         listen.add_argument(f"--{name}-file", required=True)
     listen.add_argument("--meter-dir", required=True)
     listen.add_argument("--preview-meter-dir", required=True)
+    listen.add_argument("--official", choices=("nonzero", "zero"), default="nonzero",
+                        help="book blocks while official meters are configured (the "
+                             "parallel LISTEN instance) or while none is (the main instance)")
     # Values the parser subshell inherits when the LISTEN instance starts.
     for name in ("official-count-default", "search-mode", "search-expected", "loglevel"):
         listen.add_argument(f"--{name}", default="")
