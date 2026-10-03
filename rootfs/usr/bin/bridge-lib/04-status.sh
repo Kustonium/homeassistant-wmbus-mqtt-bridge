@@ -80,10 +80,13 @@ status_read_last_raw_seen() {
 
 status_find_recent_raw_for_id() {
   local id="$1"
-  local le raw
+  local le raw n=0
   le="$(id_to_le_hex "${id}")"
   [[ -n "${le}" ]] || return 1
+  # bridge_ledger.py appends to the file and cuts it back to 200 rows only
+  # above 400: the ring is the newest 200.
   tac "${STATUS_RECENT_RAW_FILE}" 2>/dev/null | while IFS=$'\t' read -r ts len raw; do
+    (( ++n <= 200 )) || return 1
     # In-process lowercase: this loop can visit all 200 rows per telegram.
     raw="${raw,,}"
     if [[ "${raw}" == *"${le}"* ]]; then

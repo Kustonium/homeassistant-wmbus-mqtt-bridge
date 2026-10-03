@@ -493,7 +493,9 @@ def _resolve_raw_for_id(mid: str) -> tuple[str, str]:
     le = _id_le_hex(mid)
     match = ("", "")
     if le:
-        for r in read_tsv(RECENT_RAW_TSV, ["ts", "raw_len", "raw"]):
+        # The bridge appends to the file and cuts it back to 200 rows only
+        # above 400; the ring is the newest 200 rows.
+        for r in read_tsv(RECENT_RAW_TSV, ["ts", "raw_len", "raw"])[-200:]:
             raw = str(r.get("raw") or "").strip()
             if le in raw.lower():
                 match = (raw, str(r.get("ts") or ""))  # keep last (most recent)

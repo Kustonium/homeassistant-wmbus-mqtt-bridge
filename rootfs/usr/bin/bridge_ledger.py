@@ -28,6 +28,8 @@ CONTRACT
   numeric-looking fields numerically, so the bash helpers treat ids such as
   00001000 and 0001E003 as equal (both are 1000) and one row replaces the
   other. Here they stay two rows, which is what the ids mean.
+* Per-message tables are written at most every FLUSH_EVERY_S seconds (see
+  Deferred), with the same bytes; status_recent_raw.tsv is appended to.
 * No MQTT client library: input is the stdout of mosquitto_sub -F '%t\\t%p',
   one "topic<TAB>payload" message per line. A message that fails is reported
   on stderr and skipped; the process never exits because of its input.
@@ -41,6 +43,8 @@ import json
 import math
 import os
 import re
+import select
+import signal
 import sys
 import tempfile
 import time
@@ -145,6 +149,137 @@ def trim_locked(path: str, max_lines: int, keep_lines: int) -> None:
         if len(lines) <= max_lines:
             return
         _replace_with(path, lines[-keep_lines:] if keep_lines > 0 else [])
+
+
+# ── deferred writes ─────────────────────────────────────────────────────────
+# Every message changes a row of a table that holds a row per meter and board,
+# and writing it means writing the whole table again (to a temporary file that
+# replaces it, which ext4 pushes to the disk at once). Per message that was
+# ~1 MB/s on a 5-board site, written to an SD card on a Raspberry Pi. The
+# changes are therefore collected here and written at most every
+# FLUSH_EVERY_S seconds, and when the input ends or SIGTERM arrives: each
+# file is read once, under its lock as before, the changes are applied in the
+# order they arrived (with the time of their message) and the file is written
+# once. The result is byte for byte what writing per message would have left.
+
+FLUSH_EVERY_S = 5
+
+Rows = Callable[[List[bytes]], List[bytes]]
+
+
+class Deferred:
+    """Changes of the files this process alone writes per message, written in batches."""
+
+    def __init__(self) -> None:
+        # path -> (take the lock, skip when the file is missing, row changes)
+        self.rows: Dict[str, Tuple[bool, bool, List[Rows]]] = {}
+        # path -> (whole new content, write it in place instead of replacing)
+        self.values: Dict[str, Tuple[bytes, bool]] = {}
+        self.since: Optional[float] = None
+
+    def change(self, path: str, rows: Rows, lock: bool = True, need_file: bool = False) -> None:
+        self.rows.setdefault(path, (lock, need_file, []))[2].append(rows)
+        self._started()
+
+    def value(self, path: str, data: bytes, in_place: bool = False) -> None:
+        self.values[path] = (data, in_place)
+        self._started()
+
+    def _started(self) -> None:
+        if self.since is None:
+            self.since = now()
+
+    def due_in(self) -> Optional[float]:
+        """Seconds until the next write is due; None while nothing waits."""
+        if self.since is None:
+            return None
+        return max(0.0, self.since + FLUSH_EVERY_S - now())
+
+    def pending(self, path: str) -> int:
+        """How many row changes of path wait to be written."""
+        return len(self.rows[path][2]) if path in self.rows else 0
+
+    def flush_if_due(self) -> None:
+        if self.due_in() == 0.0:
+            self.flush()
+
+    def flush(self, err=None) -> None:
+        rows, values = self.rows, self.values
+        self.rows, self.values, self.since = {}, {}, None
+        for path, (lock, need_file, changes) in rows.items():
+            try:
+                if need_file and not os.path.isfile(path):
+                    continue
+                if lock:
+                    with locked(path):
+                        _replace_with(path, _apply(changes, _read_lines(path)))
+                else:
+                    _replace_with(path, _apply(changes, _read_lines(path)))
+            except Exception as exc:  # one file must not stop the others
+                print(f"[wmbus-bridge][WARN] ledger: write of {path} failed: {exc!r}",
+                      file=err or sys.stderr, flush=True)
+        for path, (data, in_place) in values.items():
+            try:
+                if in_place:
+                    with open(path, "wb") as fh:
+                        fh.write(data)
+                else:
+                    _write_replace(path, data)
+            except Exception as exc:
+                print(f"[wmbus-bridge][WARN] ledger: write of {path} failed: {exc!r}",
+                      file=err or sys.stderr, flush=True)
+
+
+def _count_plus_one(lines: List[bytes]) -> List[bytes]:
+    """status_raw_count.txt + 1, reading it as _digits_or_zero does."""
+    text = _s(b"\n".join(lines)).rstrip("\n")
+    return [str((int(text) if re.fullmatch(r"[0-9]+", text) else 0) + 1).encode()]
+
+
+def _apply(changes: List[Rows], lines: List[bytes]) -> List[bytes]:
+    for rows in changes:
+        lines = rows(lines)
+    return lines
+
+
+def read_lines_flushing(stream, deferred: Deferred) -> Iterator[bytes]:
+    """The lines of stream, as iterating it gives them; while no line arrives,
+    the deferred writes are made when they fall due."""
+    try:
+        fd = stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        for line in stream:  # tests: an in-memory stream
+            yield line
+            deferred.flush_if_due()
+        return
+    buf = b""
+    while True:
+        wait = deferred.due_in()
+        ready, _, _ = select.select([fd], [], [], wait)
+        if not ready:
+            deferred.flush()
+            continue
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        buf += chunk
+        while True:
+            nl = buf.find(b"\n")
+            if nl < 0:
+                break
+            line, buf = buf[:nl + 1], buf[nl + 1:]
+            yield line
+            deferred.flush_if_due()
+    if buf:
+        yield buf
+
+
+class _Terminated(Exception):
+    pass
+
+
+def _on_sigterm(signum, frame) -> None:
+    raise _Terminated()
 
 
 def split_message(line: bytes) -> Tuple[bytes, bytes]:
@@ -475,12 +610,13 @@ def _field(fields: List[str], n: int) -> str:
 
 
 def _rewrite_keyed(path: str, match: Callable[[List[str]], bool],
-                   update: Callable[[List[str]], str], new_row: Callable[[], str]) -> None:
+                   update: Callable[[List[str]], str], new_row: Callable[[], str],
+                   defer: Optional[Deferred] = None) -> None:
     """The awk upserts of 03-tsv.sh: rewrite the first matching row(s), or append."""
-    with locked(path):
+    def rows(lines: List[bytes]) -> List[bytes]:
         out: List[bytes] = []
         updated = False
-        for line in _read_lines(path):
+        for line in lines:
             fields = _fields(line)
             if match(fields):
                 out.append(_b(update(fields)))
@@ -489,20 +625,27 @@ def _rewrite_keyed(path: str, match: Callable[[List[str]], bool],
                 out.append(line)
         if not updated:
             out.append(_b(new_row()))
-        _replace_with(path, out)
+        return out
+    if defer is not None:
+        defer.change(path, rows)
+        return
+    with locked(path):
+        _replace_with(path, rows(_read_lines(path)))
 
 
-def upsert_meter_reception(path: str, meter: str, device: str, ts: int, topic: str) -> None:
+def upsert_meter_reception(path: str, meter: str, device: str, ts: int, topic: str,
+                           defer: Optional[Deferred] = None) -> None:
     """_upsert_esp_meter_reception: id dev first last count topic."""
     def update(f: List[str]) -> str:
         first = f[2] if (_awk_digits(_field(f, 3)) and int(_field(f, 3)) > 0) else str(ts)
         count = int(_field(f, 5)) + 1 if _awk_digits(_field(f, 5)) else 1
         return "\t".join([meter, device, first, str(ts), str(count), topic])
     _rewrite_keyed(path, lambda f: _field(f, 1) == meter and _field(f, 2) == device, update,
-                   lambda: "\t".join([meter, device, str(ts), str(ts), "1", topic]))
+                   lambda: "\t".join([meter, device, str(ts), str(ts), "1", topic]), defer)
 
 
-def upsert_meter_mode(path: str, meter: str, mode: str, ts: int) -> None:
+def upsert_meter_mode(path: str, meter: str, mode: str, ts: int,
+                      defer: Optional[Deferred] = None) -> None:
     """_upsert_esp_meter_mode: id mode count last; other modes are ignored."""
     if mode not in _RX_MODES:
         return
@@ -510,7 +653,7 @@ def upsert_meter_mode(path: str, meter: str, mode: str, ts: int) -> None:
         count = int(_field(f, 3)) + 1 if _awk_digits(_field(f, 3)) else 1
         return "\t".join([meter, mode, str(count), str(ts)])
     _rewrite_keyed(path, lambda f: _field(f, 1) == meter and _field(f, 2) == mode, update,
-                   lambda: "\t".join([meter, mode, "1", str(ts)]))
+                   lambda: "\t".join([meter, mode, "1", str(ts)]), defer)
 
 
 def _awk_num(text: str) -> float:
@@ -524,7 +667,8 @@ def _awk_str(number: float) -> str:
     return str(int(number)) if number == int(number) else "%.6g" % number
 
 
-def upsert_rx_sequence(path: str, source: str, boot: str, seq: str, ts: int) -> None:
+def upsert_rx_sequence(path: str, source: str, boot: str, seq: str, ts: int,
+                       defer: Optional[Deferred] = None) -> None:
     """_upsert_esp_rx_sequence: source boot last_seq missing out_of_order last_seen.
 
     last_seq is the highest sequence seen for the boot; see 03-tsv.sh for why.
@@ -546,19 +690,21 @@ def upsert_rx_sequence(path: str, source: str, boot: str, seq: str, ts: int) -> 
                 out_seq = last_text
         return "\t".join([source, boot, out_seq, missing_text, ooo_text, str(ts)])
     _rewrite_keyed(path, lambda f: _field(f, 1) == source, update,
-                   lambda: "\t".join([source, boot, seq, "0", "0", str(ts)]))
+                   lambda: "\t".join([source, boot, seq, "0", "0", str(ts)]), defer)
 
 
-def upsert_rx_boot(path: str, source: str, boot: str, ts: int) -> None:
+def upsert_rx_boot(path: str, source: str, boot: str, ts: int,
+                   defer: Optional[Deferred] = None) -> None:
     """_upsert_esp_rx_boot: source boot first_seen last_seen events."""
     def update(f: List[str]) -> str:
         events = int(_field(f, 5)) + 1 if _awk_digits(_field(f, 5)) else 1
         return "\t".join([_field(f, 1), _field(f, 2), _field(f, 3), str(ts), str(events)])
     _rewrite_keyed(path, lambda f: _field(f, 1) == source and _field(f, 2) == boot, update,
-                   lambda: "\t".join([source, boot, str(ts), str(ts), "1"]))
+                   lambda: "\t".join([source, boot, str(ts), str(ts), "1"]), defer)
 
 
-def upsert_rx_clock(path: str, source: str, received: str, ts: int) -> None:
+def upsert_rx_clock(path: str, source: str, received: str, ts: int,
+                    defer: Optional[Deferred] = None) -> None:
     """_upsert_esp_rx_clock: source last_received last_bridge skew stamped unstamped."""
     def update(f: List[str]) -> str:
         stamped = _awk_text_or_zero(_field(f, 5))
@@ -573,7 +719,7 @@ def upsert_rx_clock(path: str, source: str, received: str, ts: int) -> None:
         if received == "":
             return "\t".join([source, "0", str(ts), "0", "0", "1"])
         return "\t".join([source, received, str(ts), _awk_str(ts - _awk_num(received)), "1", "0"])
-    _rewrite_keyed(path, lambda f: _field(f, 1) == source, update, new_row)
+    _rewrite_keyed(path, lambda f: _field(f, 1) == source, update, new_row, defer)
 
 
 class RxBook:
@@ -586,6 +732,7 @@ class RxBook:
         self.reception, self.mode, self.history = reception, mode, history
         self.sequence, self.boots, self.clock = sequence, boots, clock
         self.since_trim = 0
+        self.deferred = Deferred()
 
     def __call__(self, topic_b: bytes, payload_b: bytes) -> None:
         if not topic_b or not payload_b:
@@ -608,8 +755,9 @@ class RxBook:
             received_epoch(first.get("received_at"))))
         meter, boot, seq, mode, rcv = bash_read_fields(joined, 5, "\x1f")
         ts = int(now())
-        upsert_meter_reception(self.reception, meter, device, ts, topic)
-        upsert_meter_mode(self.mode, meter, mode, ts)
+        d = self.deferred
+        upsert_meter_reception(self.reception, meter, device, ts, topic, d)
+        upsert_meter_mode(self.mode, meter, mode, ts, d)
         lines = []
         for n in normalized:
             merged = dict(n)
@@ -617,9 +765,9 @@ class RxBook:
             merged["source"] = device
             lines.append(jq_dumps(merged))
         append_locked(self.history, "\n".join(lines))
-        upsert_rx_sequence(self.sequence, device, boot, seq, ts)
-        upsert_rx_boot(self.boots, device, boot, ts)
-        upsert_rx_clock(self.clock, device, rcv, ts)
+        upsert_rx_sequence(self.sequence, device, boot, seq, ts, d)
+        upsert_rx_boot(self.boots, device, boot, ts, d)
+        upsert_rx_clock(self.clock, device, rcv, ts, d)
         self.since_trim += 1
         if self.since_trim >= self.TRIM_EVERY:
             trim_locked(self.history, 100000, 90000)
@@ -658,17 +806,6 @@ def _awk_nf(line: bytes) -> int:
     return 0 if not line else line.count(b"\t") + 1
 
 
-def _rewrite_unlocked(path: str, rows: Callable[[List[bytes]], List[bytes]]) -> None:
-    """awk ... file > file.tmp && mv: the tracker is the only writer, no lock.
-
-    awk fails on a missing file, so nothing is written then (bridge.sh creates
-    these files at start).
-    """
-    if not os.path.isfile(path):
-        return
-    _replace_with(path, rows(_read_lines(path)))
-
-
 class TrackerBook:
     """_esp_tracker_handle_message: which board delivered which meter, and when.
 
@@ -690,6 +827,7 @@ class TrackerBook:
         # it starts empty again when this process is restarted.
         self.last_board: Dict[str, str] = {}
         self.since_trim = 0
+        self.deferred = Deferred()
 
     def __call__(self, topic_b: bytes, payload_b: bytes) -> None:
         if not topic_b:
@@ -712,9 +850,11 @@ class TrackerBook:
                 if not any(_first_field(ln) == k for ln in lines):
                     out.append(row)
                 return out
-            _rewrite_unlocked(self.meter_device, meter_rows)
+            # The tracker is the only writer, no lock; awk fails on a missing
+            # file, so nothing is written then (bridge.sh creates it at start).
+            self.deferred.change(self.meter_device, meter_rows, lock=False, need_file=True)
         if valid:
-            upsert_meter_reception(self.reception, meter, board, ts, topic)
+            upsert_meter_reception(self.reception, meter, board, ts, topic, self.deferred)
             append_locked(self.history, jq_dumps(
                 {"time": ts, "source": board, "meter_id": meter, "topic": topic}))
             self.since_trim += 1
@@ -737,7 +877,7 @@ class TrackerBook:
             if not updated:
                 out.append(_b(f"{board}\t{ts}\t{topic}\t1"))
             return out
-        _rewrite_unlocked(self.devices, device_rows)
+        self.deferred.change(self.devices, device_rows, lock=False, need_file=True)
 
 
 # ── RAW telegram counter (status_raw_seen) ──────────────────────────────────
@@ -966,10 +1106,17 @@ def upsert_candidate_row(path: str, meter: str, driver: str, type_line: str, las
     return True
 
 
+# status_recent_raw.tsv is appended to and cut back to the newest
+# RECENT_RAW_KEEP rows once it holds more than RECENT_RAW_MAX; its readers look
+# at the newest RECENT_RAW_KEEP rows only, which is the ring they always saw.
+RECENT_RAW_KEEP = 200
+RECENT_RAW_MAX = 400
+
+
 def find_recent_raw(path: str, meter: str) -> Optional[Tuple[str, str, str]]:
     """status_find_recent_raw_for_id: the newest ring row carrying the id, RAW in lower case."""
     le = (meter[6:8] + meter[4:6] + meter[2:4] + meter[0:2]).lower()
-    for line in reversed(_read_lines(path)):
+    for line in reversed(_read_lines(path)[-RECENT_RAW_KEEP:]):
         ts, length, raw = _bash_read_tabs(_s(line), 3)
         raw = raw.lower()
         if le in raw:
@@ -1112,6 +1259,8 @@ class RawBook:
         self.candidates = CandidateFiles(a.candidates_file, a.seen_file, a.recent_raw_file,
                                          a.candidate_raw_file, a.candidate_analysis_file,
                                          a.preview_meter_dir, a.meter_dir)
+        self.deferred = Deferred()
+        self.ring_lines: Optional[int] = None
 
     def request(self, *fields: str) -> None:
         # A lost reader must not stop the counting itself.
@@ -1127,26 +1276,36 @@ class RawBook:
         if os.path.isfile(a.broker_error_file) and os.path.getsize(a.broker_error_file) > 0:
             with open(a.broker_error_file, "wb"):
                 pass
-        # status_store_raw_seen
+        # status_store_raw_seen; the counter is the file's value plus the
+        # increments still waiting to be written
         seen = iso_now()
-        count = int(_digits_or_zero(a.raw_count_file)) + 1
-        _write_replace(a.raw_count_file, f"{count}\n".encode())
-        try:
-            with open(a.last_raw_file, "wb") as fh:
-                fh.write(_b(seen) + b"\n")
-        except OSError:
-            pass
-        # status_store_recent_raw
+        d = self.deferred
+        count = int(_digits_or_zero(a.raw_count_file)) + d.pending(a.raw_count_file) + 1
+        d.change(a.raw_count_file, _count_plus_one, lock=False)
+        d.value(a.last_raw_file, _b(seen) + b"\n", in_place=True)
+        # status_store_recent_raw: appended at once, it is read by other
+        # processes (the LISTEN parser, bash, the WebUI) for the telegram that
+        # just arrived
         if raw and re.fullmatch(r"[0-9A-Fa-f]+", raw):
-            ring = _read_lines(a.recent_raw_file)
-            ring.append(_b(f"{iso_now()}\t{len(raw)}\t{raw}"))
-            _replace_with(a.recent_raw_file, ring[-200:])
+            self.ring_append(_b(f"{iso_now()}\t{len(raw)}\t{raw}"))
         self.candidate(raw)
         self.preview(raw)
         if count == 1 or count % 25 == 0:
             self.add_event("ok", f"RAW telegram received ({len(raw)} hex chars)")
         self.rate()
-        self.status_json()
+        self.status_json(str(count), seen)
+
+    def ring_append(self, row: bytes) -> None:
+        path = self.a.recent_raw_file
+        if self.ring_lines is None:
+            self.ring_lines = len(_read_lines(path))
+        with open(path, "ab") as fh:
+            fh.write(row + b"\n")
+        self.ring_lines += 1
+        if self.ring_lines > RECENT_RAW_MAX:
+            ring = _read_lines(path)[-RECENT_RAW_KEEP:]
+            _replace_with(path, ring)
+            self.ring_lines = len(ring)
 
     def candidate(self, raw: str) -> None:
         """status_raw_candidate_seen up to the point where bash takes over."""
@@ -1245,18 +1404,13 @@ class RawBook:
             self.rate_epoch = minute
         else:
             self.rate_count += 1
-        _write_replace(a.rate_file, (
+        self.deferred.value(a.rate_file, (
             f'{{"current_min":{self.rate_count},"prev_min":{self.rate_prev},"epoch":{ts}}}\n').encode())
 
-    def status_json(self) -> None:
-        """write_status_json as the counter subshell writes it."""
+    def status_json(self, raw_count: str, last_raw: str) -> None:
+        """write_status_json as the counter subshell writes it, with the
+        counter and last-seen time of this telegram."""
         a = self.a
-        raw_count = _digits_or_zero(a.raw_count_file)
-        try:
-            with open(a.last_raw_file, "rb") as fh:
-                last_raw = _s(fh.read()).rstrip("\n")
-        except OSError:
-            last_raw = ""
         pub, pub_at = a.discovery_published, a.discovery_published_at
         if os.path.isfile(a.discovery_flag_file) and os.path.getsize(a.discovery_flag_file) > 0:
             pub = "true"
@@ -1277,7 +1431,7 @@ class RawBook:
                          "last_error": a.last_error,
                          "last_event": self.last_event},
         }
-        _write_replace(a.status_json_file, _b(_jq_pretty(doc)) + b"\n")
+        self.deferred.value(a.status_json_file, _b(_jq_pretty(doc)) + b"\n")
 
 
 def _jq_tonumber(text: str) -> Any:
@@ -1292,13 +1446,20 @@ def run_lines(book: "RawBook", stream=None, err=None) -> None:
     """The counter loop: one RAW line per message (`IFS= read -r raw_line`)."""
     stream = stream if stream is not None else sys.stdin.buffer
     err = err if err is not None else sys.stderr
-    for raw in stream:
-        if not raw.endswith(b"\n"):  # `read` does not hand over an unterminated last line
-            continue
-        try:
-            book.line(raw[:-1])
-        except Exception as exc:  # one bad telegram must not stop the counter
-            print(f"[wmbus-bridge][WARN] ledger: RAW telegram skipped: {exc!r}", file=err, flush=True)
+    try:
+        for raw in read_lines_flushing(stream, book.deferred):
+            if not raw.endswith(b"\n"):  # `read` does not hand over an unterminated last line
+                continue
+            try:
+                book.line(raw[:-1])
+            except Exception as exc:  # one bad telegram must not stop the counter
+                print(f"[wmbus-bridge][WARN] ledger: RAW telegram skipped: {exc!r}", file=err, flush=True)
+    except _Terminated:
+        # Exit as SIGTERM would have ended it, so that the loops that run
+        # this process start it again; what is collected is written first.
+        raise SystemExit(128 + signal.SIGTERM)
+    finally:
+        book.deferred.flush(err)
 
 
 # ── parallel LISTEN output (parse_listen_candidates) ────────────────────────
@@ -1436,13 +1597,21 @@ def run(handler: Handler, stream=None, err=None) -> None:
     """Feed every line of stream to handler until EOF; a failing message is skipped."""
     stream = stream if stream is not None else sys.stdin.buffer
     err = err if err is not None else sys.stderr
-    for raw in stream:
-        topic, payload = split_message(raw)
-        try:
-            handler(topic, payload)
-        except Exception as exc:  # one bad message must not stop the bookkeeping
-            print(f"[wmbus-bridge][WARN] ledger: message on {topic!r} skipped: {exc!r}",
-                  file=err, flush=True)
+    deferred = getattr(handler, "deferred", None) or Deferred()
+    try:
+        for raw in read_lines_flushing(stream, deferred):
+            topic, payload = split_message(raw)
+            try:
+                handler(topic, payload)
+            except Exception as exc:  # one bad message must not stop the bookkeeping
+                print(f"[wmbus-bridge][WARN] ledger: message on {topic!r} skipped: {exc!r}",
+                      file=err, flush=True)
+    except _Terminated:
+        # Exit as SIGTERM would have ended it, so that the loops that run
+        # this process start it again; what is collected is written first.
+        raise SystemExit(128 + signal.SIGTERM)
+    finally:
+        deferred.flush(err)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1494,6 +1663,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         args = _parser().parse_args(argv)
     except SystemExit as exc:  # usage errors: report, never raise out of main
         return int(exc.code or 0)
+    if args.mode in ("raw", "tracker", "rx"):
+        # Stopping the add-on: write what is collected, then exit.
+        signal.signal(signal.SIGTERM, _on_sigterm)
     if args.mode == "rssi":
         run(RssiBook(args.meter_dir, args.rssi_file))
     elif args.mode == "raw":
