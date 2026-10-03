@@ -1,3 +1,20 @@
+## 1.5.75
+
+### Changed
+- write the per-message tables at most every 5 s (fd0df07)
+
+### Notes
+- Since 1.5.74 fields that are not running meter readings no longer get
+  `state_class: measurement` when their `device_class` is `energy`, `water` or
+  `gas` (for example `previous_kwh`, `historic_m3`, `target_m3`). Home Assistant
+  does not allow `measurement` for these device classes and logged a warning
+  for them. Such fields now have no state class, so Home Assistant may show a
+  repair saying the entity no longer has a state class. The entity and its
+  value keep working; only long-term statistics stop for that field. Resolve
+  the repair under Developer tools → Statistics (delete the old statistics) or
+  ignore it. Running totals such as `total_m3` and `total_kwh` keep
+  `total_increasing`.
+
 ## 1.5.74
 
 ### Changed

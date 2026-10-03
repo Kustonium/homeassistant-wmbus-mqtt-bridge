@@ -401,6 +401,27 @@ LISTEN block) it held. Formats and locks are those described in Appendix A;
 the `/rx` history is written byte for byte as jq wrote it, number literals
 included.
 
+The `rx`, `tracker` and `raw` modes do not write their tables per message.
+Each message changes a row of a table holding a row per meter and board, and
+writing it means writing the whole table to a temporary file that replaces it,
+which ext4 pushes to the disk at once: written per message that was ~1 MB/s on
+a 5-board site (~95 GB a day on an SD card). The row changes are collected in
+memory and written at most every 5 s (`FLUSH_EVERY_S`), also when no further
+message arrives, at the end of the input and on SIGTERM (Python then exits
+with 143, so the loops start it again): each table is read once, under its
+lock as before, the changes are applied in order with the time of their
+message, and it is written once - the same bytes as per message. The WebUI and
+Discovery therefore see the reception tables, sequence, boots, clock,
+`status.json`, the RAW counter and `status_rate_1m.json` up to 5 s late; a
+process killed hard (SIGKILL) loses up to 5 s of these session counters. The
+JSONL histories are appended per message as before. `status_recent_raw.tsv`,
+which other processes read for the telegram that just arrived, is appended to
+at once and cut back to its newest 200 rows above 400; its readers (bash,
+Python, WebUI) look at the newest 200 rows only. The candidate files, the seen
+file and the preview state, which bash writes too, are still written per
+LISTEN block or hand-over. `tests/test_perf_write_budget.sh` measures the bytes
+written per message on every ledger path.
+
 Two stages hand work back to bash, one request per line, to a loop in the
 same stage. Python asks only when the bash code would get past its own cheap
 checks; bash repeats them.
@@ -909,7 +930,7 @@ for understanding the system.
 | `status_seen.tsv` | append-ordered `id`, kind, and epoch reception history |
 | `status_events.tsv` | rolling bridge/WebUI event log |
 | `status_raw_count.txt`, `status_last_raw_seen.txt` | global RAW count and last frame time |
-| `status_recent_raw.tsv` | rolling recent RAW frames used by previews/comparison |
+| `status_recent_raw.tsv` | rolling recent RAW frames used by previews/comparison (appended, cut back to 200 rows above 400; readers use the newest 200) |
 | `status_candidate_analysis.tsv` | candidate encryption/type analysis |
 | `status_candidate_raw.tsv` | last RAW frame keyed by candidate ID |
 | `status_candidate_values.tsv` | selected preview value per candidate |
@@ -946,7 +967,7 @@ for understanding the system.
 
 Keyed updates performed through `_tsv_upsert` and `_upsert_candidate_row` use
 a lock, temporary file, and atomic rename. `bridge_ledger.py` (which writes the
-per-message files listed in 5.3) takes the same `<file>.lock` with
+per-message files listed in 5.3, its tables in batches at most every 5 s) takes the same `<file>.lock` with
 `fcntl.flock`, which serialises with `flock(1)` in bash - the candidate files,
 the preview state and the history trims at subscriber start are still written
 by bash too; `tests/test_ledger_lock_interop.sh` runs both sides at once. It
@@ -965,6 +986,9 @@ authoritative are file-backed rather than shell-variable-only.
   `tests/test_perf_fork_budget.sh` measures every such path (and the
   decoded-telegram steps still in bash, per call) and fails when its cost
   grows or exceeds its budget.
+- Per-message bookkeeping does not rewrite a whole table per message;
+  `tests/test_perf_write_budget.sh` measures the bytes written per message
+  (5 boards, 10/50/200 meters on air) and fails above its budget.
 - The per-message files keep the bytes the bash implementation wrote:
   `tests/fixtures/ledger/` holds that output for the test corpora, and a
   change there is a change of file format, to be reviewed as one.
