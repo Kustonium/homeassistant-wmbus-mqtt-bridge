@@ -51,7 +51,7 @@ import time
 from decimal import Decimal
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
 
 # The clock every handler reads. Tests replace it to get fixed timestamps.
 now: Callable[[], float] = time.time
@@ -175,6 +175,8 @@ class Deferred:
         self.rows: Dict[str, Tuple[bool, bool, List[Rows]]] = {}
         # path -> (whole new content, write it in place instead of replacing)
         self.values: Dict[str, Tuple[bytes, bool]] = {}
+        # key -> a write of its own (see CandidateFiles), made after the above
+        self.tasks: Dict[str, Callable[[], None]] = {}
         self.since: Optional[float] = None
 
     def change(self, path: str, rows: Rows, lock: bool = True, need_file: bool = False) -> None:
@@ -183,6 +185,10 @@ class Deferred:
 
     def value(self, path: str, data: bytes, in_place: bool = False) -> None:
         self.values[path] = (data, in_place)
+        self._started()
+
+    def task(self, key: str, write: Callable[[], None]) -> None:
+        self.tasks[key] = write
         self._started()
 
     def _started(self) -> None:
@@ -204,8 +210,8 @@ class Deferred:
             self.flush()
 
     def flush(self, err=None) -> None:
-        rows, values = self.rows, self.values
-        self.rows, self.values, self.since = {}, {}, None
+        rows, values, tasks = self.rows, self.values, self.tasks
+        self.rows, self.values, self.tasks, self.since = {}, {}, {}, None
         for path, (lock, need_file, changes) in rows.items():
             try:
                 if need_file and not os.path.isfile(path):
@@ -227,6 +233,12 @@ class Deferred:
                     _write_replace(path, data)
             except Exception as exc:
                 print(f"[wmbus-bridge][WARN] ledger: write of {path} failed: {exc!r}",
+                      file=err or sys.stderr, flush=True)
+        for key, write in tasks.items():
+            try:
+                write()
+            except Exception as exc:
+                print(f"[wmbus-bridge][WARN] ledger: write of {key} failed: {exc!r}",
                       file=err or sys.stderr, flush=True)
 
 
@@ -994,13 +1006,22 @@ _ID8 = re.compile(r"[0-9A-Fa-f]{8}")
 # ── candidate registry (status_candidate_seen) ──────────────────────────────
 
 class CandidateFiles:
-    """The files status_candidate_seen reads and writes (paths from bridge.sh)."""
+    """The files status_candidate_seen reads and writes (paths from bridge.sh).
+
+    With `deferred`, candidate_seen_refresh writes the candidate row, its RAW
+    and its analysis through it (see _flush_candidate_refreshes); without, at
+    once.
+    """
 
     def __init__(self, candidates: str, seen: str, recent_raw: str, candidate_raw: str,
-                 analysis: str, preview_meter_dir: str, meter_dir: str) -> None:
+                 analysis: str, preview_meter_dir: str, meter_dir: str,
+                 deferred: Optional["Deferred"] = None) -> None:
         self.candidates, self.seen, self.recent_raw = candidates, seen, recent_raw
         self.candidate_raw, self.analysis = candidate_raw, analysis
         self.preview_meter_dir, self.meter_dir = preview_meter_dir, meter_dir
+        self.deferred = deferred
+        # meter -> _Refresh, in the order of each meter's last refresh
+        self.pending: Dict[str, "_Refresh"] = {}
 
 
 def _bash_read_tabs(line: str, count: int) -> List[str]:
@@ -1022,17 +1043,25 @@ def _seen_epoch(fields: List[bytes]) -> Optional[int]:
     return int(fields[2])
 
 
+# status_seen.tsv is appended to and cut back to the newest SEEN_KEEP rows once
+# it holds more than SEEN_MAX; its readers look at the newest SEEN_KEEP rows
+# only, which is the window they always saw. Cutting it back on every row
+# rewrote all of it (~150 KB) per reception.
+SEEN_KEEP = 5000
+SEEN_MAX = 6000
+
+
 def record_seen(path: str, meter: str, kind: str) -> None:
     """status_record_seen: one row per reception, none within 2 s of the last.
 
-    bash appends and trims this file without a lock; here the lock is taken
-    so that python writers serialise among themselves.
+    The lock is the one bash takes when it cuts the file back.
     """
     ts = int(now())
     k, kind_b = _b(meter), _b(kind)
     with locked(path):
+        lines = _read_lines(path)
         last = 0
-        for line in _read_lines(path):
+        for line in lines:
             f = line.split(b"\t")
             if f[0] == k and len(f) > 1 and f[1] == kind_b:
                 epoch = _seen_epoch(f)
@@ -1040,9 +1069,12 @@ def record_seen(path: str, meter: str, kind: str) -> None:
                     last = epoch
         if last and ts - last < 2:
             return
+        row = _b(f"{meter}\t{kind}\t{ts}")
+        if len(lines) + 1 > SEEN_MAX:
+            _replace_with(path, (lines + [row])[-SEEN_KEEP:])
+            return
         with open(path, "ab") as fh:
-            fh.write(_b(f"{meter}\t{kind}\t{ts}") + b"\n")
-        _replace_with(path, _read_lines(path)[-5000:])
+            fh.write(row + b"\n")
 
 
 def seen_stats(path: str, meter: str) -> Tuple[int, int, int, int]:
@@ -1052,7 +1084,7 @@ def seen_stats(path: str, meter: str) -> Tuple[int, int, int, int]:
     count = seen15 = seen60 = intervals = 0
     total = 0
     prev = 0
-    for line in _read_lines(path):
+    for line in _read_lines(path)[-SEEN_KEEP:]:
         f = line.split(b"\t")
         if f[0] != k:
             continue
@@ -1084,26 +1116,39 @@ def upsert_candidate_row(path: str, meter: str, driver: str, type_line: str, las
     writer (a preview one-shot, a bash registration) changed it after the
     caller read it, and its newer classification must not be overwritten.
     """
-    k = _b(meter)
     with locked(path):
         lines = _read_lines(path)
-        if expect is not None:
-            row = next((_s(ln).split("\t") for ln in lines if _first_field(ln) == k), None)
-            if row is None or (_field(row, 2), _field(row, 3)) != expect:
-                return False
-        final = manufacturer
-        out = []
-        for line in lines:
-            if _first_field(line) == k:
-                f = _s(line).split("\t")
-                if final == "" and len(f) >= 9 and f[8] != "":
-                    final = f[8]
-                continue
-            out.append(line)
-        out.append(_b("\t".join([meter, driver, type_line, last_seen]
-                                + [str(n) for n in stats] + [final])))
-        _replace_with(path, out)
+        if expect is not None and not _candidate_row_holds(lines, meter, expect):
+            return False
+        _replace_with(path, _candidate_row_upserted(lines, meter, driver, type_line, last_seen,
+                                                    stats, manufacturer))
     return True
+
+
+def _candidate_row_holds(lines: List[bytes], meter: str, expect: Tuple[str, str]) -> bool:
+    """The first row of the id holds that driver and type."""
+    k = _b(meter)
+    row = next((_s(ln).split("\t") for ln in lines if _first_field(ln) == k), None)
+    return row is not None and (_field(row, 2), _field(row, 3)) == expect
+
+
+def _candidate_row_upserted(lines: List[bytes], meter: str, driver: str, type_line: str,
+                            last_seen: str, stats: Tuple[int, int, int, int],
+                            manufacturer: str) -> List[bytes]:
+    """lines with the rows of the id dropped and the new row at the end."""
+    k = _b(meter)
+    final = manufacturer
+    out = []
+    for line in lines:
+        if _first_field(line) == k:
+            f = _s(line).split("\t")
+            if final == "" and len(f) >= 9 and f[8] != "":
+                final = f[8]
+            continue
+        out.append(line)
+    out.append(_b("\t".join([meter, driver, type_line, last_seen]
+                            + [str(n) for n in stats] + [final])))
+    return out
 
 
 # status_recent_raw.tsv is appended to and cut back to the newest
@@ -1134,13 +1179,22 @@ def candidate_type_requires_aes(type_line: str) -> bool:
 
 def analyze_candidate_from_text(files: CandidateFiles, meter: str, type_line: str) -> None:
     """status_analyze_candidate_from_text: the candidate's last RAW and its AES verdict."""
+    raw_row, analysis_row = candidate_analysis_rows(files, meter, type_line)
+    if raw_row is not None:
+        tsv_upsert(files.candidate_raw, meter, raw_row)
+    tsv_upsert(files.analysis, meter, analysis_row)
+
+
+def candidate_analysis_rows(files: CandidateFiles, meter: str,
+                            type_line: str) -> Tuple[Optional[str], str]:
+    """The rows analyze_candidate_from_text writes: the candidate's RAW (None when
+    the ring holds none of it) and its analysis."""
     found = find_recent_raw(files.recent_raw, meter)
-    raw_len, raw, ci = "0", "", ""
+    raw_len, raw, ci, raw_row = "0", "", "", None
     if found:
         raw_ts, raw_len, raw = found
         if raw:  # status_record_candidate_raw
-            tsv_upsert(files.candidate_raw, meter,
-                       f"{meter}\t{raw_ts or iso_now()}\t{len(raw)}\t{raw}")
+            raw_row = f"{meter}\t{raw_ts or iso_now()}\t{len(raw)}\t{raw}"
         ci = raw[20:22] if len(raw) >= 22 else ""
     if candidate_type_requires_aes(type_line):
         encryption = "aes_required"
@@ -1151,8 +1205,7 @@ def analyze_candidate_from_text(files: CandidateFiles, meter: str, type_line: st
     else:
         encryption = "unknown"
         note = "No RAW/security analysis mapped to this candidate yet"
-    tsv_upsert(files.analysis, meter,
-               f"{meter}\t{encryption}\t{note}\t{ci}\t\t{raw_len or '0'}\t{iso_now()}")
+    return raw_row, f"{meter}\t{encryption}\t{note}\t{ci}\t\t{raw_len or '0'}\t{iso_now()}"
 
 
 def candidate_seen_refresh(files: CandidateFiles, meter: str, driver: str, type_line: str,
@@ -1167,15 +1220,82 @@ def candidate_seen_refresh(files: CandidateFiles, meter: str, driver: str, type_
     row holds this driver and type; that is checked again under the lock, and
     when another writer changed the row in between, nothing more is written
     and False is returned - the caller then hands the telegram to bash.
+
+    With files.deferred the reception row is still written at once, but the
+    candidate row, its RAW and its analysis wait for the next deferred write:
+    one rewrite of each file per FLUSH_EVERY_S instead of three per telegram.
+    The driver and type are then checked twice: here without the lock (False
+    as above) and under it when the rows are written; a row another writer
+    changed in between keeps that writer's version, and the rows of this
+    refresh are dropped (the reception row stays, as it does when the check
+    fails here). The next telegram of that meter then goes to bash.
     """
     record_seen(files.seen, meter, "candidate")
     last_seen = iso_now()
-    if not upsert_candidate_row(files.candidates, meter, driver, type_line, last_seen,
-                                seen_stats(files.seen, meter), manufacturer,
-                                expect=(driver, type_line)):
+    stats = seen_stats(files.seen, meter)
+    if files.deferred is None:
+        if not upsert_candidate_row(files.candidates, meter, driver, type_line, last_seen,
+                                    stats, manufacturer, expect=(driver, type_line)):
+            return False
+        analyze_candidate_from_text(files, meter, type_line)
+        return True
+    if not _candidate_row_holds(_read_lines(files.candidates), meter, (driver, type_line)):
         return False
-    analyze_candidate_from_text(files, meter, type_line)
+    raw_row, analysis_row = candidate_analysis_rows(files, meter, type_line)
+    earlier = files.pending.pop(meter, None)
+    if manufacturer == "" and earlier is not None:
+        manufacturer = earlier.manufacturer  # what the earlier row would have kept
+    if raw_row is None and earlier is not None:
+        raw_row = earlier.raw_row
+    files.pending[meter] = _Refresh(driver, type_line, last_seen, stats, manufacturer,
+                                    raw_row, analysis_row)
+    files.deferred.task(f"candidates:{files.candidates}",
+                        lambda: _flush_candidate_refreshes(files))
     return True
+
+
+class _Refresh(NamedTuple):
+    """One candidate's rows waiting for the deferred write (its last refresh)."""
+    driver: str
+    type_line: str
+    last_seen: str
+    stats: Tuple[int, int, int, int]
+    manufacturer: str
+    raw_row: Optional[str]
+    analysis_row: str
+
+
+def _flush_candidate_refreshes(files: CandidateFiles) -> None:
+    """Write the waiting refreshes: each file read and written once, under its lock.
+
+    The candidate rows go first; a refresh whose row no longer holds its
+    driver and type (or is gone) is dropped with its RAW and analysis rows.
+    """
+    pending, files.pending = files.pending, {}
+    if not pending:
+        return
+    written: List[str] = []
+    with locked(files.candidates):
+        lines = _read_lines(files.candidates)
+        for meter, r in pending.items():
+            if not _candidate_row_holds(lines, meter, (r.driver, r.type_line)):
+                continue
+            lines = _candidate_row_upserted(lines, meter, r.driver, r.type_line, r.last_seen,
+                                            r.stats, r.manufacturer)
+            written.append(meter)
+        if written:
+            _replace_with(files.candidates, lines)
+    for path, rows in ((files.candidate_raw, [(m, pending[m].raw_row) for m in written
+                                              if pending[m].raw_row is not None]),
+                       (files.analysis, [(m, pending[m].analysis_row) for m in written])):
+        if not rows:
+            continue
+        with locked(path):
+            lines = _read_lines(path)
+            for meter, row in rows:
+                k = _b(meter)
+                lines = [ln for ln in lines if _first_field(ln) != k] + [_b(row)]
+            _replace_with(path, lines)
 
 
 def official_meter(meter_dir: str, meter: str) -> bool:
@@ -1256,10 +1376,10 @@ class RawBook:
         self.rate_epoch = 0
         self.rate_count = 0
         self.rate_prev = 0
+        self.deferred = Deferred()
         self.candidates = CandidateFiles(a.candidates_file, a.seen_file, a.recent_raw_file,
                                          a.candidate_raw_file, a.candidate_analysis_file,
-                                         a.preview_meter_dir, a.meter_dir)
-        self.deferred = Deferred()
+                                         a.preview_meter_dir, a.meter_dir, self.deferred)
         self.ring_lines: Optional[int] = None
 
     def request(self, *fields: str) -> None:
@@ -1490,9 +1610,10 @@ class ListenBook:
         self.a = a
         self.out = out if out is not None else sys.stdout
         self.err = err if err is not None else sys.stderr
+        self.deferred = Deferred()
         self.candidates = CandidateFiles(a.candidates_file, a.seen_file, a.recent_raw_file,
                                          a.candidate_raw_file, a.candidate_analysis_file,
-                                         a.preview_meter_dir, a.meter_dir)
+                                         a.preview_meter_dir, a.meter_dir, self.deferred)
         self.block = ("", "", "", "")
 
     def request(self, *fields: str) -> None:
@@ -1581,20 +1702,27 @@ class ListenBook:
 
 
 def run_listen(book: ListenBook, stream=None, err=None) -> None:
-    """The parser loop (`while IFS= read -r line`), then the flush of the last block."""
+    """The parser loop (`while IFS= read -r line`), then the flush of the last block
+    and of the deferred writes."""
     stream = stream if stream is not None else sys.stdin.buffer
     err = err if err is not None else sys.stderr
-    for raw in stream:
-        if not raw.endswith(b"\n"):  # `read` does not hand over an unterminated last line
-            continue
-        try:
-            book.line(_s(raw[:-1]))
-        except Exception as exc:  # one bad line must not stop the parser
-            print(f"[wmbus-bridge][WARN] ledger: LISTEN line skipped: {exc!r}", file=err, flush=True)
     try:
-        book.flush()
-    except Exception as exc:
-        print(f"[wmbus-bridge][WARN] ledger: LISTEN block skipped: {exc!r}", file=err, flush=True)
+        for raw in read_lines_flushing(stream, book.deferred):
+            if not raw.endswith(b"\n"):  # `read` does not hand over an unterminated last line
+                continue
+            try:
+                book.line(_s(raw[:-1]))
+            except Exception as exc:  # one bad line must not stop the parser
+                print(f"[wmbus-bridge][WARN] ledger: LISTEN line skipped: {exc!r}", file=err, flush=True)
+        try:
+            book.flush()
+        except Exception as exc:
+            print(f"[wmbus-bridge][WARN] ledger: LISTEN block skipped: {exc!r}", file=err, flush=True)
+    except _Terminated:
+        # As in run(): what is collected is written first.
+        raise SystemExit(128 + signal.SIGTERM)
+    finally:
+        book.deferred.flush(err)
 
 
 def run(handler: Handler, stream=None, err=None) -> None:
@@ -1670,7 +1798,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         args = _parser().parse_args(argv)
     except SystemExit as exc:  # usage errors: report, never raise out of main
         return int(exc.code or 0)
-    if args.mode in ("raw", "tracker", "rx"):
+    if args.mode in ("raw", "tracker", "rx", "listen"):
         # Stopping the add-on: write what is collected, then exit.
         signal.signal(signal.SIGTERM, _on_sigterm)
     if args.mode == "rssi":
