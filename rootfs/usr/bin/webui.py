@@ -3250,13 +3250,16 @@ def status_model(data: dict) -> dict:
     broker_brand = ""
     broker_version = ""
     broker_clients = ""
+    # "denied" when the broker refuses $SYS to the add-on (EMQX's default ACL).
+    broker_sys = ""
     try:
-        _bk = STATUS_BROKER_INFO_FILE.read_text(encoding="utf-8").strip()
-        if _bk:
+        _bk = STATUS_BROKER_INFO_FILE.read_text(encoding="utf-8").strip("\n")
+        if _bk.strip():
             _parts = _bk.split("\t")
             broker_brand = _parts[0].strip()
             broker_version = _parts[1].strip() if len(_parts) > 1 else ""
             broker_clients = _parts[2].strip() if len(_parts) > 2 else ""
+            broker_sys = _parts[3].strip() if len(_parts) > 3 else ""
     except OSError:
         pass
     broker_native = bool(ha_native_broker)
@@ -3456,6 +3459,7 @@ def status_model(data: dict) -> dict:
         "ha_verification_reason": ha_verification_reason,
         "broker_brand": broker_brand,
         "broker_version": broker_version,
+        "broker_sys": broker_sys,
         "broker_native": broker_native,
         "broker_clients": broker_clients,
         "mqtt_tls_supported": mqtt_tls_supported,

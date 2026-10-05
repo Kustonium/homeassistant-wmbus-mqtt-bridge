@@ -1,3 +1,25 @@
+## 1.5.79
+
+### Changed
+- keep the ESP subscribers connected instead of reconnecting every 90/180 s (259f3bd)
+
+### Fixed
+- ask a broker that refuses $SYS again after an hour, and say so in the WebUI (ecf14fe)
+
+### Notes
+- Fewer connections to the MQTT broker. The add-on's ESP subscribers (RSSI,
+  health, diagnostics, the Home Assistant status topic and others) now stay
+  connected. Before, each of them disconnected and connected again every 90 or
+  180 seconds - about 4 new broker connections a minute, each a login and a few
+  lines in the broker's log - and every retained topic was sent again each
+  time. They still reconnect by themselves when the connection drops.
+- EMQX users: EMQX does not let the add-on read `$SYS` by default (its ACL
+  allows it to localhost clients only). The add-on asked again every 2 minutes,
+  which left an `authorization_permission_denied` warning in the EMQX log each
+  time; it now asks again once an hour. The WebUI MQTT panel shows "unknown —
+  the broker does not share $SYS with the add-on (its ACL)" instead of "—" for
+  the broker software. Nothing else depends on it. Mosquitto is not affected.
+
 ## 1.5.78
 
 ### Added

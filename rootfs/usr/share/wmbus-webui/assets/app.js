@@ -1571,7 +1571,9 @@
       const brokerVer   = String(model.broker_version || "").trim();
       const brokerSw = brokerBrand
         ? `${brokerBrand}${brokerVer ? " " + brokerVer : ""} (${model.broker_native === true ? t("broker_native", "native") : t("broker_other", "other")})`
-        : "—";
+        : (String(model.broker_sys || "") === "denied"
+            ? t("broker_sys_denied", "unknown — the broker does not share $SYS with the add-on (its ACL)")
+            : "—");
       const brokerClients = String(model.broker_clients || "").trim();
       const haLink = String(model.ha_link || "unknown");
       const haOnBroker = haLink === "ok"
