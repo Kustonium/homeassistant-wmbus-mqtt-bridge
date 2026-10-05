@@ -46,11 +46,12 @@ inject_rssi_into_json() {
 }
 
 # True (0) for a boot not seen yet from this ESP, false (1) for a repeat.
-# The firmware publishes its boot event retained on <diag>/boot, and the diag
-# subscriber below resubscribes every 180 s (mosquitto_sub -W is a hard limit,
-# not an idle timeout), so the broker hands the same boot back each time.
-# Without this every copy was logged as a new boot - one every three minutes
-# on a board with hours of uptime - and each copy cleared the suggestion panel.
+# The firmware publishes its boot event retained on <diag>/boot, and the broker
+# hands it back on every subscribe - at start and after every reconnect (the
+# subscriber used to resubscribe every 180 s: mosquitto_sub -W is a hard limit,
+# not an idle timeout). Without this every copy was logged as a new boot - one
+# every three minutes on a board with hours of uptime - and each copy cleared
+# the suggestion panel.
 # The payload carries the board's uptime at publish time, so a real restart
 # never repeats it. This also collapses the second copy the firmware sends on
 # the bare diag topic at the same moment.
@@ -91,11 +92,12 @@ _esp_rssi_subscriber() {
     # ends, for whatever reason; both then start again after the usual
     # reconnect pause, like a dropped connection. A plain pipe is not enough:
     # where SIGPIPE is ignored (service managers and CI runners can leave it
-    # so), mosquitto_sub keeps writing into the dead pipe until its -W timeout.
+    # so), mosquitto_sub keeps writing into the dead pipe - and the
+    # subscribers here have no -W timeout, so it would never reconnect.
     # Rows already written stay; only the message being handled when python3
     # died is lost. `|| true` keeps set -e from ending the loop.
     exec {_rssi_fd}< <(
-      ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/rssi/+" -F '%t\t%p' -W 90 2>/dev/null
+      ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/rssi/+" -F '%t\t%p' 2>/dev/null
     )
     _rssi_sub_pid=$!
     python3 -u "${BRIDGE_LEDGER}" rssi \
@@ -112,9 +114,7 @@ _esp_rx_subscriber() {
   while true; do
     _sub_t0="$(epoch_now)"
     # Same arrangement as the rssi subscriber: python3 reads through a
-    # descriptor and mosquitto_sub is stopped as soon as python3 ends. It
-    # matters even more here: this subscription has no -W timeout, so a
-    # writer left running into a dead pipe would never reconnect.
+    # descriptor and mosquitto_sub is stopped as soon as python3 ends.
     exec {_rx_fd}< <(
       ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" \
         -t 'wmbus/+/rx' -F '%t\t%p' 2>/dev/null
@@ -173,6 +173,13 @@ _esp_tracker_subscriber() {
   fi
 }
 
+# The subscribers below stay connected: none has a -W timeout, which is a
+# hard limit, not an idle one. With -W 90/180 each one disconnected and
+# connected again every 90 or 180 s - about 4 broker connections a minute,
+# each a login and log lines on the broker - and replayed every retained
+# topic each time. mosquitto_sub reconnects and resubscribes by itself after a
+# dropped connection; when it exits, its loop starts it again after
+# _sub_reconnect_sleep.
 start_esp_subscribers() {
 # Track background subscriber PIDs so the soft-reload watcher in bridge.sh can
 # exclude them from its kill — these subscribers must survive pipeline restarts
@@ -202,7 +209,7 @@ STATUS_ESP_DIAG_FILE="${RUNTIME:-${BASE}}/status_esp_diag.json"
             && mv "${STATUS_ESP_DIAG_FILE}.tmp" "${STATUS_ESP_DIAG_FILE}" 2>/dev/null \
             || true
         done < <(
-          ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/diag/summary" -F '%t\t%p' -W 90 2>/dev/null
+          ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/diag/summary" -F '%t\t%p' 2>/dev/null
         )
     _sub_reconnect_sleep "${_sub_t0}"
   done
@@ -245,7 +252,7 @@ STATUS_ESP_HEALTH_FILE="${RUNTIME:-${BASE}}/status_esp_health.json"
             && mv "${STATUS_ESP_HEALTH_FILE}.tmp" "${STATUS_ESP_HEALTH_FILE}" 2>/dev/null \
             || true
         done < <(
-          ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/health" -F '%t\t%p' -W 90 2>/dev/null
+          ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/health" -F '%t\t%p' 2>/dev/null
         )
     _sub_reconnect_sleep "${_sub_t0}"
   done
@@ -303,7 +310,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
             && mv "${STATUS_ESP_METERS_FILE}.tmp" "${STATUS_ESP_METERS_FILE}" 2>/dev/null \
             || true
         done < <(
-          ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/meters" -F '%t\t%p' -W 90 2>/dev/null
+          ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/meters" -F '%t\t%p' 2>/dev/null
         )
     _sub_reconnect_sleep "${_sub_t0}"
   done
@@ -339,7 +346,7 @@ STATUS_ESP_METER_SNAPSHOT_FILE="${RUNTIME:-${BASE}}/status_esp_meter_snapshot.js
             && mv "${STATUS_ESP_METER_SNAPSHOT_FILE}.tmp" "${STATUS_ESP_METER_SNAPSHOT_FILE}" 2>/dev/null \
             || true
         done < <(
-          ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/diag/meter_snapshot" -F '%t\t%p' -W 90 2>/dev/null
+          ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/diag/meter_snapshot" -F '%t\t%p' 2>/dev/null
         )
     _sub_reconnect_sleep "${_sub_t0}"
   done
@@ -379,7 +386,7 @@ STATUS_ESP_METER_WINDOW_FILE="${RUNTIME:-${BASE}}/status_esp_meter_window.json"
             && mv "${STATUS_ESP_METER_WINDOW_FILE}.tmp" "${STATUS_ESP_METER_WINDOW_FILE}" 2>/dev/null \
             || true
         done < <(
-          ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/diag/meter/+/+/window/+" -F '%t\t%p' -W 90 2>/dev/null
+          ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/diag/meter/+/+/window/+" -F '%t\t%p' 2>/dev/null
         )
     _sub_reconnect_sleep "${_sub_t0}"
   done
@@ -502,7 +509,7 @@ fi
     done < <(
       ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" \
         -t "wmbus/+/diag" -t "wmbus/+/diag/#" \
-        -F '%r\t%t\t%p' -W 180 2>/dev/null
+        -F '%r\t%t\t%p' 2>/dev/null
     )
     _sub_reconnect_sleep "${_sub_t0}"
   done
@@ -531,7 +538,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
         && mv "${STATUS_HA_PRESENCE_FILE}.tmp" "${STATUS_HA_PRESENCE_FILE}" 2>/dev/null \
         || true
     done < <(
-      ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "${_ha_birth_topic}" -F '%p' -W 180 2>/dev/null
+      ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "${_ha_birth_topic}" -F '%p' 2>/dev/null
     )
     _sub_reconnect_sleep "${_sub_t0}"
   done
@@ -543,6 +550,12 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 # $SYS/brokers/<node>/version (number) plus $SYS/brokers/<node>/sysdescr = "EMQX".
 # Subscribing to all three covers both brokers; the WebUI labels the MQTT tile
 # with brand + version. NB: no SUB_EXTRA (-R) — $SYS broadcasts must be delivered.
+# A broker may refuse $SYS: EMQX's default ACL allows it to localhost clients
+# only. mosquitto_sub then says "All subscription requests were denied" and
+# exits at once, and the reconnect pause retried it every 2 min - a broker
+# connection and an authorization warning in the broker log each time, for an
+# answer that does not change. A refusal is recorded (fourth column "denied",
+# shown by the WebUI) and asked again after BROKER_SYS_DENIED_RETRY_S.
 (
   _bk_brand=""
   _bk_version=""
@@ -582,8 +595,17 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
         -t '$SYS/brokers/+/sysdescr' \
         -t '$SYS/broker/clients/connected' \
         -t '$SYS/brokers/+/clients/count' \
-        -F '%t\t%p' -W 180 2>/dev/null
+        -F '%t\t%p' 2>"${STATUS_BROKER_INFO_FILE}.err"
     )
+    if grep -qi 'denied' "${STATUS_BROKER_INFO_FILE}.err" 2>/dev/null; then
+      if [[ -z "${_bk_brand}${_bk_version}${_bk_clients}" ]]; then
+        printf '\t\t\tdenied\n' > "${STATUS_BROKER_INFO_FILE}.tmp" 2>/dev/null \
+          && mv "${STATUS_BROKER_INFO_FILE}.tmp" "${STATUS_BROKER_INFO_FILE}" 2>/dev/null \
+          || true
+      fi
+      sleep "${BROKER_SYS_DENIED_RETRY_S:-3600}"
+      continue
+    fi
     _sub_reconnect_sleep "${_sub_t0}"
   done
 ) &
