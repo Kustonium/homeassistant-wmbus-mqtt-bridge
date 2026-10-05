@@ -20,6 +20,13 @@ services:
       - "8099:8099"
     volumes:
       - ./config:/config
+    # Optional: keep the status files (rewritten every few seconds) in RAM and
+    # save them to ./config/runtime_state.tar every few minutes and at stop —
+    # recommended when ./config is on an HDD or an SD card.
+    # tmpfs:
+    #   - /tmp
+    # environment:
+    #   WMBUS_RUNTIME: /tmp/wmbus-runtime
     # Wired M-Bus only: map YOUR converter, by its stable by-id path.
     # Never "/dev:/dev" and never privileged — on a typical home server one of
     # those ports is a Zigbee coordinator, and the M-Bus engine transmits.

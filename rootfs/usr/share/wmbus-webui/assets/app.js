@@ -1607,6 +1607,17 @@
       const wmVerCell = wmRuntime
         ? (wmCommit ? `${wmRuntime} (commit ${wmCommit})` : wmRuntime)
         : "—";
+      // Storage medium of the data directory (detected once at bridge start):
+      // the kind, then disk and model; a virtual machine is named because its
+      // virtual disk reports whatever the hypervisor says.
+      const st = model.storage || {};
+      const stKind = String(st.kind || "");
+      const stDetail = [st.disk, st.model].map(x => String(x || "").trim()).filter(Boolean).join(" · ");
+      const stCell = stKind
+        ? `${escapeHtml(t("storage_kind_" + stKind, stKind))}`
+          + (stDetail ? ` <span class="mono" style="color:var(--muted);font-size:11px;">${escapeHtml(stDetail)}</span>` : "")
+          + (st.vm ? `<div style="color:var(--muted);font-size:11px;">${escapeHtml(t("storage_vm", "virtual machine"))}: ${escapeHtml(st.vm)}</div>` : "")
+        : "—";
       body = `
         <h3>⚙ wmbusmeters</h3>
         <div class="kv">
@@ -1616,6 +1627,7 @@
           <div>${escapeHtml(t("workspace_wmbus_decoded_total", "Decoded telegrams (session)"))}</div><div>${Number(model.decoded_count || 0)}</div>
           <div>${escapeHtml(t("workspace_wmbus_last_decoded", "Last decoded"))}</div><div>${fmtTime(pipe.last_decoded_seen)}</div>
           <div>${escapeHtml(t("workspace_wmbus_version", "wmbusmeters version"))}</div><div class="mono">${escapeHtml(wmVerCell)}</div>
+          <div>${escapeHtml(t("workspace_wmbus_storage", "Data storage"))}</div><div>${stCell}</div>
         </div>
         <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
           <button class="btn warn" data-action="restart" type="button">${escapeHtml(t("restart_addon", "Restart add-on"))}</button>

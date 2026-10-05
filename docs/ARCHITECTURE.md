@@ -731,9 +731,33 @@ Absence of evidence is shown as unknown, not as a false success.
 ## 8. WebUI and state boundary
 
 `webui.py` serves a small JSON API and static SPA. It does not attach to shell
-process stdout. Instead, the bridge writes compact files under `/data` (or
-`/config` in Docker) and the WebUI reads the current file-backed state. There is
-no cross-file snapshot transaction.
+process stdout. Instead, the bridge writes compact files and the WebUI reads
+the current file-backed state. There is no cross-file snapshot transaction.
+
+The `status_*` files and `status.json` live in a runtime directory. In the
+add-on `/tmp` is a tmpfs (`tmpfs: true` in `config.yaml`), and with the default
+data directory `/data` the runtime directory is `/tmp/wmbus-runtime`; the
+bridge and `webui.py` pick it by the same rule (`runtime_dir` in
+`bridge_ledger.py`, `WMBUS_RUNTIME` overrides it). These files are rewritten
+every few seconds (the per-message tables every 5 s, the heartbeat every
+10 s), which on a spinning disk is ~20 random writes a second. At start
+`bridge_ledger.py runtime-restore` fills the runtime directory from
+`/data/runtime_state.tar`, or on the first start moves the `status_*` files out
+of `/data` (and saves them at once); a restart of the bridge inside a running
+container keeps what is in RAM. The ticker saves the directory to that one file
+every minute on an SSD or NVMe disk and every ten minutes on an HDD, eMMC or SD
+card (`RUNTIME_SNAPSHOT_SECONDS`, from the detected medium), and the stop trap
+saves it once more after the ledger processes wrote what they collected.
+Without a tmpfs `/tmp` (Docker unless `tmpfs: /tmp` and `WMBUS_RUNTIME` are
+set, or a custom `WMBUS_BASE`) the runtime directory is the data directory, as
+before. `status_ignored_candidates.tsv` (a user's decision) and
+`status_run_error.txt` (written by `run.sh` before the bridge) stay on the data
+disk, as do the configuration, the preview configs and the bounded JSONL
+histories, which are only appended to. The working directories of the preview
+one-shot decodes (`.preview_decode.*`, its locks, slots, last-attempt times and
+attempt counters) are created and removed per decode - directory writes, which a
+spinning disk feels as much as file replacements - so they live in the runtime
+directory too; they are not part of the snapshot.
 
 The split has two effects:
 
@@ -946,6 +970,8 @@ for understanding the system.
 | `status_discovery_doctor.json` | latest on-demand Discovery Doctor result |
 | `status_discovery_published.flag` | session-wide Discovery publication flag |
 | `status_wmbusmeters_version.txt` | runtime/build decoder version and commit |
+| `status_storage.json` | storage medium of the data directory (kind, disk, model, hypervisor), detected once at start |
+| `runtime_state.tar` (data directory) | snapshot of the runtime directory, restored at start (see §8) |
 | `status_official_meters_count.txt` | file-backed configured meter count |
 | `status_rate_1m.json`, `status_rate_history.tsv` | receive rate and rolling history |
 | `status_bridge_start.txt` | bridge start epoch |

@@ -658,6 +658,17 @@ její absence nic nedokazuje, protože zpráva často není retained. Volitelné
 ověření testovací entity přes HA Core API je silnější kontrola. Dialog obsahuje
 i tlačítko **Vynutit re-discovery**.
 
+### „Opotřebovává doplněk SD kartu nebo zpomaluje HDD?"
+
+Doplněk každých pár sekund přepisuje své stavové soubory (kandidáti, příjem
+podle desky, čítače). Od 1.5.78 je drží v RAM (`/tmp` je v doplňku tmpfs) a
+ukládá je jako jeden soubor `/data/runtime_state.tar`: každou minutu na SSD
+nebo NVMe, každých deset minut na HDD, eMMC nebo SD kartě a při zastavení
+doplňku; při startu je z něj obnoví. Po výpadku napájení mohou chybět
+statistiky z posledních minut; měřičů, klíčů a možností se to netýká. Zjištěné
+úložiště ukazuje WebUI: Panel → **wmbusmeters** → **Úložiště dat** (ve
+virtuálním stroji virtuální disk hlásí, co nastaví hypervisor).
+
 ### „Chci začít znovu — odebrat všechny měřiče"
 
 V zobrazení NASTAVENÍ tlačítko **Resetovat doplněk** odebere VŠECHNY

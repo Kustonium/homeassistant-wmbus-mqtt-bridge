@@ -35,7 +35,7 @@ _raw_counter_stage() {
       --status-json-file="${STATUS_JSON}" \
       --discovery-flag-file="${STATUS_DISCOVERY_FLAG}" \
       --preview-meter-dir="${PREVIEW_METER_DIR}" \
-      --preview-last-dir="${BASE}/.preview_decode_last" \
+      --preview-last-dir="${RUNTIME:-${BASE}}/.preview_decode_last" \
       --preview-min-interval="${PREVIEW_DECODE_MIN_INTERVAL_SECONDS:-20}" \
       --preview-state-file="${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" \
       --preview-decoded-min-interval="${PREVIEW_DECODED_MIN_INTERVAL_SECONDS:-300}" \

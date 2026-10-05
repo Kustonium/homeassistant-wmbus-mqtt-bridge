@@ -93,19 +93,31 @@ echo "[wmbus-bridge] Starting WebGUI on port ${WEBUI_PORT}..."
 /usr/bin/python3 /usr/bin/webui.py &
 
 echo "[wmbus-bridge] Starting core bridge..."
-/usr/bin/bridge.sh &
+# Own process group, so that SIGTERM reaches its decode pipeline too (see
+# term_handler); without setsid it shares this one.
+if command -v setsid >/dev/null 2>&1; then
+  setsid /usr/bin/bridge.sh &
+else
+  /usr/bin/bridge.sh &
+fi
 BRIDGE_PID=$!
 
 # PID 1 must stay THIS shell (no exec): the WebUI restart button in Docker
 # mode signals PID 1 with SIGTERM, and that only stops the container when
-# PID 1 installs a handler that exits — bridge.sh's own TERM trap
-# (stop_listen_instance) cleans up but does not exit, and SIGKILL to PID 1
-# from inside the namespace is ignored by the kernel. The container comes
-# back only under a restart policy (docker/examples compose:
-# restart: unless-stopped); without one, "restart" degrades to "stop".
+# PID 1 installs a handler that exits, and SIGKILL to PID 1 from inside the
+# namespace is ignored by the kernel. The container comes back only under a
+# restart policy (docker/examples compose: restart: unless-stopped); without
+# one, "restart" degrades to "stop". SIGTERM goes to bridge.sh's whole process
+# group - bridge.sh runs a trap only once its foreground pipeline ends - and
+# PID 1 waits up to 8 s (docker stop gives 10) for it to stop the extra
+# instances and save the RAM status directory.
 term_handler() {
   echo "[wmbus-bridge] SIGTERM received — stopping container (the restart policy brings it back if configured)."
-  kill -TERM "${BRIDGE_PID}" 2>/dev/null || true
+  kill -TERM -- "-${BRIDGE_PID}" 2>/dev/null || kill -TERM "${BRIDGE_PID}" 2>/dev/null || true
+  for _ in $(seq 1 80); do
+    kill -0 "${BRIDGE_PID}" 2>/dev/null || break
+    sleep 0.1
+  done
   exit 143
 }
 trap term_handler TERM INT

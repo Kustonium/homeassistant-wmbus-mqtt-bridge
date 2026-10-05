@@ -7,7 +7,7 @@ _set_preview_state() {
   # Discard the attempt counter once a terminal decode outcome is known.
   case "${state}" in
     decoded_value|decoded_without_numeric_value|no_decode_result)
-      rm -f "${BASE}/.preview_attempts/${id}" 2>/dev/null || true
+      rm -f "${RUNTIME:-${BASE}}/.preview_attempts/${id}" 2>/dev/null || true
       ;;
   esac
 }
@@ -18,7 +18,7 @@ _set_preview_state() {
 # keep dense RF environments from spawning a process storm.
 _record_preview_no_decode_attempt() {
   local id="$1" cnt_file cnt=0 start=0 now elapsed tmp
-  cnt_file="${BASE}/.preview_attempts/${id}"
+  cnt_file="${RUNTIME:-${BASE}}/.preview_attempts/${id}"
   if [[ -f "${cnt_file}" ]]; then
     IFS=$'\t' read -r cnt start < "${cnt_file}" 2>/dev/null || true
     [[ "${cnt}" =~ ^[0-9]+$ ]] || cnt=0
@@ -45,9 +45,9 @@ _preview_acquire_slot() {
   local max_parallel="${PREVIEW_DECODE_MAX_PARALLEL:-2}" n slot
   [[ "${max_parallel}" =~ ^[0-9]+$ ]] || max_parallel=2
   (( max_parallel > 0 )) || max_parallel=1
-  mkdir -p "${BASE}/.preview_decode_slots" 2>/dev/null || true
+  mkdir -p "${RUNTIME:-${BASE}}/.preview_decode_slots" 2>/dev/null || true
   for (( n=1; n<=max_parallel; n++ )); do
-    slot="${BASE}/.preview_decode_slots/${n}"
+    slot="${RUNTIME:-${BASE}}/.preview_decode_slots/${n}"
     if mkdir "${slot}" 2>/dev/null; then
       printf '%s\n' "${slot}"
       return 0
@@ -101,9 +101,9 @@ preview_decode_raw_if_requested() {
   cfg="$(candidate_autodecode_file "${id}")"
   [[ -f "${cfg}" ]] || return 0
 
-  mkdir -p "${BASE}/.preview_decode_locks" "${BASE}/.preview_decode_last" 2>/dev/null || true
-  lock_dir="${BASE}/.preview_decode_locks/${id}"
-  last_file="${BASE}/.preview_decode_last/${id}"
+  mkdir -p "${RUNTIME:-${BASE}}/.preview_decode_locks" "${RUNTIME:-${BASE}}/.preview_decode_last" 2>/dev/null || true
+  lock_dir="${RUNTIME:-${BASE}}/.preview_decode_locks/${id}"
+  last_file="${RUNTIME:-${BASE}}/.preview_decode_last/${id}"
   min_interval="${PREVIEW_DECODE_MIN_INTERVAL_SECONDS:-20}"
   now="$(date +%s 2>/dev/null || echo 0)"
   last="$(cat "${last_file}" 2>/dev/null || echo 0)"
@@ -134,7 +134,7 @@ preview_decode_raw_if_requested() {
     local tmp_base tmp_meter_dir output json_line
     # Prevent stale status.json writes from this detached helper process.
     write_status_json() { :; }
-    tmp_base="$(mktemp -d "${BASE}/.preview_decode.${id}.XXXXXX" 2>/dev/null)" || {
+    tmp_base="$(mktemp -d "${RUNTIME:-${BASE}}/.preview_decode.${id}.XXXXXX" 2>/dev/null)" || {
       rmdir "${slot_dir}" 2>/dev/null || true
       rmdir "${lock_dir}" 2>/dev/null || true
       exit 0
@@ -210,7 +210,7 @@ ensure_candidate_autodecode() {
   if grep -ql "^id=${id,,}$" "${METER_DIR}"/meter-* 2>/dev/null; then
     if [[ -f "${file}" ]]; then
       rm -f "${file}" 2>/dev/null || true
-      rm -f "${BASE}/.preview_attempts/${id}" 2>/dev/null || true
+      rm -f "${RUNTIME:-${BASE}}/.preview_attempts/${id}" 2>/dev/null || true
       log "autodecode ${id}: skipped (official meter), pruned orphaned preview"
     fi
     return 0
@@ -222,7 +222,7 @@ ensure_candidate_autodecode() {
     log_verbose "[DIAG] autodecode ${id}: AES required, skipping preview"
     if [[ -f "${file}" ]]; then
       rm -f "${file}" 2>/dev/null || true
-      rm -f "${BASE}/.preview_attempts/${id}" 2>/dev/null || true
+      rm -f "${RUNTIME:-${BASE}}/.preview_attempts/${id}" 2>/dev/null || true
     fi
     return 0
   fi
@@ -241,7 +241,7 @@ ensure_candidate_autodecode() {
     mv "${tmp}" "${file}" 2>/dev/null || true
     log_verbose "[DIAG] autodecode ${id}: wrote ${file} (driver=${driver:-auto})"
     _set_preview_state "${id}" "pending"
-    rm -f "${BASE}/.preview_attempts/${id}" 2>/dev/null || true
+    rm -f "${RUNTIME:-${BASE}}/.preview_attempts/${id}" 2>/dev/null || true
     # Do not reload LISTEN here. Preview configs are consumed by the one-shot
     # decoder, while the always-on LISTEN pipeline stays permanently pure.
     local _recent_row _recent_raw
@@ -282,7 +282,7 @@ prune_official_meter_previews() {
     pf="${PREVIEW_METER_DIR}/meter-preview-${mid}"
     if [[ -f "${pf}" ]]; then
       rm -f "${pf}" 2>/dev/null || true
-      rm -f "${BASE}/.preview_attempts/${mid}" 2>/dev/null || true
+      rm -f "${RUNTIME:-${BASE}}/.preview_attempts/${mid}" 2>/dev/null || true
       log "pruned orphaned meter-preview-${mid} (now official configured meter)"
       _pruned=1
     fi
@@ -429,7 +429,7 @@ sys.stdout.write("\n".join(dropped))
     [[ "${_id}" =~ ^[0-9A-Fa-f]{8}$ ]] || continue
     _tsv_remove_id "${STATUS_CANDIDATE_VALUES_FILE}" "${_id}"
     _tsv_remove_id "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" "${_id}"
-    rm -f "${BASE}/.preview_attempts/${_id}" 2>/dev/null || true
+    rm -f "${RUNTIME:-${BASE}}/.preview_attempts/${_id}" 2>/dev/null || true
     rm -f "${PREVIEW_METER_DIR}/meter-preview-${_id}" 2>/dev/null || true
     log "pruned stale candidate ${_id} (no telegram for >$((max_age / 3600))h)"
   done <<< "${_dropped}"

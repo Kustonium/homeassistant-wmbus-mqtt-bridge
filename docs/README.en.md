@@ -677,6 +677,18 @@ that broker and prefix; its absence is inconclusive because the message is not
 always retained. Optional canary verification through the HA Core API provides
 the stronger check. The dialog also has a **Force re-discovery** button.
 
+### "Does the add-on wear out my SD card or slow down my HDD?"
+
+The add-on rewrites its status files (candidates, reception per board, counters)
+every few seconds. Since 1.5.78 they live in RAM (`/tmp` is a tmpfs in the
+add-on) and are saved to `/data/runtime_state.tar` as one file: every minute on
+an SSD or NVMe disk, every ten minutes on an HDD, eMMC or SD card, and when the
+add-on stops; at start they are restored from it. After a power cut the last
+minutes of statistics can be missing; meters, keys and options are not affected.
+The detected medium is shown in the WebUI: Panel → **wmbusmeters** →
+**Data storage** (in a virtual machine the virtual disk reports whatever the
+hypervisor says).
+
 ### "I want to start over — remove all meters"
 
 In the SETTINGS view, **Reset add-on** removes ALL configured meters, clears

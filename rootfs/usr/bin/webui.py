@@ -28,6 +28,32 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 BASE = Path(os.environ.get("WMBUS_BASE", "/data"))
+
+
+def _runtime_dir() -> Path:
+    """Where the status_* files live: the rule of bridge_ledger.py runtime_dir.
+
+    WMBUS_RUNTIME when set; for the add-on's /data, /tmp/wmbus-runtime when
+    /tmp is a tmpfs; else the data directory (a custom WMBUS_BASE: tests,
+    development). The bridge restores the directory at start and saves it to
+    BASE/runtime_state.tar every few minutes.
+    """
+    if os.environ.get("WMBUS_RUNTIME"):
+        return Path(os.environ["WMBUS_RUNTIME"])
+    if os.path.normpath(str(BASE)) != "/data":
+        return BASE
+    try:
+        with open("/proc/mounts", "rb") as fh:
+            for line in fh:
+                f = line.split()
+                if len(f) >= 3 and f[1] == b"/tmp":
+                    return Path("/tmp/wmbus-runtime") if f[2] == b"tmpfs" else BASE
+    except OSError:
+        pass
+    return BASE
+
+
+RUNTIME = _runtime_dir()
 # POSIX-only, and the only thing that needs it is the wired M-Bus bus probe. It
 # is imported conditionally so the WebUI still starts where the module does not
 # exist: the add-on always runs on Linux, but the documented way to check a UI
@@ -42,34 +68,34 @@ except ImportError:  # pragma: no cover - non-POSIX developer machines only
 PORT = int(os.environ.get("WEBUI_PORT", "8099"))
 STATIC_DIR = Path(__file__).resolve().parent.parent / "share" / "wmbus-webui"
 
-STATUS_JSON = BASE / "status.json"
-METERS_TSV = BASE / "status_meters.tsv"
-CANDIDATES_TSV = BASE / "status_candidates.tsv"
-EVENTS_TSV = BASE / "status_events.tsv"
+STATUS_JSON = RUNTIME / "status.json"
+METERS_TSV = RUNTIME / "status_meters.tsv"
+CANDIDATES_TSV = RUNTIME / "status_candidates.tsv"
+EVENTS_TSV = RUNTIME / "status_events.tsv"
 IGNORED_CANDIDATES = BASE / "status_ignored_candidates.tsv"
 SEARCH_CANDIDATES_TSV = BASE / "search_candidates.tsv"
 SEARCH_MATCHES_TSV = BASE / "search_matches.tsv"
 SEARCH_STATUS_JSON = BASE / "search_status.json"
-CANDIDATE_ANALYSIS_TSV = BASE / "status_candidate_analysis.tsv"
+CANDIDATE_ANALYSIS_TSV = RUNTIME / "status_candidate_analysis.tsv"
 # Last raw telegram per candidate, written by status_record_candidate_raw
 # (bridge-lib/06-candidates.sh). Feeds the "export for issue report" action.
-CANDIDATE_RAW_TSV = BASE / "status_candidate_raw.tsv"
+CANDIDATE_RAW_TSV = RUNTIME / "status_candidate_raw.tsv"
 # Rolling RAW frames (tail 200), written by bridge_ledger.py raw — used to find a
 # configured meter's last frame (by little-endian id substring) for the
 # on-demand driver comparison.
-RECENT_RAW_TSV = BASE / "status_recent_raw.tsv"
+RECENT_RAW_TSV = RUNTIME / "status_recent_raw.tsv"
 # Last full decoded JSON per configured meter (status_meter_seen in
 # bridge-lib/07-meters.sh). Feeds the "published fields" expander.
-METER_LAST_JSON_TSV = BASE / "status_meter_last_json.tsv"
+METER_LAST_JSON_TSV = RUNTIME / "status_meter_last_json.tsv"
 # Per-meter AES key problem (key_missing | key_invalid) detected by
 # status_detect_key_problem in bridge-lib/07-meters.sh from wmbusmeters
 # warnings; cleared by the next successfully decoded JSON.
-METER_KEY_PROBLEM_TSV = BASE / "status_meter_key_problem.tsv"
+METER_KEY_PROBLEM_TSV = RUNTIME / "status_meter_key_problem.tsv"
 # Discovery Doctor: the WebUI touches the request flag; bridge.sh's heartbeat
 # ticker runs the broker probe (discovery_doctor_probe, 09-discovery.sh) and
 # writes the JSON result.
 DISCOVERY_DOCTOR_REQUEST = BASE / ".discovery_doctor_request"
-STATUS_DISCOVERY_DOCTOR_JSON = BASE / "status_discovery_doctor.json"
+STATUS_DISCOVERY_DOCTOR_JSON = RUNTIME / "status_discovery_doctor.json"
 # Factory reset: this endpoint empties options.json (meters=[]) and writes the
 # removed ids here (one per line). bridge.sh's heartbeat ticker consumes the
 # flag, clears each meter's retained discovery, wipes runtime state and
@@ -82,36 +108,36 @@ OPTIONS_JSON = BASE / "options.json"
 # editable Settings form — parsing it means the form never drifts from HA's own.
 CONFIG_YAML_PATH = Path(__file__).parent / "config.yaml"
 # Per-minute rate dashboard files written by bridge.sh
-STATUS_RATE_1M_JSON = BASE / "status_rate_1m.json"
+STATUS_RATE_1M_JSON = RUNTIME / "status_rate_1m.json"
 # 15-entry rolling history of telegrams/min (one row per finished minute).
 # Feeds the sparkline in the WebGUI Statystyki view.
-STATUS_RATE_HISTORY_FILE = BASE / "status_rate_history.tsv"
-STATUS_BRIDGE_START_FILE = BASE / "status_bridge_start.txt"
+STATUS_RATE_HISTORY_FILE = RUNTIME / "status_rate_history.tsv"
+STATUS_BRIDGE_START_FILE = RUNTIME / "status_bridge_start.txt"
 # ESP diagnostic summary written by background subscriber in bridge.sh
-STATUS_ESP_DIAG_JSON = BASE / "status_esp_diag.json"
+STATUS_ESP_DIAG_JSON = RUNTIME / "status_esp_diag.json"
 # Always-on ESP radio health pulse (wmbus/+/health), written by bridge.sh's
 # background subscriber. Published every 60 s regardless of the ESP's
 # diagnostic_mode, so it works even when diagnostics are off. Carries
 # uptime_s, rx_total, sec_since_last_rx (proof the RX path is alive, not just
 # the loop), chip and listen_mode. _bridge_rx_epoch = freshness stamp.
-STATUS_ESP_HEALTH_JSON = BASE / "status_esp_health.json"
+STATUS_ESP_HEALTH_JSON = RUNTIME / "status_esp_health.json"
 # Always-on ESP meter flags (wmbus/+/meters), written by bridge.sh's background
 # subscriber as a map keyed by ESP device: {"<device>": {"target","highlight"[],
 # "_bridge_rx_epoch"}}. Union of target + highlight (across fresh entries) is the
 # set of meters the ESP is explicitly configured for; the WebUI badges matching
 # meters/candidates so an ESP-vs-add-on mismatch is visible.
-STATUS_ESP_METERS_JSON = BASE / "status_esp_meters.json"
+STATUS_ESP_METERS_JSON = RUNTIME / "status_esp_meters.json"
 # Opt-in per-meter reception windows: the ESP's diag meter_snapshot (batch of
 # highlight meters, every summary_15min/60min), written per ESP device by the
 # wmbus/+/diag/meter_snapshot subscriber. webui turns count_window / elapsed_s /
 # avg_interval_s into a per-meter reception % (the real quality signal, #15) —
 # best across ESPs. Absent when diagnostics are off / no highlight_meters.
-STATUS_ESP_METER_SNAPSHOT_JSON = BASE / "status_esp_meter_snapshot.json"
+STATUS_ESP_METER_SNAPSHOT_JSON = RUNTIME / "status_esp_meter_snapshot.json"
 # Per-meter reception window (wmbus/+/diag/meter/<id>/<mode>/window/<trigger>).
 # Same reception fields as the 15-min snapshot but published per meter on the
 # frequent "count" trigger (every N telegrams), so the per-ESP % populates in
 # minutes instead of waiting for the 15-min batch. Map keyed dev -> id -> fields.
-STATUS_ESP_METER_WINDOW_JSON = BASE / "status_esp_meter_window.json"
+STATUS_ESP_METER_WINDOW_JSON = RUNTIME / "status_esp_meter_window.json"
 # Wired M-Bus runtime state, written by bridge-lib/14-mbus.sh. Access ("can the
 # port be opened") is established here in webui.py; this file carries the other
 # half, which only the process reading the decoder's output can know: whether
@@ -120,61 +146,63 @@ STATUS_ESP_METER_WINDOW_JSON = BASE / "status_esp_meter_window.json"
 # one symptom - nothing arrives.
 # {state, device, bus_alias, meters_configured, meters_skipped, updated,
 #  meters: {"<name>": {id, last_ok_epoch, clash_with}}}
-STATUS_MBUS_JSON = BASE / "status_mbus.json"
+STATUS_MBUS_JSON = RUNTIME / "status_mbus.json"
 # Meter -> ESP device attribution (bridge.sh, from the RAW topic itself). Used
 # only for the wM-Bus band fallback: combined with that device's listen_mode
 # from status_esp_health.json it gives an approximate band for meters that have
 # no per-meter diagnostic topic (no highlight_meters on the ESP).
 # Format: meter_id<TAB>device_name<TAB>last_seen_epoch
-STATUS_ESP_METER_DEVICE_FILE = BASE / "status_esp_meter_device.tsv"
+STATUS_ESP_METER_DEVICE_FILE = RUNTIME / "status_esp_meter_device.tsv"
 # Session-scoped, bridge-observed reception counts. These rows all start at the
 # same bridge start and therefore replace ESP-self-referential diagnostic counts
 # when available.
-STATUS_ESP_METER_RECEPTION_FILE = BASE / "status_esp_meter_reception.tsv"
+STATUS_ESP_METER_RECEPTION_FILE = RUNTIME / "status_esp_meter_reception.tsv"
 # Same session view populated from structured ESP RF metadata. When rows exist
 # for a meter, these replace /telegram-derived counts for that meter.
-STATUS_ESP_RX_RECEPTION_FILE = BASE / "status_esp_rx_reception.tsv"
-STATUS_ESP_RX_MODE_FILE = BASE / "status_esp_rx_mode.tsv"
-STATUS_ESP_RX_SEQUENCE_FILE = BASE / "status_esp_rx_sequence.tsv"
-STATUS_ESP_RX_BOOTS_FILE = BASE / "status_esp_rx_boots.tsv"
-STATUS_ESP_RX_CLOCK_FILE = BASE / "status_esp_rx_clock.tsv"
-STATUS_ESP_CONFIG_FILE = BASE / "status_esp_config.json"
+STATUS_ESP_RX_RECEPTION_FILE = RUNTIME / "status_esp_rx_reception.tsv"
+STATUS_ESP_RX_MODE_FILE = RUNTIME / "status_esp_rx_mode.tsv"
+STATUS_ESP_RX_SEQUENCE_FILE = RUNTIME / "status_esp_rx_sequence.tsv"
+STATUS_ESP_RX_BOOTS_FILE = RUNTIME / "status_esp_rx_boots.tsv"
+STATUS_ESP_RX_CLOCK_FILE = RUNTIME / "status_esp_rx_clock.tsv"
+STATUS_ESP_CONFIG_FILE = RUNTIME / "status_esp_config.json"
 ESP_RF_RX_HISTORY_FILE = BASE / "esp_rf_rx_history.jsonl"
 # Isolated dev-radio evidence (fifo_sample and pipeline_drop). Unlike the
 # ordinary /rx metadata this can include raw radio bytes by explicit design.
 ESP_DIAG_HISTORY_FILE = BASE / "esp_diag_history.jsonl"
 # ESP events TSV and per-event detail files (written by bridge.sh event subscriber)
-STATUS_ESP_EVENTS_FILE = BASE / "status_esp_events.tsv"
-STATUS_ESP_SUGGESTION_FILE = BASE / "status_esp_suggestion.json"
-STATUS_ESP_BOOT_FILE = BASE / "status_esp_boot.json"
+STATUS_ESP_EVENTS_FILE = RUNTIME / "status_esp_events.tsv"
+STATUS_ESP_SUGGESTION_FILE = RUNTIME / "status_esp_suggestion.json"
+STATUS_ESP_BOOT_FILE = RUNTIME / "status_esp_boot.json"
 # Per-candidate preview values written by short-lived one-shot decoders
 # using PREVIEW_BASE/etc/wmbusmeters.d/.
-STATUS_CANDIDATE_VALUES_FILE = BASE / "status_candidate_values.tsv"
+STATUS_CANDIDATE_VALUES_FILE = RUNTIME / "status_candidate_values.tsv"
 # Per-candidate preview lifecycle state: pending | decoded_value | decoded_without_numeric_value
-STATUS_CANDIDATE_PREVIEW_STATE_FILE = BASE / "status_candidate_preview_state.tsv"
+STATUS_CANDIDATE_PREVIEW_STATE_FILE = RUNTIME / "status_candidate_preview_state.tsv"
 # Per-ESP-device telegram tracking — written by bridge.sh's background
 # subscriber listening to RAW_TOPIC. The PRIMARY source of truth for which
 # ESPs were seen in the current bridge session (works without ESP diagnostics).
 # Format: device<TAB>last_seen_epoch<TAB>last_topic<TAB>telegram_count
-STATUS_ESP_TELEGRAM_DEVICES_FILE = BASE / "status_esp_telegram_devices.tsv"
+STATUS_ESP_TELEGRAM_DEVICES_FILE = RUNTIME / "status_esp_telegram_devices.tsv"
 # MQTT->HA healthcheck: presence of HA's MQTT integration on the broker the
 # bridge uses, from HA's retained birth message. Written by bridge.sh.
 # Format: state<TAB>epoch  (state = online | offline).
-STATUS_HA_PRESENCE_FILE = BASE / "status_ha_presence.txt"
+STATUS_HA_PRESENCE_FILE = RUNTIME / "status_ha_presence.txt"
 # Broker identity (brand<TAB>version) from $SYS, written by bridge.sh. Used to
 # label the MQTT tile, e.g. "Mosquitto 2.1.2 (native)" / "EMQX 5.8.8 (other)".
-STATUS_BROKER_INFO_FILE = BASE / "status_broker_info.txt"
+STATUS_BROKER_INFO_FILE = RUNTIME / "status_broker_info.txt"
 # Opt-in HA entity verification verdict written by bridge-lib/13-esp.sh's
 # worker. One of: verified | not_created | unavailable | pending. Joined with
 # ha_link in status_model — verified > native > birth.
-STATUS_HA_VERIFICATION_FILE = BASE / "status_ha_verification.txt"
+STATUS_HA_VERIFICATION_FILE = RUNTIME / "status_ha_verification.txt"
 # wmbusmeters version triplet written once at bridge start by bridge.sh.
 # Format: runtime_version<TAB>build_version<TAB>build_commit.
-STATUS_WMBUSMETERS_VERSION_FILE = BASE / "status_wmbusmeters_version.txt"
+STATUS_WMBUSMETERS_VERSION_FILE = RUNTIME / "status_wmbusmeters_version.txt"
+# Storage medium of the data directory, written once at bridge start.
+STATUS_STORAGE_FILE = RUNTIME / "status_storage.json"
 # Liveness heartbeat stamped by bridge.sh every few seconds, independent of
 # telegram flow. A stale heartbeat means the bridge is down or run.sh is still
 # waiting for the broker — the rest of the snapshot is then stale, not live.
-STATUS_HEARTBEAT_FILE = BASE / "status_heartbeat.txt"
+STATUS_HEARTBEAT_FILE = RUNTIME / "status_heartbeat.txt"
 # Startup-failure marker written by run.sh before a FATAL exit (broker could
 # not be resolved, so bridge.sh never started). Format: code<TAB>detail.
 # run.sh clears it on every successful broker resolution. Rendered by the
@@ -186,7 +214,7 @@ STATUS_RUN_ERROR_FILE = BASE / "status_run_error.txt"
 # Cleared on the first successful publish or received telegram. Rendered as a
 # banner even though the heartbeat is alive — a wrong password otherwise
 # manifests only as a quiet offline MQTT tile.
-STATUS_BROKER_ERROR_FILE = BASE / "status_broker_error.txt"
+STATUS_BROKER_ERROR_FILE = RUNTIME / "status_broker_error.txt"
 # LISTEN-only config dir — separate from /data/etc which holds the user's
 # permanent meters. This directory must stay empty so the secondary wmbusmeters
 # process remains a true always-on discovery listener.
@@ -197,7 +225,7 @@ PREVIEW_BASE = BASE / "preview"
 PREVIEW_METER_DIR = PREVIEW_BASE / "etc" / "wmbusmeters.d"
 RELOAD_LISTEN_FLAG = BASE / ".reload_listen"  # legacy cleanup only
 RELOAD_PIPELINE_FLAG = BASE / ".reload_pipeline"
-STATUS_PIPELINE_RELOAD_FILE = BASE / "status_pipeline_reload.txt"
+STATUS_PIPELINE_RELOAD_FILE = RUNTIME / "status_pipeline_reload.txt"
 ZERO_AES_KEY = "00000000000000000000000000000000"
 
 
@@ -1285,7 +1313,7 @@ def _cleanup_preview_cache(meter_id: str, remove_preview_file: bool = True) -> N
     _remove_id_from_tsv(STATUS_CANDIDATE_PREVIEW_STATE_FILE, meter_id)
 
     try:
-        attempt_file = BASE / ".preview_attempts" / meter_id
+        attempt_file = RUNTIME / ".preview_attempts" / meter_id
         if attempt_file.exists():
             attempt_file.unlink()
     except OSError:
@@ -3349,6 +3377,16 @@ def status_model(data: dict) -> dict:
     except OSError:
         pass
 
+    # Storage medium of /data (bridge_ledger.py storage, written at bridge start).
+    storage: dict = {}
+    try:
+        _st = json.loads(STATUS_STORAGE_FILE.read_text(encoding="utf-8"))
+        if isinstance(_st, dict):
+            storage = {k: str(_st.get(k) or "") for k in
+                       ("kind", "partition", "disk", "rotational", "model", "vm", "error")}
+    except (OSError, ValueError):
+        pass
+
     # Bridge liveness: bridge.sh stamps status_heartbeat.txt every few seconds
     # regardless of telegram flow. A stale heartbeat (or none) means the bridge is
     # down or run.sh is still waiting for the broker, so the whole snapshot is
@@ -3437,6 +3475,7 @@ def status_model(data: dict) -> dict:
         "wmbusmeters_runtime": wmbusmeters_runtime,
         "wmbusmeters_build_version": wmbusmeters_build_version,
         "wmbusmeters_build_commit": wmbusmeters_build_commit,
+        "storage": storage,
     }
 
 
