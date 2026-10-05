@@ -224,4 +224,21 @@ run_error_clear
 export MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASS
 
 bashio::log.info "Starting core bridge..."
-exec /usr/bin/bridge.sh
+# bridge.sh waits on its decode pipeline in the foreground, and bash runs a
+# trap only when that pipeline ends, so a SIGTERM to bridge.sh alone sat
+# there until s6 gave up ("s6-svwait: fatal: timed out") and killed
+# everything - the last save of the RAM status directory included. bridge.sh
+# therefore runs in its own process group, and SIGTERM goes to the whole
+# group: the pipeline ends at once and bridge.sh's own handler runs.
+if ! command -v setsid >/dev/null 2>&1; then
+  exec /usr/bin/bridge.sh
+fi
+setsid /usr/bin/bridge.sh &
+BRIDGE_PID=$!
+_forward_stop() { kill -TERM -- "-${BRIDGE_PID}" 2>/dev/null || kill -TERM "${BRIDGE_PID}" 2>/dev/null || true; }
+trap _forward_stop TERM INT
+rc=0
+while kill -0 "${BRIDGE_PID}" 2>/dev/null; do
+  wait "${BRIDGE_PID}" && rc=0 || rc=$?
+done
+exit "${rc}"

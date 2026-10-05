@@ -695,6 +695,17 @@ jego brak niczego nie rozstrzyga, bo ten komunikat nie zawsze jest retained.
 Mocniejszym sprawdzeniem jest opcjonalna encja kontrolna przez HA Core API.
 Okno ma również przycisk **Wymuś ponowne discovery**.
 
+### „Czy dodatek zużywa kartę SD albo spowalnia dysk HDD?"
+
+Dodatek co kilka sekund przepisuje swoje pliki stanu (kandydaci, odbiór per
+płytka, liczniki). Od 1.5.78 trzyma je w pamięci RAM (`/tmp` w dodatku to tmpfs)
+i zapisuje na dysk jako jeden plik `/data/runtime_state.tar`: co minutę na SSD
+lub NVMe, co dziesięć minut na HDD, eMMC lub karcie SD, oraz przy zatrzymaniu
+dodatku; przy starcie odtwarza je z tego pliku. Po zaniku zasilania może
+brakować statystyk z ostatnich minut; liczników, kluczy i opcji to nie dotyczy.
+Wykryty nośnik widać w WebUI: Panel → **wmbusmeters** → **Nośnik danych** (w
+maszynie wirtualnej dysk wirtualny podaje to, co ustawi hypervisor).
+
 ### „Chcę zacząć od zera — usuń wszystkie liczniki"
 
 W widoku USTAWIENIA przycisk **Wyzeruj add-on** usuwa WSZYSTKIE skonfigurowane

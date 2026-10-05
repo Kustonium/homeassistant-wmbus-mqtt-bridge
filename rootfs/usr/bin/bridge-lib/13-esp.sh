@@ -184,7 +184,7 @@ ESP_SUBSCRIBER_PIDS=""
 # bridge.sh injects _bridge_rx_epoch so webui.py can check freshness.
 # When fresh (<90 s) webui.py uses ESP's exact "total" count as the live rate
 # instead of its own per-minute counting — more accurate source of truth.
-STATUS_ESP_DIAG_FILE="${BASE}/status_esp_diag.json"
+STATUS_ESP_DIAG_FILE="${RUNTIME:-${BASE}}/status_esp_diag.json"
 (
   while true; do
     _sub_t0="$(epoch_now)"
@@ -219,7 +219,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 # their own entry — the aggregate verdict in webui.py can then surface a single
 # stopped ESP instead of hiding it. Enriches — does NOT replace — the per-device
 # telegram tracker, which stays the source of truth for ESP liveness.
-STATUS_ESP_HEALTH_FILE="${BASE}/status_esp_health.json"
+STATUS_ESP_HEALTH_FILE="${RUNTIME:-${BASE}}/status_esp_health.json"
 (
   while true; do
     _sub_t0="$(epoch_now)"
@@ -260,7 +260,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 # fresh entries and badges matching meters/candidates ("flagged on the ESP"), so
 # the user can spot an ESP-vs-add-on mismatch. Empty target/highlight (the common
 # listen-only case) simply yields no badges.
-STATUS_ESP_METERS_FILE="${BASE}/status_esp_meters.json"
+STATUS_ESP_METERS_FILE="${RUNTIME:-${BASE}}/status_esp_meters.json"
 
 # Background subscriber for per-meter RSSI (wmbus/<dev>/rssi/<meter_id>).
 # OPT-IN on the firmware side: the ESP publishes this topic only when its YAML
@@ -317,7 +317,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 # turns count_window/elapsed_s/avg_interval_s into a per-meter reception %, the real
 # quality signal (RSSI was dropped — see BENCHMARKS.md). Stored as a MAP keyed by
 # ESP device so multi-ESP best-of can be computed. Independent of /health,/meters.
-STATUS_ESP_METER_SNAPSHOT_FILE="${BASE}/status_esp_meter_snapshot.json"
+STATUS_ESP_METER_SNAPSHOT_FILE="${RUNTIME:-${BASE}}/status_esp_meter_snapshot.json"
 (
   while true; do
     _sub_t0="$(epoch_now)"
@@ -353,7 +353,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 # in webui.py populates within minutes and for every ESP, instead of waiting for
 # a board's first 15-min summary_15min batch. Stored as a nested MAP keyed by ESP
 # device then meter id, so webui.py can merge it with the snapshot per-ESP data.
-STATUS_ESP_METER_WINDOW_FILE="${BASE}/status_esp_meter_window.json"
+STATUS_ESP_METER_WINDOW_FILE="${RUNTIME:-${BASE}}/status_esp_meter_window.json"
 (
   while true; do
     _sub_t0="$(epoch_now)"
@@ -412,9 +412,9 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 # Subscribes to bare diag topic (dropped/truncated/rx_path) and all subtopics.
 # Writes TSV: epoch<TAB>evtype<TAB>topic<TAB>payload  (rolling 200 lines).
 # Extracts suggestion and boot events to their own JSON files for webui detail panels.
-STATUS_ESP_EVENTS_FILE="${BASE}/status_esp_events.tsv"
-STATUS_ESP_SUGGESTION_FILE="${BASE}/status_esp_suggestion.json"
-STATUS_ESP_BOOT_FILE="${BASE}/status_esp_boot.json"
+STATUS_ESP_EVENTS_FILE="${RUNTIME:-${BASE}}/status_esp_events.tsv"
+STATUS_ESP_SUGGESTION_FILE="${RUNTIME:-${BASE}}/status_esp_suggestion.json"
+STATUS_ESP_BOOT_FILE="${RUNTIME:-${BASE}}/status_esp_boot.json"
 touch "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
 if [[ "${ESP_DIAG_HISTORY_ENABLED:-false}" == "true" ]]; then
   touch "${ESP_DIAG_HISTORY_FILE}" 2>/dev/null || true

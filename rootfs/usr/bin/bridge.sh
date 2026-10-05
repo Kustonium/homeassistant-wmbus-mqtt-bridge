@@ -54,6 +54,15 @@ need_bin sed
 need_bin tr
 
 BASE="${WMBUS_BASE:-/data}"
+# The status_* files are rewritten every few seconds; they live in RUNTIME, a
+# RAM directory when /tmp is a tmpfs (the add-on's), saved to
+# ${BASE}/runtime_state.tar every few minutes and at stop and restored here.
+# Without a tmpfs /tmp, RUNTIME is BASE, as before. webui.py picks the same.
+RUNTIME="$(python3 "${BRIDGE_LEDGER}" runtime --base "${BASE}" 2>/dev/null || true)"
+[[ -n "${RUNTIME}" ]] || RUNTIME="${BASE}"
+export WMBUS_RUNTIME="${RUNTIME}"
+log "$(python3 "${BRIDGE_LEDGER}" runtime-restore --base "${BASE}" --runtime "${RUNTIME}" 2>&1 \
+  || echo "runtime: restore into ${RUNTIME} failed")"
 OPTIONS_JSON="${BASE}/options.json"
 ETC_DIR="${BASE}/etc"
 METER_DIR="${ETC_DIR}/wmbusmeters.d"
@@ -66,25 +75,25 @@ mkdir -p "${ETC_DIR}" "${METER_DIR}"
 # Runtime status files for optional read-only Ingress dashboard
 # ------------------------------------------------------------
 # shellcheck disable=SC2034
-STATUS_JSON="${BASE}/status.json"
-STATUS_METERS_FILE="${BASE}/status_meters.tsv"
-STATUS_CANDIDATES_FILE="${BASE}/status_candidates.tsv"
-STATUS_EVENTS_FILE="${BASE}/status_events.tsv"
-STATUS_SEEN_FILE="${BASE}/status_seen.tsv"
-STATUS_RAW_COUNT_FILE="${BASE}/status_raw_count.txt"
-STATUS_LAST_RAW_FILE="${BASE}/status_last_raw_seen.txt"
-STATUS_RECENT_RAW_FILE="${BASE}/status_recent_raw.tsv"
-STATUS_CANDIDATE_ANALYSIS_FILE="${BASE}/status_candidate_analysis.tsv"
-STATUS_CANDIDATE_RAW_FILE="${BASE}/status_candidate_raw.tsv"
+STATUS_JSON="${RUNTIME}/status.json"
+STATUS_METERS_FILE="${RUNTIME}/status_meters.tsv"
+STATUS_CANDIDATES_FILE="${RUNTIME}/status_candidates.tsv"
+STATUS_EVENTS_FILE="${RUNTIME}/status_events.tsv"
+STATUS_SEEN_FILE="${RUNTIME}/status_seen.tsv"
+STATUS_RAW_COUNT_FILE="${RUNTIME}/status_raw_count.txt"
+STATUS_LAST_RAW_FILE="${RUNTIME}/status_last_raw_seen.txt"
+STATUS_RECENT_RAW_FILE="${RUNTIME}/status_recent_raw.tsv"
+STATUS_CANDIDATE_ANALYSIS_FILE="${RUNTIME}/status_candidate_analysis.tsv"
+STATUS_CANDIDATE_RAW_FILE="${RUNTIME}/status_candidate_raw.tsv"
 # Last full decoded JSON per configured meter — written by status_meter_seen,
 # read by webui.py to show the "published fields" expander on the meters view.
 # Format: id<TAB>iso_timestamp<TAB>json_line
-STATUS_METER_LAST_JSON_FILE="${BASE}/status_meter_last_json.tsv"
+STATUS_METER_LAST_JSON_FILE="${RUNTIME}/status_meter_last_json.tsv"
 # Discovery Doctor: webui.py touches the request flag; the heartbeat ticker
 # runs discovery_doctor_probe (09-discovery.sh) and writes the JSON result.
 DISCOVERY_DOCTOR_REQUEST_FILE="${BASE}/.discovery_doctor_request"
 # shellcheck disable=SC2034  # consumed by discovery_doctor_probe (sourced lib)
-STATUS_DISCOVERY_DOCTOR_FILE="${BASE}/status_discovery_doctor.json"
+STATUS_DISCOVERY_DOCTOR_FILE="${RUNTIME}/status_discovery_doctor.json"
 # Factory reset: webui.py empties options.json (meters=[]) and writes this flag
 # with the removed meter ids (one per line); the heartbeat ticker clears their
 # retained discovery, wipes runtime state and soft-reloads the pipeline so the
@@ -94,14 +103,14 @@ FACTORY_RESET_REQUEST_FILE="${BASE}/.factory_reset_request"
 # wmbusmeters warnings by status_detect_key_problem; cleared by the next
 # successfully decoded JSON (status_meter_seen). Read by webui.py.
 # Format: id<TAB>reason<TAB>iso_timestamp
-STATUS_METER_KEY_PROBLEM_FILE="${BASE}/status_meter_key_problem.tsv"
+STATUS_METER_KEY_PROBLEM_FILE="${RUNTIME}/status_meter_key_problem.tsv"
 # Per-candidate decoded value preview — written by _store_candidate_value when
 # a preview one-shot decodes a candidate's RAW frame.
 # Format: id<TAB>value<TAB>value_key<TAB>iso_timestamp
-STATUS_CANDIDATE_VALUES_FILE="${BASE}/status_candidate_values.tsv"
+STATUS_CANDIDATE_VALUES_FILE="${RUNTIME}/status_candidate_values.tsv"
 # Per-candidate preview lifecycle state: pending | decoded_value | decoded_without_numeric_value
 # Format: id<TAB>state<TAB>iso_timestamp<TAB>note
-STATUS_CANDIDATE_PREVIEW_STATE_FILE="${BASE}/status_candidate_preview_state.tsv"
+STATUS_CANDIDATE_PREVIEW_STATE_FILE="${RUNTIME}/status_candidate_preview_state.tsv"
 # Preview one-shot decoder paths. Defined here (derived purely from BASE) so the
 # liveness/maintenance ticker forked below can reference PREVIEW_METER_DIR; the
 # directory mkdir and conf-file creation still happen later in startup.
@@ -113,17 +122,17 @@ PREVIEW_CONF_FILE="${PREVIEW_ETC}/wmbusmeters.conf"
 # broker the bridge uses, inferred from HA's retained birth message
 # (<discovery_prefix>/status). Written by the HA-presence subscriber in
 # start_esp_subscribers. Format: state<TAB>epoch  (state = online | offline).
-STATUS_HA_PRESENCE_FILE="${BASE}/status_ha_presence.txt"
+STATUS_HA_PRESENCE_FILE="${RUNTIME}/status_ha_presence.txt"
 # Liveness heartbeat — stamped every few seconds by the background ticker started
 # after the ESP subscribers, regardless of telegram flow. Lets the WebUI tell
 # "bridge alive but idle" apart from "bridge down / run.sh waiting for broker"
 # (status.json alone goes stale during quiet periods too). Format: epoch.
-STATUS_HEARTBEAT_FILE="${BASE}/status_heartbeat.txt"
+STATUS_HEARTBEAT_FILE="${RUNTIME}/status_heartbeat.txt"
 # Broker identity from $SYS, written by the broker-info subscriber: brand+version
 # (Mosquitto via $SYS/broker/version, EMQX via $SYS/brokers/+/sysdescr+version).
 # Lets the WebUI label the MQTT tile "Mosquitto 2.x (native)" / "EMQX 5.x (other)".
 # Format: brand<TAB>version. Session-scoped (the broker can change between runs).
-STATUS_BROKER_INFO_FILE="${BASE}/status_broker_info.txt"
+STATUS_BROKER_INFO_FILE="${RUNTIME}/status_broker_info.txt"
 # Broker-connection failure marker, written by wait_for_mqtt when the broker
 # refuses the connection WHILE THE BRIDGE IS RUNNING. Format: code<TAB>host:port
 # (codes: auth_rejected, unreachable). Cleared on the first successful publish
@@ -131,19 +140,19 @@ STATUS_BROKER_INFO_FILE="${BASE}/status_broker_info.txt"
 # offline MQTT tile alone proved too quiet when a wrong password silently
 # blocked everything (observed live). Distinct from status_run_error.txt,
 # which covers run.sh failing BEFORE the bridge ever starts.
-STATUS_BROKER_ERROR_FILE="${BASE}/status_broker_error.txt"
+STATUS_BROKER_ERROR_FILE="${RUNTIME}/status_broker_error.txt"
 # HA entity verification (opt-in, see verify_ha_entities option): worker writes
 # one of verified | not_created | unavailable | pending here, after asking the
 # HA Core API whether the canary entity (sensor.wmbus_bridge_health) exists.
 # Format: state<TAB>epoch  (epoch = last check).
-STATUS_HA_VERIFICATION_FILE="${BASE}/status_ha_verification.txt"
+STATUS_HA_VERIFICATION_FILE="${RUNTIME}/status_ha_verification.txt"
 # wmbusmeters version triplet — written once at start. webui.py surfaces it on
 # the wmbusmeters workspace panel. Format: runtime<TAB>build_version<TAB>build_commit.
-STATUS_WMBUSMETERS_VERSION_FILE="${BASE}/status_wmbusmeters_version.txt"
+STATUS_WMBUSMETERS_VERSION_FILE="${RUNTIME}/status_wmbusmeters_version.txt"
 # File-backed count of officially configured meters. Several pipelines run in
 # subshells and can outlive a soft reload, so their inherited shell variable may
 # be stale. This file is the shared runtime source of truth.
-STATUS_OFFICIAL_METERS_COUNT_FILE="${BASE}/status_official_meters_count.txt"
+STATUS_OFFICIAL_METERS_COUNT_FILE="${RUNTIME}/status_official_meters_count.txt"
 # Per-ESP-device telegram tracking — written by the background MQTT subscriber
 # that listens to the RAW topic itself. The "+" wildcard segment carries the
 # device name (e.g. wmbus/xiaoseed/telegram → "xiaoseed"). Lets the WebGUI
@@ -151,7 +160,7 @@ STATUS_OFFICIAL_METERS_COUNT_FILE="${BASE}/status_official_meters_count.txt"
 # The file is cleared at bridge start, so rows describe devices seen in the
 # current bridge session via the configured RAW_TOPIC.
 # Format: device_name<TAB>last_seen_epoch<TAB>last_topic<TAB>telegram_count
-STATUS_ESP_TELEGRAM_DEVICES_FILE="${BASE}/status_esp_telegram_devices.tsv"
+STATUS_ESP_TELEGRAM_DEVICES_FILE="${RUNTIME}/status_esp_telegram_devices.tsv"
 # Which ESP device delivered a given meter's telegrams — written by the same
 # background subscriber, from the RAW topic itself. Combined with that device's
 # listen_mode (status_esp_health.json, always published) this lets webui.py show
@@ -160,35 +169,35 @@ STATUS_ESP_TELEGRAM_DEVICES_FILE="${BASE}/status_esp_telegram_devices.tsv"
 # the band the receiving node was listening on, not a property read out of the
 # telegram. Exact per-meter "mode" from the diag topics always wins.
 # Format: meter_id<TAB>device_name<TAB>last_seen_epoch
-STATUS_ESP_METER_DEVICE_FILE="${BASE}/status_esp_meter_device.tsv"
+STATUS_ESP_METER_DEVICE_FILE="${RUNTIME}/status_esp_meter_device.tsv"
 # Per-meter, per-ESP counts measured by this bridge session from RAW_TOPIC.
 # Unlike ESP diagnostic percentages, every row has the same bridge-session
 # denominator. Format: id<TAB>device<TAB>first_seen<TAB>last_seen<TAB>count<TAB>last_topic
-STATUS_ESP_METER_RECEPTION_FILE="${BASE}/status_esp_meter_reception.tsv"
+STATUS_ESP_METER_RECEPTION_FILE="${RUNTIME}/status_esp_meter_reception.tsv"
 # Persistent bounded event history used to recover the exact first/last receive
 # time after the session state has been reset. JSONL contains no RAW payload.
 ESP_RX_HISTORY_FILE="${BASE}/esp_rx_history.jsonl"
 # Structured RF-receive metadata published by new ESP firmware on
 # wmbus/<device>/rx. Kept separate from the legacy /telegram-derived history so
 # the two observation points can never be mistaken for one another.
-STATUS_ESP_RX_RECEPTION_FILE="${BASE}/status_esp_rx_reception.tsv"
+STATUS_ESP_RX_RECEPTION_FILE="${RUNTIME}/status_esp_rx_reception.tsv"
 # Link mode (T1/C1/S1) each meter's /rx frames arrived on, counted per mode.
 # A meter can transmit on two bands at once (Techem sends T1 and C1), and a
 # node in listen_mode both cannot tell them apart from its configuration.
-STATUS_ESP_RX_MODE_FILE="${BASE}/status_esp_rx_mode.tsv"
+STATUS_ESP_RX_MODE_FILE="${RUNTIME}/status_esp_rx_mode.tsv"
 ESP_RF_RX_HISTORY_FILE="${BASE}/esp_rf_rx_history.jsonl"
 # Raw radio diagnostic evidence is intentionally separate from /rx metadata.
 # This is used by the isolated dev add-on for LR1121 FIFO/drop investigation.
 ESP_DIAG_HISTORY_FILE="${BASE}/esp_diag_history.jsonl"
-STATUS_ESP_RX_SEQUENCE_FILE="${BASE}/status_esp_rx_sequence.tsv"
+STATUS_ESP_RX_SEQUENCE_FILE="${RUNTIME}/status_esp_rx_sequence.tsv"
 # One row per ESP boot. A restart resets the sequence counters, so without
 # this the evidence of the restart is destroyed by the restart itself.
-STATUS_ESP_RX_BOOTS_FILE="${BASE}/status_esp_rx_boots.tsv"
+STATUS_ESP_RX_BOOTS_FILE="${RUNTIME}/status_esp_rx_boots.tsv"
 # ESP-reported reception time against bridge time, per board.
-STATUS_ESP_RX_CLOCK_FILE="${BASE}/status_esp_rx_clock.tsv"
+STATUS_ESP_RX_CLOCK_FILE="${RUNTIME}/status_esp_rx_clock.tsv"
 # Retained per-source snapshot of the effective ESP configuration.
 # One JSON map source -> {radio, lines, epoch}; refreshed once per ESP boot.
-STATUS_ESP_CONFIG_FILE="${BASE}/status_esp_config.json"
+STATUS_ESP_CONFIG_FILE="${RUNTIME}/status_esp_config.json"
 SEARCH_MATCHES_FILE="${BASE}/search_matches.tsv"
 SEARCH_STATUS_FILE="${BASE}/search_status.json"
 # discovery_published flag — file-backed (see write_status_json). The raw-counter
@@ -197,7 +206,7 @@ SEARCH_STATUS_FILE="${BASE}/search_status.json"
 # frequent raw-counter writes. The file is the shared source of truth. Cleared
 # once per add-on start so the HA tile shows "pending" until discovery is
 # (re)published this session.
-STATUS_DISCOVERY_FLAG="${BASE}/status_discovery_published.flag"
+STATUS_DISCOVERY_FLAG="${RUNTIME}/status_discovery_published.flag"
 rm -f "${STATUS_DISCOVERY_FLAG}" 2>/dev/null || true
 
 # shellcheck disable=SC2034
@@ -220,18 +229,20 @@ STATUS_LAST_EVENT="starting"
 # Per-minute rate tracking: updated on every incoming RAW telegram.
 # WebGUI reads status_rate_1m.json to show live current/prev minute counts.
 # shellcheck disable=SC2034
-STATUS_RATE_1M_FILE="${BASE}/status_rate_1m.json"
+STATUS_RATE_1M_FILE="${RUNTIME}/status_rate_1m.json"
 # Per-minute history (rolling 15 entries) — feeds the sparkline in the WebGUI
 # Statystyki view. Each row: epoch_minute<TAB>telegram_count. Appended every
 # time a minute boundary is crossed; trimmed back to 15 rows.
-STATUS_RATE_HISTORY_FILE="${BASE}/status_rate_history.tsv"
-STATUS_BRIDGE_START_FILE="${BASE}/status_bridge_start.txt"
+STATUS_RATE_HISTORY_FILE="${RUNTIME}/status_rate_history.tsv"
+STATUS_BRIDGE_START_FILE="${RUNTIME}/status_bridge_start.txt"
 # shellcheck disable=SC2034  # read by 13-esp.sh (sourced lib)
 # Last RSSI reported per meter id and ESP, one row per pair:
 # "<id>\t<dbm>\t<source esp>\t<epoch>".
 # Filled by an opt-in ESP publication (wmbus/<dev>/rssi/<meter_id>); absent
 # unless the firmware is configured to send it, which is the normal case.
-STATUS_RSSI_FILE="${BASE}/status_rssi.tsv"
+STATUS_RSSI_FILE="${RUNTIME}/status_rssi.tsv"
+# What the data directory is stored on, written once at start (WebUI panel).
+STATUS_STORAGE_FILE="${RUNTIME}/status_storage.json"
 
 touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_METER_LAST_JSON_FILE}" "${STATUS_METER_KEY_PROBLEM_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${STATUS_ESP_METER_DEVICE_FILE}" "${STATUS_ESP_METER_RECEPTION_FILE}" "${ESP_RX_HISTORY_FILE}" "${STATUS_ESP_RX_RECEPTION_FILE}" "${STATUS_ESP_RX_MODE_FILE}" "${ESP_RF_RX_HISTORY_FILE}" "${ESP_DIAG_HISTORY_FILE}" "${STATUS_ESP_RX_SEQUENCE_FILE}" "${STATUS_ESP_RX_BOOTS_FILE}" "${STATUS_ESP_RX_CLOCK_FILE}" "${STATUS_ESP_CONFIG_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}" "${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" "${STATUS_BROKER_ERROR_FILE}"
 printf '0\n' > "${STATUS_OFFICIAL_METERS_COUNT_FILE}" 2>/dev/null || true
@@ -239,8 +250,8 @@ printf '0\n' > "${STATUS_OFFICIAL_METERS_COUNT_FILE}" 2>/dev/null || true
 rm -rf "${BASE}/.reload_listen_pending" 2>/dev/null || true
 # Session-scoped attempt counter dir — counts text-only telegrams per preview candidate
 # without JSON. Cleared on every bridge start so stale counts never carry over.
-rm -rf "${BASE}/.preview_attempts" 2>/dev/null || true
-mkdir -p "${BASE}/.preview_attempts" 2>/dev/null || true
+rm -rf "${RUNTIME}/.preview_attempts" 2>/dev/null || true
+mkdir -p "${RUNTIME}/.preview_attempts" 2>/dev/null || true
 : > "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" 2>/dev/null || true
 : > "${STATUS_ESP_METER_DEVICE_FILE}" 2>/dev/null || true
 : > "${STATUS_ESP_METER_RECEPTION_FILE}" 2>/dev/null || true
@@ -273,6 +284,25 @@ mkdir -p "${BASE}/.preview_attempts" 2>/dev/null || true
 
 # Record bridge start time for the WebGUI rate denominator fix.
 printf '%s\n' "$(epoch_now)" > "${STATUS_BRIDGE_START_FILE}" 2>/dev/null || true
+
+# What the data directory is stored on (NVMe, SSD, HDD, eMMC, SD), logged once
+# and shown in the WebUI. Nothing depends on it yet.
+log "$(python3 "${BRIDGE_SCRIPT_DIR:-/usr/bin}/bridge_ledger.py" storage --path "${BASE}" \
+  --json-file "${STATUS_STORAGE_FILE}" 2>/dev/null \
+  || echo "storage: ${BASE} on unknown (detection failed)")"
+# How often the RAM directory is saved: a minute on flash with a controller
+# (SSD, NVMe), ten on a spinning disk, eMMC or an SD card.
+case "$(jq -r '.kind // ""' "${STATUS_STORAGE_FILE}" 2>/dev/null)" in
+  nvme|ssd) _runtime_snapshot_default=60 ;;
+  *) _runtime_snapshot_default=600 ;;
+esac
+RUNTIME_SNAPSHOT_SECONDS="${RUNTIME_SNAPSHOT_SECONDS:-${_runtime_snapshot_default}}"
+[[ "${RUNTIME_SNAPSHOT_SECONDS}" =~ ^[0-9]+$ ]] || RUNTIME_SNAPSHOT_SECONDS=600
+runtime_snapshot() {
+  [[ "${RUNTIME}" != "${BASE}" ]] || return 0
+  python3 "${BRIDGE_LEDGER}" runtime-snapshot --base "${BASE}" --runtime "${RUNTIME}" \
+    || warn "runtime: snapshot of ${RUNTIME} to ${BASE} failed"
+}
 
 
 # ------------------------------------------------------------
@@ -416,6 +446,7 @@ start_esp_subscribers
 # idle" from "bridge down / run.sh waiting for the broker". Dies with bridge.sh.
 (
   _last_candidate_prune=0
+  _last_runtime_snapshot="$(epoch_now)"
   while true; do
     printf '%s\n' "$(epoch_now)" > "${STATUS_HEARTBEAT_FILE}.tmp" 2>/dev/null \
       && mv "${STATUS_HEARTBEAT_FILE}.tmp" "${STATUS_HEARTBEAT_FILE}" 2>/dev/null \
@@ -434,6 +465,10 @@ start_esp_subscribers
       # showing "decoding…" for a candidate that is never coming back.
       expire_stale_pending_previews || true
       _last_candidate_prune="${_hb_now}"
+    fi
+    if (( _hb_now - _last_runtime_snapshot >= RUNTIME_SNAPSHOT_SECONDS )); then
+      runtime_snapshot || true
+      _last_runtime_snapshot="${_hb_now}"
     fi
     # Discovery Doctor: WebUI requested a broker probe. Consume the flag
     # first so a slow probe cannot be re-triggered by the same request.
@@ -460,6 +495,8 @@ start_esp_subscribers
         clear_meter_discovery "${_fr_id}" || true
       done
       rm -f "${BASE}/status_"* "${BASE}/search_"* "${BASE}/seen_ids.txt" 2>/dev/null || true
+      # The status files live in RUNTIME; its snapshot would bring them back.
+      rm -f "${RUNTIME}/status_"* "${RUNTIME}/status.json" "${BASE}/runtime_state.tar" 2>/dev/null || true
       rm -f "${BASE}/preview/etc/wmbusmeters.d/meter-preview-"* \
             "${BASE}/listen/etc/wmbusmeters.d/meter-preview-"* 2>/dev/null || true
       # Recreate the empty status files exactly like startup does — the wipe
@@ -541,8 +578,15 @@ EOFPREVIEW
 rm -f "${LISTEN_METER_DIR}/meter-preview-"* 2>/dev/null || true
 rm -f "${BASE}/.reload_listen" "${BASE}/.reload_listen_req" 2>/dev/null || true
 rm -rf "${BASE}/.reload_listen_pending" 2>/dev/null || true
-rm -rf "${BASE}/.preview_decode_locks" "${BASE}/.preview_decode_slots" 2>/dev/null || true
-mkdir -p "${BASE}/.preview_decode_locks" "${BASE}/.preview_decode_last" "${BASE}/.preview_decode_slots" 2>/dev/null || true
+# The one-shot decodes create and remove a lock, a slot and a config
+# directory each - directory writes, which a spinning disk feels - so they
+# live in RUNTIME with the status files. Their old place in BASE is cleared.
+rm -rf "${RUNTIME}/.preview_decode_locks" "${RUNTIME}/.preview_decode_slots" 2>/dev/null || true
+mkdir -p "${RUNTIME}/.preview_decode_locks" "${RUNTIME}/.preview_decode_last" "${RUNTIME}/.preview_decode_slots" 2>/dev/null || true
+if [[ "${RUNTIME}" != "${BASE}" ]]; then
+  rm -rf "${BASE}/.preview_decode_locks" "${BASE}/.preview_decode_slots" "${BASE}/.preview_decode_last" \
+         "${BASE}/.preview_attempts" "${BASE}/.preview_decode."* 2>/dev/null || true
+fi
 
 # ------------------------------------------------------------
 # Search mode helpers
@@ -789,8 +833,19 @@ fi
 
 # Ensure LISTEN and the wired M-Bus instance die when the addon shuts down
 # (docker stop / s6 SIGTERM).
-_stop_extra_instances() { stop_listen_instance; stop_mbus_instance; }
-trap _stop_extra_instances EXIT TERM INT
+# The RAM directory is saved last, a moment after the ledger processes got the
+# same SIGTERM and wrote what they had collected.
+_STOPPED=0
+_stop_extra_instances() {
+  (( _STOPPED )) && return 0
+  _STOPPED=1
+  stop_listen_instance; stop_mbus_instance; sleep 1; runtime_snapshot || true
+}
+# SIGTERM/SIGINT end the script: a handler that only returned let the restart
+# loop below start the pipeline again, until s6 gave up waiting and killed it.
+_on_stop_signal() { log "stop: SIGTERM received, stopping"; _stop_extra_instances; exit 143; }
+trap _stop_extra_instances EXIT
+trap _on_stop_signal TERM INT
 
 # ------------------------------------------------------------
 # wait_for_mqtt

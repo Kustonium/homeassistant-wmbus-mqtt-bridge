@@ -44,8 +44,10 @@ import math
 import os
 import re
 import select
+import shutil
 import signal
 import sys
+import tarfile
 import tempfile
 import time
 from decimal import Decimal
@@ -1746,6 +1748,223 @@ def run(handler: Handler, stream=None, err=None) -> None:
         deferred.flush(err)
 
 
+# ── storage medium of the data directory ────────────────────────────────────
+# Logged once at start, nothing depends on it yet: the per-message tables are
+# written every FLUSH_EVERY_S, which a spinning disk feels as ~20 random writes
+# a second and an SSD does not. Before anything is tuned by the medium, the log
+# has to show that it is told apart correctly on real installs.
+
+_VM_VENDORS = ("QEMU", "KVM", "VMWARE", "VIRTUALBOX", "INNOTEK", "MICROSOFT", "XEN",
+               "PARALLELS", "BOCHS", "PROXMOX")
+
+
+def _sys_read(path: str) -> str:
+    try:
+        with open(path, "rb") as fh:
+            return _s(fh.read()).strip()
+    except OSError:
+        return ""
+
+
+def _disk_kind(disk_dir: str, sys_root: str, depth: int = 0) -> Tuple[str, str]:
+    """(kind, rotational) of a block device directory in sysfs."""
+    disk = os.path.basename(disk_dir)
+    rotational = _sys_read(os.path.join(disk_dir, "queue", "rotational"))
+    if disk.startswith("mmcblk"):
+        card = _sys_read(os.path.join(disk_dir, "device", "type")).upper()
+        return ("emmc" if card == "MMC" else "sd"), rotational
+    if disk.startswith("nvme"):
+        return "nvme", rotational
+    slaves_dir = os.path.join(disk_dir, "slaves")
+    if depth < 4 and os.path.isdir(slaves_dir):  # md RAID, LVM, dm-crypt
+        kinds = []
+        for slave in sorted(os.listdir(slaves_dir)):
+            real = os.path.realpath(os.path.join(slaves_dir, slave))
+            if not os.path.isdir(os.path.join(real, "queue")):
+                real = os.path.dirname(real)  # a partition: its disk
+            kinds.append(_disk_kind(real, sys_root, depth + 1)[0])
+        if kinds:
+            for kind in ("hdd", "sd", "emmc", "ssd", "nvme"):
+                if kind in kinds:  # the slowest member decides
+                    return kind, rotational
+    if rotational == "1":
+        return "hdd", rotational
+    if rotational == "0":
+        return "ssd", rotational
+    return "unknown", rotational
+
+
+def storage_medium(path: str, sys_root: str = "/sys", dev: Optional[int] = None) -> Dict[str, str]:
+    """What the directory is stored on: kind (nvme, ssd, hdd, emmc, sd, unknown),
+    the partition and disk, its rotational flag and model, and the hypervisor
+    vendor when the machine is virtual (a virtual disk can claim anything)."""
+    out = {"path": path, "kind": "unknown", "partition": "", "disk": "", "rotational": "",
+           "model": "", "vm": ""}
+    vendor = " ".join(filter(None, (_sys_read(os.path.join(sys_root, "class", "dmi", "id", n))
+                                    for n in ("sys_vendor", "product_name"))))
+    if any(v in vendor.upper() for v in _VM_VENDORS):
+        out["vm"] = vendor
+    try:
+        st_dev = os.stat(path).st_dev if dev is None else dev
+    except OSError as exc:
+        out["error"] = f"stat failed: {exc.strerror}"
+        return out
+    link = os.path.join(sys_root, "dev", "block", f"{os.major(st_dev)}:{os.minor(st_dev)}")
+    if not os.path.exists(link):
+        out["error"] = f"no {link} (filesystem without a block device)"
+        return out
+    real = os.path.realpath(link)
+    disk_dir = real if os.path.isdir(os.path.join(real, "queue")) else os.path.dirname(real)
+    out["partition"], out["disk"] = os.path.basename(real), os.path.basename(disk_dir)
+    out["kind"], out["rotational"] = _disk_kind(disk_dir, sys_root)
+    out["model"] = _sys_read(os.path.join(disk_dir, "device", "model"))
+    return out
+
+
+def storage_line(info: Dict[str, str]) -> str:
+    """The one log line of storage_medium."""
+    detail = [f"partition {info['partition'] or '?'}", f"disk {info['disk'] or '?'}",
+              f"rotational={info['rotational'] or '?'}"]
+    if info.get("model"):
+        detail.append(f"model {info['model']}")
+    if info.get("vm"):
+        detail.append(f"virtual machine: {info['vm']}")
+    if info.get("error"):
+        detail.append(info["error"])
+    return f"storage: {info['path']} on {info['kind']} ({', '.join(detail)})"
+
+
+# ── runtime directory: the status files in RAM ──────────────────────────────
+# Every status_* file is rewritten every few seconds (the per-message tables
+# every FLUSH_EVERY_S, the heartbeat every 10 s): ~20 file replacements a
+# second on a spinning disk, busy about half the time. In the add-on /tmp is a
+# tmpfs, so they live there (RUNTIME_DIR) and are saved to one file in the data
+# directory (RUNTIME_SNAPSHOT) every few minutes and at stop, and restored at
+# start. Without a tmpfs /tmp the runtime directory is the data directory, as
+# before. webui.py picks the same directory by the same rule.
+
+RUNTIME_DIR = "/tmp/wmbus-runtime"
+RUNTIME_SNAPSHOT = "runtime_state.tar"
+RUNTIME_RESTORED = ".restored"
+# status files that stay in the data directory: a user's decision, and the
+# error run.sh writes before the bridge starts
+RUNTIME_KEEP_ON_DISK = ("status_ignored_candidates.tsv", "status_run_error.txt")
+
+
+def tmp_is_tmpfs(mounts: str = "/proc/mounts") -> bool:
+    try:
+        with open(mounts, "rb") as fh:
+            for line in fh:
+                f = line.split()
+                if len(f) >= 3 and f[1] == b"/tmp":
+                    return f[2] == b"tmpfs"
+    except OSError:
+        pass
+    return False
+
+
+def runtime_dir(base: str, env: Optional[Dict[str, str]] = None, mounts: str = "/proc/mounts") -> str:
+    """WMBUS_RUNTIME when set; for the add-on's /data, RUNTIME_DIR on a tmpfs
+    /tmp; else the data directory (a custom WMBUS_BASE: tests, development)."""
+    env = os.environ if env is None else env
+    if env.get("WMBUS_RUNTIME"):
+        return env["WMBUS_RUNTIME"]
+    if os.path.normpath(base) == "/data" and tmp_is_tmpfs(mounts):
+        return RUNTIME_DIR
+    return base
+
+
+def _runtime_names(directory: str) -> List[str]:
+    """The state files of a directory: regular files, not locks or temporaries."""
+    out = []
+    for name in sorted(os.listdir(directory)):
+        path = os.path.join(directory, name)
+        if (not os.path.isfile(path) or os.path.islink(path) or name.endswith(".lock")
+                or ".tmp." in name or name.endswith(".tmp") or name == RUNTIME_RESTORED):
+            continue
+        out.append(name)
+    return out
+
+
+def _moved_to_runtime(name: str) -> bool:
+    return (name == "status.json" or name.startswith("status_")) and name not in RUNTIME_KEEP_ON_DISK
+
+
+def _extract_snapshot(snapshot: str, target: str) -> int:
+    """The plain files of the snapshot, by bare name only, into target."""
+    count = 0
+    with tarfile.open(snapshot, "r") as tar:
+        for member in tar.getmembers():
+            name = member.name
+            if name.startswith("./"):
+                name = name[2:]
+            if not member.isfile() or not name or "/" in name or name in (".", ".."):
+                continue
+            src = tar.extractfile(member)
+            if src is None:
+                continue
+            _write_replace(os.path.join(target, name), src.read())
+            count += 1
+    return count
+
+
+def runtime_restore(base: str, runtime: str) -> str:
+    """Fill the runtime directory at start; what was done, for the log."""
+    snapshot = os.path.join(base, RUNTIME_SNAPSHOT)
+    if os.path.realpath(runtime) == os.path.realpath(base):
+        if os.path.isfile(snapshot):
+            # The last run kept its state in RAM; this one has no tmpfs.
+            n = _extract_snapshot(snapshot, base)
+            os.unlink(snapshot)
+            return f"runtime: {base} (no tmpfs), {n} file(s) restored from {RUNTIME_SNAPSHOT}"
+        return f"runtime: {base} (no tmpfs /tmp, status files on the data disk)"
+    os.makedirs(runtime, exist_ok=True)
+    marker = os.path.join(runtime, RUNTIME_RESTORED)
+    if os.path.exists(marker):
+        return f"runtime: {runtime} (RAM), kept from the running container"
+    if os.path.isfile(snapshot):
+        n = _extract_snapshot(snapshot, runtime)
+        how = f"{n} file(s) restored from {base}/{RUNTIME_SNAPSHOT}"
+    else:
+        moved = [name for name in _runtime_names(base) if _moved_to_runtime(name)]
+        for name in moved:
+            shutil.copy2(os.path.join(base, name), os.path.join(runtime, name))
+        if moved:
+            # Saved at once, then the old copies go: the state must not depend
+            # on the first periodic snapshot, and stale copies must not stay.
+            runtime_snapshot(base, runtime)
+            for name in moved:
+                try:
+                    os.unlink(os.path.join(base, name))
+                except OSError:
+                    pass
+        how = f"{len(moved)} file(s) moved from {base} (first start with a RAM directory)"
+    open(marker, "wb").close()
+    return f"runtime: {runtime} (RAM), {how}"
+
+
+def runtime_snapshot(base: str, runtime: str) -> int:
+    """Save the runtime directory as one file in the data directory; its size."""
+    if os.path.realpath(runtime) == os.path.realpath(base) or not os.path.isdir(runtime):
+        return 0
+    fd, tmp = tempfile.mkstemp(prefix=RUNTIME_SNAPSHOT + ".tmp.", dir=base)
+    try:
+        with os.fdopen(fd, "wb") as fh, tarfile.open(fileobj=fh, mode="w") as tar:
+            for name in _runtime_names(runtime):
+                try:
+                    tar.add(os.path.join(runtime, name), arcname=name, recursive=False)
+                except (FileNotFoundError, tarfile.TarError):
+                    continue  # replaced or removed while the snapshot ran
+        os.replace(tmp, os.path.join(base, RUNTIME_SNAPSHOT))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return os.path.getsize(os.path.join(base, RUNTIME_SNAPSHOT))
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bridge_ledger.py")
     modes = parser.add_subparsers(dest="mode", required=True)
@@ -1790,6 +2009,18 @@ def _parser() -> argparse.ArgumentParser:
     rx = modes.add_parser("rx", help="wmbus/<board>/rx messages")
     for name in ("reception", "mode", "history", "sequence", "boots", "clock"):
         rx.add_argument(f"--{name}-file", required=True)
+    rt = modes.add_parser("runtime", help="print the runtime directory for the status files")
+    rt.add_argument("--base", required=True)
+    for name, text in (("runtime-restore", "fill the runtime directory at start"),
+                       ("runtime-snapshot", "save the runtime directory to the data directory")):
+        sub = modes.add_parser(name, help=text)
+        sub.add_argument("--base", required=True)
+        sub.add_argument("--runtime", required=True)
+    storage = modes.add_parser("storage", help="print the storage medium of a directory")
+    storage.add_argument("--path", required=True)
+    storage.add_argument("--sys-root", default="/sys")
+    storage.add_argument("--json-file", default="",
+                         help="also write the result as JSON (for the WebUI)")
     return parser
 
 
@@ -1813,6 +2044,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif args.mode == "rx":
         run(RxBook(args.reception_file, args.mode_file, args.history_file,
                    args.sequence_file, args.boots_file, args.clock_file))
+    elif args.mode == "runtime":
+        print(runtime_dir(args.base))
+    elif args.mode == "runtime-restore":
+        print(runtime_restore(args.base, args.runtime))
+    elif args.mode == "runtime-snapshot":
+        runtime_snapshot(args.base, args.runtime)
+    elif args.mode == "storage":
+        info = storage_medium(args.path, args.sys_root)
+        if args.json_file:
+            _write_replace(args.json_file, _b(json.dumps(info, sort_keys=True)) + b"\n")
+        print(storage_line(info))
     return 0
 
 

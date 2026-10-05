@@ -91,6 +91,7 @@ Both paths meet at the same place: the entity layer never asks where a decoded t
 - Wired M-Bus (optional, off by default): the add-on can poll a bus itself through a converter on a serial port — port selection without scanning (probing could talk into a Zigbee coordinator), a primary-address scan that classifies each reply, a read-only console and a status panel that names the cause of silence instead of leaving you with "nothing arrives". **Not verified against a real bus** — the protocol was tested against a simulator.
 - Real reception counting and evidence export (optional, off by default): when the firmware publishes receive metadata on `wmbus/<board>/rx`, the add-on counts actual receptions per meter and per board instead of percentages each board computed about itself. `esp_rx_api_enabled` additionally exposes `GET /api/esp-rx` and a download button for the RX history — with no RAW telegrams, AES keys or credentials.
 - Qundis walk-by block (optional, off by default): Qundis meters pack the whole reading into one manufacturer record (`0DFF5F`) and, since the 2026 generation, encrypt it inside that record — at the wM-Bus layer the frame looks unencrypted, so nothing signals that a key is needed. `qds_walkby_enabled` rejects records that cannot be validated (without it the decoder publishes ciphertext as a reading once in 256 telegrams, e.g. 15430.611 m³ on a meter reading 1.387) and, when the meter's ordinary AES key is configured — the same one its regular frames use — decrypts the block and hands the decoder readable content.
+- Gentle on the disk: the status files, rewritten every few seconds, live in RAM (`/tmp` is a tmpfs in the add-on) and are saved to `/data/runtime_state.tar` every minute on an SSD/NVMe disk and every ten minutes on an HDD, eMMC or SD card, and at stop. The WebUI shows the detected storage medium (wmbusmeters panel, **Data storage**).
 - LISTEN mode: when `meters` list is empty, logs all detected meter IDs and suggested drivers
 - Value filtering: when LISTEN hears many neighbours' meters, the WebUI filters already displayed values by the physical meter reading and tolerance
 - Interactive WebUI: browser management panel (HA side panel / port `8099` in Docker) — detected candidates, modal-based meter add, value preview without permanent configuration, value filtering, driver comparison and ESP logs. Available in 5 languages: 🇬🇧 EN · 🇵🇱 PL · 🇩🇪 DE · 🇨🇿 CS · 🇸🇰 SK.
@@ -223,6 +224,10 @@ the bridge does not synthesize one. Derive current or period consumption from
 ### Docker standalone (without Home Assistant)
 
 In Docker mode, configuration is done via `options.json`.
+The status files stay in `/config` unless you enable the RAM directory in
+`docker-compose.yml` (`tmpfs: /tmp` and `WMBUS_RUNTIME: /tmp/wmbus-runtime`,
+commented out in the example) — recommended when `/config` is on an HDD or an
+SD card.
 
 #### Quick start (Docker Compose — DietPi/Ubuntu)
 

@@ -704,6 +704,19 @@ weil sie nicht immer retained ist. Die optionale Canary-Prüfung über die HA Co
 API liefert den stärkeren Nachweis. Der Dialog enthält auch **Re-Discovery
 erzwingen**.
 
+### „Verschleißt das Add-on meine SD-Karte oder bremst es meine Festplatte?"
+
+Das Add-on schreibt seine Statusdateien (Kandidaten, Empfang pro Board, Zähler)
+alle paar Sekunden neu. Seit 1.5.78 liegen sie im RAM (`/tmp` ist im Add-on ein
+tmpfs) und werden als eine Datei nach `/data/runtime_state.tar` gesichert: jede
+Minute auf einer SSD oder NVMe, alle zehn Minuten auf einer HDD, eMMC oder
+SD-Karte und beim Stoppen des Add-ons; beim Start werden sie daraus
+wiederhergestellt. Nach einem Stromausfall können die Statistiken der letzten
+Minuten fehlen; Zähler, Schlüssel und Optionen sind nicht betroffen. Das
+erkannte Speichermedium zeigt die WebUI: Panel → **wmbusmeters** →
+**Datenspeicher** (in einer virtuellen Maschine meldet die virtuelle Platte,
+was der Hypervisor vorgibt).
+
 ### „Ich möchte neu anfangen — alle Zähler entfernen"
 
 In der Ansicht EINSTELLUNGEN entfernt **Add-on zurücksetzen** ALLE

@@ -70,7 +70,7 @@ mbus_init_paths() {
   MBUS_METER_DIR="${MBUS_ETC}/wmbusmeters.d"
   MBUS_CONF_FILE="${MBUS_ETC}/wmbusmeters.conf"
   MBUS_LOG="${MBUS_BASE}/console.log"
-  MBUS_STATUS_FILE="${BASE}/status_mbus.json"
+  MBUS_STATUS_FILE="${RUNTIME:-${BASE}}/status_mbus.json"
 }
 
 # ------------------------------------------------------------

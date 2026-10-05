@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
 description: "wM-Bus over MQTT (RAW HEX) + optional wired M-Bus -> wmbusmeters -> Home Assistant Discovery"
-version: "1.5.77"
+version: "1.5.78"
 slug: "wmbus_mqtt_bridge"
 stage: experimental
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
@@ -9,6 +9,10 @@ arch:
   - aarch64
 
 init: false
+# /tmp in RAM: the status files, rewritten every few seconds, live there
+# (/tmp/wmbus-runtime) and are saved to /data/runtime_state.tar every few
+# minutes and at stop, instead of being written to the disk every second.
+tmpfs: true
 
 ingress: true
 ingress_port: 8099

@@ -457,6 +457,15 @@ clear_meter_discovery() {
 declare -A ESP_COVERAGE_CFG_SENT
 ESP_COVERAGE_LAST_S=0
 ESP_COVERAGE_INTERVAL_S="${ESP_COVERAGE_INTERVAL_S:-60}"
+# What was last published per board ("meters/total") and when. Every publish
+# is a mosquitto_pub, a broker connection of its own: two per board a minute
+# were half of all the connections the add-on opened (10 a minute with 5
+# boards). State and attributes are published when the count or the total of
+# all boards changed, and refreshed every ESP_COVERAGE_REFRESH_S; the state is
+# retained, so HA has the value after a restart either way.
+declare -A ESP_COVERAGE_PUBLISHED
+declare -A ESP_COVERAGE_PUBLISHED_S
+ESP_COVERAGE_REFRESH_S="${ESP_COVERAGE_REFRESH_S:-900}"
 
 publish_esp_coverage() {
   [[ "${DISCOVERY_ENABLED:-true}" == "true" ]] || return 0
@@ -521,6 +530,13 @@ publish_esp_coverage() {
         ESP_COVERAGE_CFG_SENT["${_src}"]=1
       fi
     fi
+
+    if [[ "${ESP_COVERAGE_PUBLISHED[${_src}]:-}" == "${_meters}/${_total}" ]] \
+       && (( _now - ${ESP_COVERAGE_PUBLISHED_S[${_src}]:-0} < ESP_COVERAGE_REFRESH_S )); then
+      continue
+    fi
+    ESP_COVERAGE_PUBLISHED["${_src}"]="${_meters}/${_total}"
+    ESP_COVERAGE_PUBLISHED_S["${_src}"]="${_now}"
 
     mqtt_pub "${_state_topic}" "${_meters}" "true" || true
     # coverage_pct is measured against every meter ANY board heard, so it answers

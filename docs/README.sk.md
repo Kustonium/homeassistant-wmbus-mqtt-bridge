@@ -660,6 +660,17 @@ broker a prefix; jej neprítomnosť nič nedokazuje, pretože správa často nie
 retained. Voliteľné overenie testovacej entity cez HA Core API je silnejšia
 kontrola. Dialóg obsahuje aj tlačidlo **Vynútiť re-discovery**.
 
+### „Opotrebúva doplnok SD kartu alebo spomaľuje HDD?"
+
+Doplnok každých pár sekúnd prepisuje svoje stavové súbory (kandidáti, príjem
+podľa dosky, počítadlá). Od 1.5.78 ich drží v RAM (`/tmp` je v doplnku tmpfs) a
+ukladá ich ako jeden súbor `/data/runtime_state.tar`: každú minútu na SSD
+alebo NVMe, každých desať minút na HDD, eMMC alebo SD karte a pri zastavení
+doplnku; pri štarte ich z neho obnoví. Po výpadku napájania môžu chýbať
+štatistiky z posledných minút; meračov, kľúčov a možností sa to netýka.
+Zistené úložisko ukazuje WebUI: Panel → **wmbusmeters** → **Úložisko dát** (vo
+virtuálnom stroji virtuálny disk hlási, čo nastaví hypervisor).
+
 ### „Chcem začať odznova — odstrániť všetky merače"
 
 V zobrazení NASTAVENIA tlačidlo **Resetovať doplnok** odstráni VŠETKY
