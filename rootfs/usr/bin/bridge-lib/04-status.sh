@@ -16,15 +16,27 @@ status_record_seen() {
   id="$(normalize_meter_id "$1")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
   ts="$(epoch_now)"
-  last_ts="$(awk -F '\t' -v id="${id}" -v kind="${kind}" '
-    $1 == id && $2 == kind && $3 ~ /^[0-9]+$/ { last = $3 + 0 }
-    END { if (last) print last; }
-  ' "${STATUS_SEEN_FILE}" 2>/dev/null || true)"
-  if [[ "${last_ts}" =~ ^[0-9]+$ ]] && (( ts - last_ts < 2 )); then
-    return 0
-  fi
-  printf '%s\t%s\t%s\n' "${id}" "${kind}" "${ts}" >> "${STATUS_SEEN_FILE}" 2>/dev/null || true
-  tail -n 5000 "${STATUS_SEEN_FILE}" > "${STATUS_SEEN_FILE}.tmp" 2>/dev/null && mv "${STATUS_SEEN_FILE}.tmp" "${STATUS_SEEN_FILE}" 2>/dev/null || true
+  # Appended to, and cut back to the newest 5000 rows only once it holds more
+  # than 6000 (SEEN_KEEP / SEEN_MAX in bridge_ledger.py, which takes the same
+  # lock); its readers look at the newest 5000 rows only.
+  (
+    flock -x 9
+    local rows _tmp
+    read -r last_ts rows < <(awk -F '\t' -v id="${id}" -v kind="${kind}" '
+      $1 == id && $2 == kind && $3 ~ /^[0-9]+$/ { last = $3 + 0 }
+      END { print last + 0, NR + 0 }
+    ' "${STATUS_SEEN_FILE}" 2>/dev/null || true)
+    if [[ "${last_ts}" =~ ^[0-9]+$ ]] && (( last_ts > 0 && ts - last_ts < 2 )); then
+      exit 0
+    fi
+    printf '%s\t%s\t%s\n' "${id}" "${kind}" "${ts}" >> "${STATUS_SEEN_FILE}" 2>/dev/null || true
+    if [[ "${rows}" =~ ^[0-9]+$ ]] && (( rows + 1 > 6000 )); then
+      _tmp="$(mktemp "${STATUS_SEEN_FILE}.tmp.XXXXXX")" || exit 0
+      if ! { tail -n 5000 "${STATUS_SEEN_FILE}" > "${_tmp}" 2>/dev/null && mv "${_tmp}" "${STATUS_SEEN_FILE}" 2>/dev/null; }; then
+        rm -f "${_tmp}"
+      fi
+    fi
+  ) 9>"${STATUS_SEEN_FILE}.lock"
 }
 
 status_seen_stats() {
@@ -37,7 +49,11 @@ status_seen_stats() {
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || { printf '0\t0\t0\t0\n'; return 0; }
   now="$(epoch_now)"
 
+  # The file is read twice: the first pass counts its rows, the second looks
+  # at the newest 5000 only (see status_record_seen).
   awk -F '\t' -v id="${id}" -v now="${now}" '
+    NR == FNR { rows++; next }
+    FNR <= rows - 5000 { next }
     $1 == id && $3 ~ /^[0-9]+$/ {
       ts = $3 + 0
       # Count by meter id across BOTH kinds (meter + candidate). The decode and
@@ -64,7 +80,7 @@ status_seen_stats() {
       }
       printf "%d\t%d\t%d\t%d\n", count + 0, avg + 0, seen15 + 0, seen60 + 0
     }
-  ' "${STATUS_SEEN_FILE}" 2>/dev/null || printf '0\t0\t0\t0\n'
+  ' "${STATUS_SEEN_FILE}" "${STATUS_SEEN_FILE}" 2>/dev/null || printf '0\t0\t0\t0\n'
 }
 
 status_read_raw_count() {
