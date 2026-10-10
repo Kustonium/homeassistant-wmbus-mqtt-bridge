@@ -597,8 +597,10 @@ Pipeline. For normal operation, save a meter, enable the engine and click
 needed. Decoder output from that regular engine is visible in the
 read-only **Bus console**; it never accepts arbitrary bytes to transmit.
 
-The meter table's **Driver** field suggests every driver shipped in the current
-image while still accepting a custom name. `auto` may identify a meter, but is not
+The meter table's **Driver** field is a list of every driver shipped in the current
+image; **Other…** at its end turns it into a text field for a driver the list does
+not hold. **Save meters** refuses a list in which a name or an address is used
+twice: one name is one meter to the decoder, one address is one meter on the bus. `auto` may identify a meter, but is not
 guaranteed to select a useful driver for every wired response; choose the meter's
 documented driver when automatic decoding produces no values.
 **Detect driver** performs one diagnostic poll and passes the returned frame to
@@ -622,6 +624,10 @@ a converter that does not power the line and a meter speaking a different protoc
 all look the same from the outside: no entities appear. The bus-status card names
 which one it is, per meter, together with the moment each one last answered:
 
+- *Some meters answer* — the bus works, but some configured meters stay silent;
+  each of them is marked *no answer for …*, the others show when they last
+  answered. The address scan (polling off) tells whether a silent one sends
+  foreign or damaged frames.
 - *No reply* — the port is open, the addressed meter stays silent. Address, wiring,
   or a converter that does not feed the bus.
 - *Damaged frames* — checksum errors, most often two meters sharing one primary

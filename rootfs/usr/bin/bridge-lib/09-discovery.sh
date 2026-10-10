@@ -17,9 +17,13 @@ clean_legacy_entities() {
   # meter, whichever board reported last. Per-board rssi_<esp>_dbm replaced it,
   # so the retained config has to be cleared or Home Assistant keeps showing the
   # old entity for every meter that ever had one.
+  # total_m3 used to be cleared here too, as a migration from a hand-written
+  # total_m3 sensor. But that is the topic of the live total_m3 entity, and the
+  # "already cleared" mark lives in memory only, so every pipeline start removed
+  # the entity from Home Assistant for a moment (state NULL, then unavailable,
+  # then the value) - 37 times in a month on one installation, total_m3 only.
   if [[ -z "${DISCOVERY_CLEANED_LEGACY[${id}]+x}" ]]; then
-    if mqtt_pub "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/total_m3/config" "" "true" \
-      && mqtt_pub "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/rssi_dbm/config" "" "true"; then
+    if mqtt_pub "${DISCOVERY_PREFIX}/sensor/wmbus_${id}/rssi_dbm/config" "" "true"; then
       DISCOVERY_CLEANED_LEGACY["${id}"]=1
     else
       warn "discovery: failed to clear legacy entities for id=${id} (will retry later)"
@@ -457,12 +461,15 @@ clear_meter_discovery() {
 declare -A ESP_COVERAGE_CFG_SENT
 ESP_COVERAGE_LAST_S=0
 ESP_COVERAGE_INTERVAL_S="${ESP_COVERAGE_INTERVAL_S:-60}"
-# What was last published per board ("meters/total") and when. Every publish
-# is a mosquitto_pub, a broker connection of its own: two per board a minute
-# were half of all the connections the add-on opened (10 a minute with 5
-# boards). State and attributes are published when the count or the total of
-# all boards changed, and refreshed every ESP_COVERAGE_REFRESH_S; the state is
-# retained, so HA has the value after a restart either way.
+# What was last published per board (its meter count) and when. Two
+# publishes per board a minute were half of all the broker connections the
+# add-on opened (10 a minute with 5 boards). State and attributes are
+# published when the board's own count changed, and refreshed every
+# ESP_COVERAGE_REFRESH_S; the state is retained, so HA has the value after a
+# restart either way. The total of all boards is deliberately not a trigger:
+# one new meter anywhere changed it and resent every board at once, so
+# meters_total_all_boards and coverage_pct may lag by up to
+# ESP_COVERAGE_REFRESH_S.
 declare -A ESP_COVERAGE_PUBLISHED
 declare -A ESP_COVERAGE_PUBLISHED_S
 ESP_COVERAGE_REFRESH_S="${ESP_COVERAGE_REFRESH_S:-900}"
@@ -531,11 +538,11 @@ publish_esp_coverage() {
       fi
     fi
 
-    if [[ "${ESP_COVERAGE_PUBLISHED[${_src}]:-}" == "${_meters}/${_total}" ]] \
+    if [[ "${ESP_COVERAGE_PUBLISHED[${_src}]:-}" == "${_meters}" ]] \
        && (( _now - ${ESP_COVERAGE_PUBLISHED_S[${_src}]:-0} < ESP_COVERAGE_REFRESH_S )); then
       continue
     fi
-    ESP_COVERAGE_PUBLISHED["${_src}"]="${_meters}/${_total}"
+    ESP_COVERAGE_PUBLISHED["${_src}"]="${_meters}"
     ESP_COVERAGE_PUBLISHED_S["${_src}"]="${_now}"
 
     mqtt_pub "${_state_topic}" "${_meters}" "true" || true

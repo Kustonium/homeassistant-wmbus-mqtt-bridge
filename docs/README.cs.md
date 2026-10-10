@@ -578,8 +578,11 @@ sekund znovu načte, restart doplňku není potřeba. Výstup tohoto běžného
 enginu zůstává viditelný v **Konzoli sběrnice**, která je pouze pro čtení a neumí
 odesílat libovolné bajty.
 
-Pole **Ovladač** v tabulce měřičů nabízí všechny ovladače dodané v aktuálním obrazu
-a nadále přijímá vlastní název. `auto` může měřič rozpoznat, ale nezaručuje výběr
+Pole **Ovladač** v tabulce měřičů je seznam všech ovladačů dodaných v aktuálním
+obrazu; položka **Jiný…** na jeho konci z něj udělá textové pole pro ovladač, který
+seznam nemá. **Uložit měřiče** odmítne seznam, ve kterém se název nebo adresa
+opakuje dvakrát: jeden název je pro dekodér jeden měřič, jedna adresa jeden měřič
+na sběrnici. `auto` může měřič rozpoznat, ale nezaručuje výběr
 použitelného ovladače pro každou kabelovou odpověď; pokud automatické dekódování
 nevrací hodnotu, vyberte ovladač uvedený v dokumentaci měřiče.
 **Zjistit ovladač** provede jeden diagnostický dotaz a předá přijatý rámec
@@ -603,6 +606,10 @@ převodník, který nenapájí linku, a měřič mluvící jiným protokolem zve
 nevzniknou žádné entity. Karta stavu sběrnice pojmenuje, o který případ jde — po
 měřičích, spolu s okamžikem poslední odpovědi každého z nich:
 
+- *Část měřičů odpovídá* — sběrnice funguje, ale část nastavených měřičů mlčí;
+  každý z nich je označen *bez odpovědi …*, ostatní ukazují, kdy naposledy
+  odpověděly. Sken adres (dotazování vypnuto) ukáže, zda mlčící posílá cizí nebo
+  poškozené rámce.
 - *Bez odpovědi* — port je otevřený, měřič na této adrese mlčí. Adresa, kabeláž nebo
   převodník, který sběrnici nenapájí.
 - *Poškozené rámce* — chyby kontrolního součtu, nejčastěji dva měřiče na jedné

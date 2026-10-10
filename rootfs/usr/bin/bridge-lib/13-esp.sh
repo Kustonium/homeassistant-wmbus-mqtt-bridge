@@ -192,6 +192,9 @@ ESP_SUBSCRIBER_PIDS=""
 # When fresh (<90 s) webui.py uses ESP's exact "total" count as the live rate
 # instead of its own per-minute counting — more accurate source of truth.
 STATUS_ESP_DIAG_FILE="${RUNTIME:-${BASE}}/status_esp_diag.json"
+# Booked by the publisher on its own connection when it announced "books"
+# (esp_books.SummaryBook); this loop is the fallback.
+if [[ "${MQTT_PUB_BOOKS:-false}" != "true" ]]; then
 (
   while true; do
     _sub_t0="$(epoch_now)"
@@ -215,6 +218,7 @@ STATUS_ESP_DIAG_FILE="${RUNTIME:-${BASE}}/status_esp_diag.json"
   done
 ) &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
+fi
 
 # Background subscriber for the always-on ESP radio health pulse
 # (wmbus/+/health). Unlike wmbus/+/diag/summary this is published every 60 s
@@ -227,6 +231,9 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 # stopped ESP instead of hiding it. Enriches — does NOT replace — the per-device
 # telegram tracker, which stays the source of truth for ESP liveness.
 STATUS_ESP_HEALTH_FILE="${RUNTIME:-${BASE}}/status_esp_health.json"
+# Booked by the publisher on its own connection when it announced "books"
+# (esp_books.HealthBook); this loop is the fallback.
+if [[ "${MQTT_PUB_BOOKS:-false}" != "true" ]]; then
 (
   while true; do
     _sub_t0="$(epoch_now)"
@@ -258,6 +265,7 @@ STATUS_ESP_HEALTH_FILE="${RUNTIME:-${BASE}}/status_esp_health.json"
   done
 ) &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
+fi
 
 # Background subscriber for the always-on ESP meter-flags topic (wmbus/+/meters).
 # The ESP publishes every 60 s (retain=false, independent of diagnostic_mode) the
@@ -285,9 +293,17 @@ STATUS_ESP_METERS_FILE="${RUNTIME:-${BASE}}/status_esp_meters.json"
 # decoded was a quarter of a CPU core on a 5-ESP install. The set of configured
 # ids is re-read from METER_DIR every 30 s (bash only, no forks), so meters added
 # by a soft reload start getting RSSI without restarting this subscriber.
-_esp_rssi_subscriber &
-ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
+# With MQTT_PUB_BOOKS the publisher subscribes to rssi, /rx and RAW_TOPIC on
+# its own connection and runs the same bridge_ledger.py books in-process
+# (start_mqtt_publisher); these three loops are then not started.
+if [[ "${MQTT_PUB_BOOKS:-false}" != "true" ]]; then
+  _esp_rssi_subscriber &
+  ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
+fi
 
+# Booked by the publisher on its own connection when it announced "books"
+# (esp_books.MetersBook); this loop is the fallback.
+if [[ "${MQTT_PUB_BOOKS:-false}" != "true" ]]; then
 (
   while true; do
     _sub_t0="$(epoch_now)"
@@ -316,6 +332,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
   done
 ) &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
+fi
 
 # Background subscriber for per-meter reception windows (wmbus/+/diag/meter_snapshot).
 # OPT-IN: only published when the ESP runs diagnostic_mode normal/debug/dev with
@@ -325,6 +342,9 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 # quality signal (RSSI was dropped — see BENCHMARKS.md). Stored as a MAP keyed by
 # ESP device so multi-ESP best-of can be computed. Independent of /health,/meters.
 STATUS_ESP_METER_SNAPSHOT_FILE="${RUNTIME:-${BASE}}/status_esp_meter_snapshot.json"
+# Booked by the publisher on its own connection when it announced "books"
+# (esp_books.MeterSnapshotBook); this loop is the fallback.
+if [[ "${MQTT_PUB_BOOKS:-false}" != "true" ]]; then
 (
   while true; do
     _sub_t0="$(epoch_now)"
@@ -352,6 +372,7 @@ STATUS_ESP_METER_SNAPSHOT_FILE="${RUNTIME:-${BASE}}/status_esp_meter_snapshot.js
   done
 ) &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
+fi
 
 # Background subscriber for per-meter reception WINDOWS
 # (wmbus/+/diag/meter/<id>/<mode>/window/<trigger>). Same reception fields as
@@ -361,6 +382,9 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 # a board's first 15-min summary_15min batch. Stored as a nested MAP keyed by ESP
 # device then meter id, so webui.py can merge it with the snapshot per-ESP data.
 STATUS_ESP_METER_WINDOW_FILE="${RUNTIME:-${BASE}}/status_esp_meter_window.json"
+# Booked by the publisher on its own connection when it announced "books"
+# (esp_books.MeterWindowBook); this loop is the fallback.
+if [[ "${MQTT_PUB_BOOKS:-false}" != "true" ]]; then
 (
   while true; do
     _sub_t0="$(epoch_now)"
@@ -392,6 +416,7 @@ STATUS_ESP_METER_WINDOW_FILE="${RUNTIME:-${BASE}}/status_esp_meter_window.json"
   done
 ) &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
+fi
 
 # Background subscriber for per-ESP-device telegram tracking.
 # Listens to the RAW telegram topic (with wildcard) and records each
@@ -405,15 +430,22 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 # "wmbus/xiaoseed/telegram" → device "xiaoseed"). If RAW_TOPIC has no
 # wildcard at all, this loop still runs but produces no device data
 # (and the WebGUI falls back to diag-based detection as before).
-_esp_tracker_subscriber &
-ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
-
-# Structured per-frame RF metadata. New firmware publishes this in addition to
-# the unchanged /telegram HEX stream. It is deliberately a separate subscriber:
-# a malformed or absent /rx topic can never interrupt the decoder pipeline or
-# the legacy tracker used by older firmware.
-_esp_rx_subscriber &
-ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
+#
+# Structured per-frame RF metadata (/rx): new firmware publishes this in
+# addition to the unchanged /telegram HEX stream. It is deliberately a separate
+# subscription: a malformed or absent /rx topic can never interrupt the decoder
+# pipeline or the legacy tracker used by older firmware.
+if [[ "${MQTT_PUB_BOOKS:-false}" == "true" ]]; then
+  # The publisher books both; the history files are trimmed here at start,
+  # as the loops do before their first connection.
+  _trim_esp_rx_history "${ESP_RX_HISTORY_FILE}" 100000 90000 || true
+  _trim_esp_rx_history "${ESP_RF_RX_HISTORY_FILE}" 100000 90000 || true
+else
+  _esp_tracker_subscriber &
+  ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
+  _esp_rx_subscriber &
+  ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
+fi
 
 # Background subscriber for all ESP diagnostic events.
 # Subscribes to bare diag topic (dropped/truncated/rx_path) and all subtopics.
@@ -426,6 +458,14 @@ touch "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
 if [[ "${ESP_DIAG_HISTORY_ENABLED:-false}" == "true" ]]; then
   touch "${ESP_DIAG_HISTORY_FILE}" 2>/dev/null || true
 fi
+# Booked by the publisher on its own connection when it announced "books"
+# (esp_books.DiagEventsBook); this loop is the fallback. The history is
+# trimmed here at start either way, as the loop does before connecting.
+if [[ "${MQTT_PUB_BOOKS:-false}" == "true" ]]; then
+  if [[ "${ESP_DIAG_HISTORY_ENABLED:-false}" == "true" ]]; then
+    _trim_esp_rx_history "${ESP_DIAG_HISTORY_FILE}" 10000 9000 || true
+  fi
+else
 (
   _n=0
   _diag_since_trim=0
@@ -515,6 +555,7 @@ fi
   done
 ) &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
+fi
 
 # Background subscriber for the Home Assistant MQTT birth/availability message.
 # HA's MQTT integration publishes <discovery_prefix>/status = "online" (retained,
@@ -524,6 +565,9 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 # broker) and HA entities will never appear — the core MQTT->HA healthcheck.
 # NB: this subscriber must NOT use SUB_EXTRA (-R). The retained birth message IS
 # the signal, so retained delivery must stay enabled.
+# Booked by the publisher on its own connection when it announced "books"
+# (esp_books.HaPresenceBook); this loop is the fallback.
+if [[ "${MQTT_PUB_BOOKS:-false}" != "true" ]]; then
 (
   _ha_birth_topic="${DISCOVERY_PREFIX:-homeassistant}/status"
   log "HA-presence: watching birth topic '${_ha_birth_topic}' for MQTT->HA healthcheck"
@@ -544,6 +588,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
   done
 ) &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
+fi
 
 # Background subscriber for broker identity ($SYS). Mosquitto publishes
 # $SYS/broker/version = "mosquitto version X.Y.Z"; EMQX publishes
@@ -556,6 +601,10 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
 # connection and an authorization warning in the broker log each time, for an
 # answer that does not change. A refusal is recorded (fourth column "denied",
 # shown by the WebUI) and asked again after BROKER_SYS_DENIED_RETRY_S.
+# Booked by the publisher on its own connection when it announced "books"
+# (esp_books.BrokerInfoBook), on a SUBSCRIBE of its own; this loop is the
+# fallback.
+if [[ "${MQTT_PUB_BOOKS:-false}" != "true" ]]; then
 (
   _bk_brand=""
   _bk_version=""
@@ -610,6 +659,7 @@ ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
   done
 ) &
 ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"
+fi
 
 # HA entity verification worker (opt-in). Round-trips Discovery through the HA
 # Core API: asks "does sensor.wmbus_bridge_health exist?" — the definitive check

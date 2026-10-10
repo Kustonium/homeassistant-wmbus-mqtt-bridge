@@ -2407,6 +2407,12 @@ def mbus_save_device(device: str, alias: str, baudrate: str, poll_interval: str,
 
 def mbus_save_meters(meters: list) -> tuple[bool, str]:
     cleaned = []
+    # A wired meter is tracked by its name (the meter file's name=, the
+    # telegram's "name", status_mbus.json) and polled at its address: two
+    # entries with one name are one meter to the decoder, and two at one
+    # address both poll the same meter and look like an address clash.
+    seen_names: dict = {}
+    seen_addresses: dict = {}
     for entry in meters:
         if not isinstance(entry, dict):
             continue
@@ -2421,6 +2427,13 @@ def mbus_save_meters(meters: list) -> tuple[bool, str]:
         if not (re.fullmatch(r'p(\d|[1-9]\d|1\d\d|2[0-4]\d|250)', address)
                 or re.fullmatch(r'[0-9A-Fa-f]{8}', address)):
             return False, f"{name}: address must be p0..p250 or 8 hex characters."
+        if name in seen_names:
+            return False, f"{name}: this name is used twice (also at {seen_names[name]}); every meter needs its own."
+        if address.lower() in seen_addresses:
+            return False, (f"{name}: address {address} is used twice (also by {seen_addresses[address.lower()]}); "
+                           "one address is one meter.")
+        seen_names[name] = address
+        seen_addresses[address.lower()] = name
         key = str(entry.get('key') or '').strip()
         if key and not re.fullmatch(r'[0-9A-Fa-f]{32}', key):
             return False, f"{name}: key must be 32 hex characters."

@@ -612,8 +612,11 @@ w kilka sekund, restart dodatku nie jest potrzebny. Wyjście dekodera
 z tego regularnego silnika widać w **Konsoli magistrali**, która jest tylko do
 odczytu i nie przyjmuje dowolnych bajtów do wysłania.
 
-Pole **Driver** w tabeli liczników podpowiada wszystkie drivery dostarczone w
-bieżącym obrazie, ale nadal przyjmuje własną nazwę. `auto` może rozpoznać licznik,
+Pole **Driver** w tabeli liczników to lista wszystkich driverów dostarczonych w
+bieżącym obrazie; pozycja **Inny…** na jej końcu zamienia je w pole tekstowe dla
+drivera, którego lista nie ma. **Zapisz liczniki** odrzuca listę, w której nazwa
+albo adres powtarza się dwa razy: jedna nazwa to dla dekodera jeden licznik, jeden
+adres to jeden licznik na magistrali. `auto` może rozpoznać licznik,
 lecz nie gwarantuje dobrania użytecznego drivera dla każdej odpowiedzi przewodowej;
 gdy automatyczne dekodowanie nie daje wartości, wybierz driver z dokumentacji
 licznika.
@@ -639,6 +642,10 @@ licznik, konwerter niezasilający linii i licznik mówiący innym protokołem wy
 z zewnątrz tak samo: nie pojawiają się encje. Karta stanu magistrali nazywa, który
 to przypadek — per licznik, razem z chwilą ostatniej odpowiedzi każdego z nich:
 
+- *Część liczników odpowiada* — magistrala działa, ale część skonfigurowanych
+  liczników milczy; każdy z nich jest oznaczony *brak odpowiedzi od …*, pozostałe
+  pokazują, kiedy ostatnio odpowiedziały. Skan adresów (przy wyłączonym
+  odpytywaniu) pokaże, czy milczący nadaje obce albo uszkodzone ramki.
 - *Brak odpowiedzi* — port jest otwarty, licznik pod tym adresem milczy. Adres,
   okablowanie albo konwerter, który nie zasila magistrali.
 - *Uszkodzone ramki* — błędy sumy kontrolnej, najczęściej dwa liczniki na jednym

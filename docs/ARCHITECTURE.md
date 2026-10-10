@@ -257,8 +257,9 @@ They solve different problems and intentionally see the same physical frame.
 
 ### 4.1 Configured meter path: DECODE
 
-1. `mosquitto_sub` subscribes to `raw_topic` (default
-   `wmbus/+/telegram`) and emits payload only.
+1. The bridge subscribes to `raw_topic` (default `wmbus/+/telegram`) and
+   emits payload only - through `mqtt_publisher.py`'s RAW stream, or its own
+   `mosquitto_sub` when the publisher does not offer one (see below).
 2. The bridge applies the configured input filter and feeds accepted payloads
    to the main `wmbusmeters` instance.
 3. That instance loads the user's generated meter files and emits JSON only for
@@ -267,6 +268,23 @@ They solve different problems and intentionally see the same physical frame.
 5. Home Assistant Discovery is published before the matching state message.
 6. The full decoder JSON is published to
    `<state_prefix>/<meter_id>/state`.
+
+Steps 4 to 6 run in one process, `bridge_ledger.py decode`, reading the
+decoder's output: the counters and `status.json`, the meter table and the last
+JSON, key problems from the decoder's log lines, and the hand-over of each
+telegram to the publisher, which builds its Discovery and state. While no meter
+is configured, the main instance's LISTEN output is parsed in the same process.
+With `search_mode` on, SEARCH runs there too (`SearchBook`, see 10-search.sh):
+the value check of every decoded telegram, the matches and deltas on
+`search_topic`, the cleanup of Discovery a temporary `search_<id>` meter must
+not have, and the candidate cache the LISTEN parser feeds. It starts from the
+`SEARCH_*` variables the pipeline inherited (`SEARCH_STATE`), and the parser
+and the value check share them, so `search_status.json` has one writer per
+process (bash wrote it from the decode loop and from the parser it forked,
+each with its own counters). Without the publisher's Discovery, with
+`LEDGER_DECODE_IN_PYTHON=false`, or with `search_mode` on and
+`LEDGER_SEARCH_IN_PYTHON=false`, the bash loop (`_decode_consume_bash`) does it
+as before.
 
 The bridge selects one cumulative numeric field for its compact meter table,
 but does not remove fields from the MQTT state payload. The WebUI's published
@@ -378,6 +396,48 @@ The main script also owns a heartbeat ticker and the restart loop around the
 DECODE pipeline. Background subscribers and LISTEN are long-lived workers, not
 children that should be replaced on every meter change.
 
+The ticker stamps the liveness file every `HEARTBEAT_INTERVAL_SECONDS` (from
+bash's own clock, no process per tick). Every `CANDIDATE_PRUNE_INTERVAL_SECONDS`
+it runs `wmbus_meters.py housekeeping`: candidates silent for longer than
+`CANDIDATE_PRUNE_AFTER_SECONDS` are removed with their preview value, state,
+attempt counter and preview config, then preview states stuck in `pending`
+for longer than `PREVIEW_PENDING_TIMEOUT_SECONDS` become `no_decode_result`
+(`METER_FILES_IN_PYTHON=false`: `prune_stale_candidates` and
+`expire_stale_pending_previews` in bash). The runtime snapshot, the Discovery
+Doctor probe and the factory reset, which run on a timer or on a WebUI
+request, stay in the ticker as they are.
+
+Everything the bridge publishes leaves through `mqtt_publisher.py`: one MQTT
+connection kept open for the life of the bridge (MQTT 3.1.1, QoS 0, clean
+session, client id `wmbus_bridge_pub_<random>`), with a bounded queue while the
+broker is unreachable. `mqtt_pub` hands it each message over loopback TCP -
+bash's own `/dev/tcp`, so no process is started per message - and falls back
+to one `mosquitto_pub` per message when the publisher is not answering, or
+when `MQTT_PERSISTENT_PUBLISHER=false`. Before it, every Discovery config and
+state was a connection of its own: a login and several lines of broker log,
+several times a minute.
+
+The subscriptions run on that connection too. The DECODE and the parallel
+LISTEN `wmbusmeters` pipelines read `raw_topic` from the publisher's RAW
+stream: a second loopback port (`raw=<port>` in its port file) where every
+connection receives what `mosquitto_sub -t <raw_topic> -F '%p'` printed - each
+payload and a newline, retained ones dropped when `ignore_retained` is on.
+The pipeline's first stage (`_raw_source`) reads it with `cat`; when the port is
+not announced or does not answer (the publisher is restarting), it runs its
+own `mosquitto_sub` as before. A reader that stops reading gets at most 4 MB
+queued; telegrams beyond that are dropped for it, and logged. With the ESP
+subscriptions below, the bridge then holds one broker connection in all.
+
+The publisher also builds the Discovery configs and the state of every decoded
+telegram of a configured meter (`wmbus_discovery.py`, a port of
+`publish_decoded_json`, `emit_discovery_from_json` and the RSSI join). Bash
+hands it the telegram and the meter's exclude patterns; each new decode
+pipeline sends a reset, so its Discovery caches start empty as they do in
+bash. When the publisher does not announce this ability, or with
+`MQTT_PYTHON_DISCOVERY=false`, bash builds them itself as before. The publish
+contract test runs every scenario through both paths and requires the same
+bytes.
+
 Bookkeeping that runs for every MQTT message is done by `bridge_ledger.py`,
 one long-lived Python process per path: in bash it started tens of processes
 per message, which on a busy multi-ESP site kept CPU cores busy. Bash keeps
@@ -391,7 +451,35 @@ the loops around it and everything that is not per message.
 | `raw` | `tee` before the DECODE `wmbusmeters` | RAW counter files, rate, `status.json`, candidate refresh |
 | `listen` | output of the pure LISTEN `wmbusmeters` | candidate refresh |
 
-The subscribers pipe `mosquitto_sub` into Python through a descriptor, so the
+The `rssi`, `rx` and `tracker` books normally run inside `mqtt_publisher.py`:
+it subscribes to their topics on its one broker connection (dropping retained
+messages for `rx` and `tracker` when `ignore_retained` is on, as
+`mosquitto_sub -R` did) and hands each message to the same book, split into
+lines exactly as `mosquitto_sub -F '%t\t%p'` printed it. The ESP health pulse,
+meter flags, diagnostic summary, meter snapshots and meter windows
+(`status_esp_health.json`, `status_esp_meters.json`, `status_esp_diag.json`,
+`status_esp_meter_snapshot.json`, `status_esp_meter_window.json`) and Home
+Assistant's birth message (`status_ha_presence.txt`) are booked there too, by
+`esp_books.py` - ports of their bash loops that reproduce the jq programs and
+write the same files byte for byte (`tests/test_esp_books.py` runs the real
+loops and the books on one corpus). So is the ESP event log
+(`wmbus/+/diag/#`: `status_esp_events.tsv`, the per-board
+`status_esp_config.json`, the last suggestion and boot, and the optional
+`esp_diag_history.jsonl`), which also needs the retained flag that
+`mosquitto_sub -F '%r\t%t\t%p'` printed. Routing to the books happens in the
+publisher, so at the broker it subscribes only the filters no other one covers
+(`wmbus/+/diag/#` covers the summary, snapshot and window filters): a broker
+may send one copy per matching subscription, and every copy would be booked.
+The broker identity from `$SYS` (`status_broker_info.txt`) is asked for on a
+SUBSCRIBE of its own, after the other filters are granted: EMQX's default ACL
+gives `$SYS` to localhost clients only, and a broker set to disconnect on a
+refusal must not take the other subscriptions with it. A refusal, or a
+connection lost while it is pending, is recorded as `denied` and asked again
+after `BROKER_SYS_DENIED_RETRY_S` (an hour), as the bash subscriber did.
+The publisher announces this as `books`; without it, or with
+`MQTT_PUBLISHER_SUBSCRIBE=false`, the bash loops below start as before.
+
+Those loops pipe `mosquitto_sub` into Python through a descriptor, so the
 loop holds `mosquitto_sub`'s PID and stops it the moment Python ends - a plain
 pipe is not enough where SIGPIPE is ignored; both then start again like a
 dropped connection. The `raw` and `listen` stages run Python under
@@ -426,14 +514,32 @@ Two stages hand work back to bash, one request per line, to a loop in the
 same stage. Python asks only when the bash code would get past its own cheap
 checks; bash repeats them.
 
-- `raw`: registering a new Diehl/SAP candidate from its RAW frame, or changing
-  its driver or type (`status_raw_candidate_seen`), and starting a preview
-  one-shot (`preview_decode_raw_if_requested`, which keeps the preview
-  throttle and its state machine).
-- `listen` (fields separated by 0x1F so empty ones survive `read`): a new or
-  changed candidate (`emit_snippet_if_new`: registration, the "Candidate
-  detected" event, the announcement, the preview config and `pending`),
-  SEARCH (`search_cache_candidate`) and decoded JSON lines.
+- `raw`: nothing left by default. Registering a new Diehl/SAP candidate from
+  its RAW frame, or changing its driver or type (`status_raw_candidate_seen`),
+  is done by Python itself (`RawBook.candidate`, through the same
+  `candidate_seen` as LISTEN); `LEDGER_SAP_IN_PYTHON=false` hands it to bash
+  as before.
+- `listen` (fields separated by 0x1F so empty ones survive `read`): SEARCH
+  (`search_cache_candidate`) only with `LEDGER_SEARCH_IN_PYTHON=false`;
+  otherwise `SearchBook` caches the candidate itself. A new or changed candidate
+  (`emit_snippet_if_new`: registration, the "Candidate detected" event, the
+  announcement, the preview config and `pending`) and a decoded JSON line
+  (the candidate's preview value and `decoded_value` or
+  `decoded_without_numeric_value`) are booked by Python itself
+  (`ListenBook.snippet` and `.json`), writing what the bash functions wrote;
+  refreshes still waiting for the deferred write are written first, so the
+  rows keep the order in which the telegrams arrived.
+
+Both stages run the preview one-shot themselves (`PreviewDecoder`, the
+`preview_decode_raw_if_requested` of bash on the same files: the id from the
+preview configs, the 20 s and 300 s throttle, the per-id lock directory, the
+`PREVIEW_DECODE_MAX_PARALLEL` slots, the temporary config). The decoder runs
+in a thread, as bash ran it in the background; its result - `decoded_value`
+or `decoded_without_numeric_value` with the value, or one more attempt
+without JSON towards `no_decode_result` - is booked by the thread that reads
+the input, which the finished decoder wakes through a pipe. At the end of the
+input the decoders still running are waited for, and a lock or slot left is
+freed. `LEDGER_PREVIEW_IN_PYTHON=false` hands the one-shot to bash again.
 
 A candidate that is already registered with exactly the driver and type bash
 would write, already announced in `seen_ids.txt` and whose preview config
@@ -503,6 +609,26 @@ never observes it, and the WebUI is a different process again. The bridge theref
 writes `status_mbus.json` — current state, the meters configured and rejected, and
 per meter the last id seen and when it last answered — and the WebUI renders it as
 the bus-status card.
+
+The decoder's output is read by `wmbus_mbus.py consume`: the stamped console log
+and its trimming, the traffic state, the address-clash check and `status_mbus.json`
+in one process. The decoder names a silent meter
+(`(meter) <name> <address> did not send a response!`), so `status_mbus.json`
+carries each meter's last answer and last silence, and the traffic state is
+taken over every meter's last event: `ok` while all answer, `partial` while
+some do, `no_reply` when none does - not from the decoder's last line, which
+flipped between `ok` and `no_reply` every poll on a bus with one silent meter. An accepted telegram (with `rssi_dbm` removed — it is 0 on a wire)
+goes back to the bash loop behind it, which publishes it as before: the meter's
+exclude patterns under its learned id, Discovery, state and the meter table.
+`MBUS_CONSUMER_IN_PYTHON=false` reads the output in bash again
+(`_mbus_consume_bash`). The instance's `wmbusmeters.conf` and meter files are
+written by `wmbus_mbus.py config` from `options.json` (the port, alias and
+identity checks, the address and key validation, a second entry with a name
+or an address already taken skipped, `pollinterval` in every meter file, the
+`calculate_` and `field_` lines); the values the shell keeps — alias,
+poll default, meter counts and exclude patterns by name — come back on its
+output. `MBUS_CONFIG_IN_PYTHON=false` writes them with the bash functions
+(`write_mbus_conf`, `refresh_mbus_meter_files`).
 
 The two halves stay separate on purpose. Whether the port can be *opened* is
 answered in `webui.py` by actually opening it, which is the only thing that proves
@@ -579,8 +705,22 @@ Adding, editing, or removing a meter does not require a full add-on restart:
 3. the restart loop rereads options and regenerates meter files;
 4. a new DECODE process starts after a short delay.
 
+Step 3 is `wmbus_meters.py`: `refresh` writes the DECODE instance's meter
+files from `options.json` `meters[]` (or, in SEARCH, the temporary
+`search_<id>` meters of the candidate cache) with the key, id and driver
+checks and the `calculate_` and `field_` lines, and hands back what the shell
+keeps — the configured meter count, the SEARCH mode and the exclude patterns
+per id; `previews` then keeps a preview config per registered candidate and
+removes those of ids that became configured meters, handing back the one-shot
+decodes to start. `METER_FILES_IN_PYTHON=false` runs the bash functions
+(`refresh_meter_files`, `sync_candidate_autodecode_files`,
+`prune_official_meter_previews`) instead.
+
 LISTEN, the heartbeat, and ESP/background subscribers survive this operation.
-The watcher explicitly excludes their PIDs. Any new long-lived worker must be
+The watcher explicitly excludes their PIDs. It also excludes the wired M-Bus
+supervisor: the restart loop restarts M-Bus itself through `stop_mbus_instance`,
+which stops its decoder; a supervisor killed by the watcher would leave that
+decoder running beside the next one on the same serial port. Any new long-lived worker must be
 added to the same exclusion model or it will silently disappear after a soft
 reload.
 
@@ -611,9 +751,11 @@ configuration directories remain intact.
 | Board coverage Discovery | `<discovery_prefix>/sensor/wmbus_<board>_meters_heard/config` |
 | Search results | `search_topic`, default `wmbus/search/candidates` |
 
-Per-board coverage is published once a minute as its own measurement sensor:
-the count of **distinct meters** that board has heard this session, with
-`meters_total_all_boards` and `coverage_pct` as attributes. It exists because
+Per-board coverage is its own measurement sensor: the count of **distinct
+meters** that board has heard this session, with `meters_total_all_boards` and
+`coverage_pct` as attributes. A board publishes when its own count changes and
+at least every 15 minutes; a change on another board does not resend it, so
+the two attributes may lag by up to 15 minutes. It exists because
 that number is the one worth reasoning about - it separates a sensitive board
 from a deaf one, whereas `drop_pct` improves when reception gets worse, since a
 frame that is never attempted is never counted as dropped. Before this it lived

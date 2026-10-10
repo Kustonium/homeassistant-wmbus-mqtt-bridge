@@ -214,6 +214,7 @@ STATUS_MQTT_CONNECTED="false"
 STATUS_WMBUSMETERS_RUNNING="false"
 # shellcheck disable=SC2034
 STATUS_RAW_COUNT=0
+# shellcheck disable=SC2034  # read by _decode_stage / _decode_consume_bash (12-pipeline.sh)
 STATUS_DECODED_COUNT=0
 # shellcheck disable=SC2034
 STATUS_DISCOVERY_PUBLISHED="false"
@@ -221,6 +222,7 @@ STATUS_DISCOVERY_PUBLISHED="false"
 STATUS_DISCOVERY_PUBLISHED_AT=""
 # shellcheck disable=SC2034
 STATUS_LAST_RAW_SEEN=""
+# shellcheck disable=SC2034  # read by _decode_stage / _decode_consume_bash (12-pipeline.sh)
 STATUS_LAST_DECODED_SEEN=""
 STATUS_LAST_ERROR=""
 # shellcheck disable=SC2034
@@ -275,11 +277,14 @@ mkdir -p "${RUNTIME}/.preview_attempts" 2>/dev/null || true
 # HA verification verdict is session-scoped (it depends on the running bridge's
 # Discovery publication and on the HA instance reachable now).
 : > "${STATUS_HA_VERIFICATION_FILE}" 2>/dev/null || true
-# Preview values are session-scoped — clear stale entries from previous runs
-# so the WebGUI doesn't show outdated readings (or the legacy first-numeric-field
-# pick that briefly stored bogus backflow_m3 / fraud counter values) until the
-# next telegram arrives. New correct values appear ~2 min later on first decode.
-: > "${STATUS_CANDIDATE_VALUES_FILE}" 2>/dev/null || touch "${STATUS_CANDIDATE_VALUES_FILE}"
+# Preview values are kept across a restart, like the preview state next to
+# them (both come back from the runtime snapshot). They used to be emptied here,
+# from when an old pick stored bogus backflow/fraud counters; but the state of
+# an already decoded candidate survived, so the WebUI showed "decoding..." for it
+# until its next telegram - up to an hour for a meter that sends rarely. A
+# kept value is the last reading the candidate sent; the next telegram
+# replaces it.
+touch "${STATUS_CANDIDATE_VALUES_FILE}" 2>/dev/null || true
 [[ -f "${STATUS_RAW_COUNT_FILE}" ]] || echo "0" > "${STATUS_RAW_COUNT_FILE}"
 
 # Record bridge start time for the WebGUI rate denominator fix.
@@ -439,6 +444,9 @@ if command -v stdbuf >/dev/null 2>&1; then
   STDBUF_BIN="stdbuf -oL -eL"
 fi
 
+# Before anything that publishes is forked: they inherit MQTT_PUB_PORT.
+start_mqtt_publisher
+
 start_esp_subscribers
 
 # Liveness heartbeat ticker: stamp the current epoch every few seconds,
@@ -446,9 +454,11 @@ start_esp_subscribers
 # idle" from "bridge down / run.sh waiting for the broker". Dies with bridge.sh.
 (
   _last_candidate_prune=0
-  _last_runtime_snapshot="$(epoch_now)"
+  _last_runtime_snapshot="${EPOCHSECONDS:-$(epoch_now)}"
   while true; do
-    printf '%s\n' "$(epoch_now)" > "${STATUS_HEARTBEAT_FILE}.tmp" 2>/dev/null \
+    # EPOCHSECONDS (bash 5): no date process per tick.
+    _hb_now="${EPOCHSECONDS:-$(epoch_now)}"
+    printf '%s\n' "${_hb_now}" > "${STATUS_HEARTBEAT_FILE}.tmp" 2>/dev/null \
       && mv "${STATUS_HEARTBEAT_FILE}.tmp" "${STATUS_HEARTBEAT_FILE}" 2>/dev/null \
       || true
     # Throttled bridge-side cleanup of long-silent candidates. The pipeline
@@ -456,14 +466,12 @@ start_esp_subscribers
     # reloads, so this ticker (already excluded from soft-reload kills) drives
     # the time-based self-deletion. Heartbeat is stamped first every tick, so a
     # prune run can never delay liveness past the 30 s WebUI threshold.
-    _hb_now="$(epoch_now)"
     if (( _hb_now - _last_candidate_prune >= ${CANDIDATE_PRUNE_INTERVAL_SECONDS:-600} )); then
-      prune_stale_candidates || true
-      # Same tick, after pruning: rows that survived but are stuck in "pending"
-      # (heard once, then silent -> decode attempts never reach the count that
-      # would end the state) get a time-based terminal state, so the WebUI stops
+      # After pruning, rows that survived but are stuck in "pending" (heard
+      # once, then silent -> decode attempts never reach the count that would
+      # end the state) get a time-based terminal state, so the WebUI stops
       # showing "decoding…" for a candidate that is never coming back.
-      expire_stale_pending_previews || true
+      candidate_housekeeping
       _last_candidate_prune="${_hb_now}"
     fi
     if (( _hb_now - _last_runtime_snapshot >= RUNTIME_SNAPSHOT_SECONDS )); then
@@ -518,6 +526,7 @@ start_esp_subscribers
     sleep "${HEARTBEAT_INTERVAL_SECONDS:-10}"
   done
 ) &
+# shellcheck disable=SC2034  # read by _soft_reload_kill_children (12-pipeline.sh)
 HEARTBEAT_PID=$!
 
 # ------------------------------------------------------------
@@ -597,6 +606,7 @@ SEARCH_MIN_DELTA_M3="$(float_or_default "${SEARCH_MIN_DELTA_M3}" "0.001")"
 
 # shellcheck disable=SC2034
 SEARCH_CANDIDATES_FILE="${BASE}/search_candidates.tsv"
+# shellcheck disable=SC2034  # read by _decode_consume_bash (12-pipeline.sh)
 SEARCH_USING_TEMP_METERS="false"
 # Used by sourced bridge-lib/07-meters.sh
 # shellcheck disable=SC2034
@@ -676,30 +686,21 @@ touch "${SNIPPET_STATE}"
 log "Starting wmbusmeters..."
 
 run_once() {
+  # Each pipeline starts with empty Discovery caches (they live in its
+  # subshell); the publisher's copy of them is emptied the same way.
+  mqtt_reset_discovery
 
   # ─── Soft-reload flag watcher ────────────────────────────────────────
-  # Polls for ${RELOAD_FLAG} every 2 s. When present, removes it and kills
-  # the main shell's direct children (mosquitto_sub, awk, tee, wmbusmeters,
-  # while-read subshell) to bring down the foreground pipeline. The
+  # Polls for ${RELOAD_FLAG} every 2 s. When present, removes it and brings
+  # down the foreground pipeline (_soft_reload_kill_children). The
   # restart_on_exit loop above refreshes meter files and respawns run_once.
-  # Watcher excludes itself (BASHPID), LISTEN_PID, HEARTBEAT_PID and the ESP
-  # subscriber PIDs (ESP_SUBSCRIBER_PIDS) from the kill list so the parallel
-  # listen instance, the liveness heartbeat and the ESP/diag/HA-presence
-  # subscribers keep running across pipeline restarts (otherwise a soft reload
-  # would silently stop them — e.g. a stale heartbeat falsely flags the dashboard).
   (
     watcher_self="${BASHPID}"
     while sleep 2; do
       if [[ -f "${RELOAD_FLAG}" ]]; then
         rm -f "${RELOAD_FLAG}" 2>/dev/null || true
         log "Soft reload: ${RELOAD_FLAG} detected, restarting decode pipeline..."
-        for child in $(pgrep -P "$$" 2>/dev/null); do
-          [[ "${child}" == "${watcher_self}" ]] && continue
-          [[ -n "${LISTEN_PID}" && "${child}" == "${LISTEN_PID}" ]] && continue
-          [[ -n "${HEARTBEAT_PID:-}" && "${child}" == "${HEARTBEAT_PID}" ]] && continue
-          [[ -n "${ESP_SUBSCRIBER_PIDS:-}" && " ${ESP_SUBSCRIBER_PIDS} " == *" ${child} "* ]] && continue
-          kill -TERM "${child}" 2>/dev/null
-        done
+        _soft_reload_kill_children "$$" "${watcher_self}"
         exit 0
       fi
     done
@@ -707,7 +708,7 @@ run_once() {
   local WATCHER_PID=$!
 
   if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
-  ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
+  _raw_source \
     | awk -v dbg_n="${DEBUG_EVERY_N}" '
         function ishex(s) { return (s ~ /^[0-9A-Fa-f]+$/) }
         BEGIN { n=0 }
@@ -728,97 +729,13 @@ run_once() {
     | tee >(_raw_counter_stage) \
     | "${QDS_STAGE[@]}" \
     | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
-    | while IFS= read -r line; do
-        if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
-          STATUS_WMBUSMETERS_RUNNING="true"
-          STATUS_DECODED_COUNT=$((STATUS_DECODED_COUNT + 1))
-          # shellcheck disable=SC2034
-          STATUS_LAST_DECODED_SEEN="$(iso_now)"
-          status_add_event "ok" "Decoded telegram received"
-          write_status_json
-          status_mark_search_decoded_no_aes "${line}"
-          process_search_json "${line}"
-          if is_search_temp_json "${line}"; then
-            clear_search_discovery_from_json "${line}"
-            continue
-          fi
-          status_meter_seen "${line}"
-          echo "${line}"
-          id="$(normalize_meter_id "$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)")"
-          ts="$(echo "${line}" | jq -r '.timestamp // .device_date_time // empty' 2>/dev/null || true)"
-          if [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]]; then
-            if [[ "${REQUIRE_TIMESTAMP}" == "true" && -z "${ts}" ]]; then
-              warn "Skip publish: missing timestamp for id=${id}"
-            else
-              # Join the opt-in per-meter RSSI before both the Discovery config
-              # and the state payload, so the field is seen by the same machinery
-              # as every decoded field and needs no special case downstream.
-              line="$(inject_rssi_into_json "${id}" "${line}")"
-              emit_discovery_from_json "${line}"
-              mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
-              status_mark_discovery_published
-              write_status_json
-            fi
-          fi
-          continue
-        fi
-
-        echo "${line}"
-        status_detect_key_problem "${line}" || true
-
-        # While no meter is configured this instance prints a "Received
-        # telegram from:" block per telegram; bridge_ledger.py books them (the
-        # same parser as the parallel LISTEN instance, which books nothing
-        # then) and hands new candidates and SEARCH back to bash. It reads the
-        # official count file per block, so with meters it books nothing.
-        if [[ "${SEARCH_USING_TEMP_METERS}" != "true" ]]; then
-          [[ -n "${_zero_fd:-}" ]] || exec {_zero_fd}> >(_listen_parse_stage zero)
-          printf '%s\n' "${line}" >&"${_zero_fd}"
-        fi
-
-done
+    | _decode_stage true
 else
-  ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
+  _raw_source \
     | tee >(_raw_counter_stage) \
     | "${QDS_STAGE[@]}" \
     | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
-    | while IFS= read -r line; do
-        if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
-          STATUS_WMBUSMETERS_RUNNING="true"
-          STATUS_DECODED_COUNT=$((STATUS_DECODED_COUNT + 1))
-          # shellcheck disable=SC2034
-          STATUS_LAST_DECODED_SEEN="$(iso_now)"
-          status_add_event "ok" "Decoded telegram received"
-          write_status_json
-          status_mark_search_decoded_no_aes "${line}"
-          process_search_json "${line}"
-          if is_search_temp_json "${line}"; then
-            clear_search_discovery_from_json "${line}"
-            continue
-          fi
-          status_meter_seen "${line}"
-          echo "${line}"
-          id="$(normalize_meter_id "$(echo "${line}" | jq -r '.id // empty' 2>/dev/null || true)")"
-          ts="$(echo "${line}" | jq -r '.timestamp // .device_date_time // empty' 2>/dev/null || true)"
-          if [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]]; then
-            if [[ "${REQUIRE_TIMESTAMP}" == "true" && -z "${ts}" ]]; then
-              warn "Skip publish: missing timestamp for id=${id}"
-            else
-              # Join the opt-in per-meter RSSI before both the Discovery config
-              # and the state payload, so the field is seen by the same machinery
-              # as every decoded field and needs no special case downstream.
-              line="$(inject_rssi_into_json "${id}" "${line}")"
-              emit_discovery_from_json "${line}"
-              mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
-              status_mark_discovery_published
-              write_status_json
-            fi
-          fi
-        else
-          echo "${line}"
-          status_detect_key_problem "${line}" || true
-        fi
-done
+    | _decode_stage false
 fi
 
   # ─── Cleanup flag watcher ──────────────────────────────────────────────
@@ -877,12 +794,10 @@ while true; do
 
   # Existing candidates from previous LISTEN ticks should retain preview
   # configs after a soft reload. These files live under ${BASE}/preview, never
-  # inside the always-on LISTEN configuration directory.
-  sync_candidate_autodecode_files
-
-  # Remove preview configs for IDs promoted to official meters. PRIMARY DECODE
+  # inside the always-on LISTEN configuration directory. Then the preview
+  # configs of IDs promoted to official meters are removed: PRIMARY DECODE
   # handles those meters from now on.
-  prune_official_meter_previews
+  refresh_candidate_previews
 
   # Parallel LISTEN always starts unconditionally and remains a pure, empty-dir
   # discovery stream. Preview decoding is one-shot and never reloads LISTEN.

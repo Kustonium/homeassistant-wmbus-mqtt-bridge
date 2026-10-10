@@ -1381,14 +1381,27 @@
     }
 
     const mbus = (state.data && state.data.mbus) || {};
-    const wiredMeters = Object.values(mbus.meters || {}).filter((m) => m && m.id).length;
-    const wiredPipeline = mbus.state === "ok" ? `
+    // Shown while the engine runs, whatever its last event was: the state
+    // used to be taken from the decoder's last line, so with one silent meter
+    // beside answering ones it flipped every poll and the row came and went.
+    // Counted per meter instead - its last answer against its last silence.
+    const wiredRows = Object.values(mbus.meters || {}).filter((m) => m);
+    const wiredAnswering = wiredRows.filter((m) =>
+      Number(m.last_ok_epoch || 0) > 0 && Number(m.last_ok_epoch || 0) >= Number(m.last_silent_epoch || 0)).length;
+    const wiredTotal = Math.max(Number(mbus.meters_configured || 0), wiredRows.length);
+    const wiredAll = wiredTotal > 0 && wiredAnswering >= wiredTotal;
+    const wiredDot = dot(wiredAll, wiredAnswering > 0, wiredAll);
+    const wiredRunning = ["ok", "partial", "no_reply", "damaged_frames", "not_mbus_traffic", "starting"]
+      .includes(String(mbus.state || ""));
+    const wiredPipeline = wiredRunning ? `
       <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
         <div style="font-size:11px;color:var(--muted);font-weight:700;margin-bottom:8px;">${escapeHtml(t("pipeline_wired_active", "WIRED M-BUS · ACTIVE"))}</div>
         <div class="pipeline">
-          <div class="pipeline-node"><div class="pipeline-icon">🔢</div><div class="pipeline-title">M-Bus</div><div class="pipeline-meta">${dot(true, false, true)} ${wiredMeters} ${escapeHtml(t("pipeline_wired_meters", "meters"))}</div></div>
+          <div class="pipeline-node"><div class="pipeline-icon">🔢</div><div class="pipeline-title">M-Bus</div><div class="pipeline-meta">${wiredDot} ${escapeHtml(
+            t("pipeline_wired_answering", "{x} of {y} answer").replace("{x}", String(wiredAnswering)).replace("{y}", String(wiredTotal)))}</div></div>
           <div class="pipeline-arrow"><span>${escapeHtml(mbus.bus_alias || "M-Bus")}</span></div>
-          <div class="pipeline-node"><div class="pipeline-icon">🔌</div><div class="pipeline-title">${escapeHtml(t("pipeline_serial_master", "serial master"))}</div><div class="pipeline-meta">${dot(true, false, true)} ${escapeHtml(t("pipeline_wired_receiving", "receiving"))}</div></div>
+          <div class="pipeline-node"><div class="pipeline-icon">🔌</div><div class="pipeline-title">${escapeHtml(t("pipeline_serial_master", "serial master"))}</div><div class="pipeline-meta">${dot(wiredAnswering > 0, false, wiredAnswering > 0)} ${escapeHtml(
+            wiredAnswering > 0 ? t("pipeline_wired_receiving", "receiving") : t((MBUS_HEALTH[mbus.state] || MBUS_HEALTH.unknown).key, String(mbus.state || "")))}</div></div>
           <div class="pipeline-arrow"></div>
           <div class="pipeline-node"><div class="pipeline-icon">⚙</div><div class="pipeline-title">wmbusmeters</div><div class="pipeline-meta">${dot(true, false, true)} ${escapeHtml(t("pipeline_wmbus_polling", "polling"))}</div></div>
           <div class="pipeline-arrow"></div>
@@ -3816,6 +3829,21 @@
     meters[index][field] = String(value == null ? "" : value);
   };
 
+  // The driver <select>: a pick is stored at once; "Other…" swaps the cell
+  // for a text field (one render, on change - not per keystroke).
+  window.__mbusTypePick = function (index, value) {
+    const meters = asArray(state.mbus && state.mbus.meters);
+    if (!meters[index]) return;
+    if (value === "__other__") {
+      state.mbus.meters = mbusMetersFromForm();
+      state.mbus.meters[index].type = "";
+      state.mbus.meters[index].typeCustom = true;
+      render();
+      return;
+    }
+    meters[index].type = String(value || "auto");
+  };
+
   // The address decides whether "Poll once" and "Detect driver" are enabled, so
   // unlike the other fields it needs a render to take effect. On change, not on
   // input: this file's rule is no render() per keystroke, and change fires when
@@ -3850,13 +3878,60 @@
   // state.mbus.meters are all produced from the same array.
   function mbusMetersFromForm() {
     const loaded = asArray(state.mbus?.meters);
-    return Array.from(document.querySelectorAll(".mbus-m-name")).map((input, index) => ({
-      ...loaded[index],
-      id: input.value.trim(),
-      address: (document.querySelector(`.mbus-m-addr[data-i="${index}"]`)?.value || "").trim(),
-      type: (document.querySelector(`.mbus-m-type[data-i="${index}"]`)?.value || "auto").trim(),
-      poll_interval: (document.querySelector(`.mbus-m-poll[data-i="${index}"]`)?.value || "").trim(),
-    }));
+    return Array.from(document.querySelectorAll(".mbus-m-name")).map((input, index) => {
+      const row = {
+        ...loaded[index],
+        id: input.value.trim(),
+        address: (document.querySelector(`.mbus-m-addr[data-i="${index}"]`)?.value || "").trim(),
+        type: (document.querySelector(`.mbus-m-type[data-i="${index}"]`)?.value || "auto").trim() || "auto",
+        poll_interval: (document.querySelector(`.mbus-m-poll[data-i="${index}"]`)?.value || "").trim(),
+      };
+      delete row.typeCustom;  // a form flag, never saved
+      return row;
+    });
+  }
+
+  // The driver column. A <datalist> did not work here: the browser offers
+  // only the entries that match the text already in the field (with "auto"
+  // in it, nothing else), and a pick from its popup was lost when the 5 s
+  // refresh re-rendered the tab. A <select> holds every driver of the
+  // catalog shipped with this image whatever the field holds; "Other…"
+  // turns the cell into a text field for a driver it does not list, and a
+  // saved name the catalog does not know opens as that text field.
+  function mbusDriverNames() {
+    const names = ["auto"];
+    for (const d of state.drivers || []) {
+      const name = String(d.driver || "").trim();
+      if (name && !names.some(n => n.toLowerCase() === name.toLowerCase())) names.push(name);
+    }
+    return names;
+  }
+
+  function mbusDriverField(index, m) {
+    const value = String(m.type || "auto").trim() || "auto";
+    const names = mbusDriverNames();
+    const known = names.some(n => n.toLowerCase() === value.toLowerCase());
+    const hint = escapeHtml(t("mbus_driver_picker_hint", "Choose a driver shipped with this add-on, leave auto, or type a custom driver name."));
+    if (m.typeCustom || (!known && state.drivers && state.drivers.length)) {
+      return `<input type="text" class="mbus-m-type" data-i="${index}" value="${escapeHtml(m.typeCustom ? (m.type || "") : value)}"
+                placeholder="${escapeHtml(t("mbus_driver_custom_placeholder", "driver name"))}" title="${hint}"
+                oninput="window.__mbusMeterSet(${index}, 'type', this.value)">`;
+    }
+    const types = {};
+    for (const d of state.drivers || []) {
+      const name = String(d.driver || "").trim().toLowerCase();
+      if (name && !(name in types)) types[name] = String(d.type || "");
+    }
+    // Catalog not loaded yet: keep the saved name selectable, never turn it into "auto".
+    if (!known) names.push(value);
+    const options = names.map(n => {
+      const type = types[n.toLowerCase()];
+      return `<option value="${escapeHtml(n)}"${n.toLowerCase() === value.toLowerCase() ? " selected" : ""}>${
+        escapeHtml(type ? `${n} — ${type}` : n)}</option>`;
+    }).join("");
+    return `<select class="mbus-m-type" data-i="${index}" title="${hint}"
+              onchange="window.__mbusTypePick(${index}, this.value)">${options}
+              <option value="__other__">${escapeHtml(t("mbus_driver_other", "Other…"))}</option></select>`;
   }
 
   function mbusAccessBanner(mbus) {
@@ -3890,6 +3965,7 @@
   // carried out through status_mbus.json rather than inferred here.
   const MBUS_HEALTH = {
     ok:               {cls: "ok",    key: "mbus_health_ok"},
+    partial:          {cls: "warn",  key: "mbus_health_partial"},
     starting:         {cls: "muted", key: "mbus_health_starting"},
     disabled:         {cls: "muted", key: "mbus_health_disabled"},
     unknown:          {cls: "muted", key: "mbus_health_unknown"},
@@ -3914,21 +3990,32 @@
     const rt = mbus.runtime || {};
     const state_ = String(rt.state || "unknown");
     const meta = MBUS_HEALTH[state_] || MBUS_HEALTH.unknown;
-    const names = Object.keys(rt.meters || {});
+    // Every configured meter, not only those that answered: a silent one is
+    // what this card is for. Its last silence comes from the decoder's
+    // "(meter) <name> <address> did not send a response!".
+    const configured = asArray(mbus.meters).map((m) => String((m && m.id) || "").trim()).filter(Boolean);
+    const names = Array.from(new Set([...configured, ...Object.keys(rt.meters || {})]));
     // Only worth showing once the engine is on: with polling off the state is
     // "disabled" and the whole card would be a row of dashes.
     if (!mbus.enabled && state_ !== "identity_changed") return "";
 
     const rows = names.sort().map((name) => {
-      const m = rt.meters[name] || {};
+      const m = (rt.meters || {})[name] || {};
+      const okAt = Number(m.last_ok_epoch || 0);
+      const silentAt = Number(m.last_silent_epoch || 0);
       const clash = m.clash_with
         ? ` <span class="pill bad"><span class="dot"></span>${escapeHtml(
             t("mbus_clash", "answered with two different ids ({other})").replace("{other}", m.clash_with))}</span>`
         : "";
+      const silent = silentAt > okAt
+        ? ` <span class="pill warn"><span class="dot"></span>${escapeHtml(
+            t("mbus_silent_ago", "no answer for {age}").replace(
+              "{age}", fmtInterval(Math.max(0, Math.floor(Date.now() / 1000) - silentAt))))}</span>`
+        : "";
       return `<div class="mbus-meter-state">
         <span class="name">${escapeHtml(name)}</span>
-        <span class="detail">${escapeHtml(m.id ? `id ${m.id} · ` : "")}${escapeHtml(mbusMeterAge(m.last_ok_epoch))}</span>
-        ${clash}
+        <span class="detail">${escapeHtml(m.id ? `id ${m.id} · ` : "")}${escapeHtml(mbusMeterAge(okAt))}</span>
+        ${silent}${clash}
       </div>`;
     }).join("");
 
@@ -4124,8 +4211,14 @@
           <h2>${escapeHtml(t("mbus_title", "M-Bus (wired)"))}</h2>
           <p>${escapeHtml(t("mbus_subtitle", "Through an M-Bus master converter on a serial port (USB / RS-232 / RS-485)."))}</p>
         </div>
-        <span class="pill ${mbus.enabled ? "ok" : "muted"}"><span class="dot"></span>${escapeHtml(
-          mbus.enabled ? t("mbus_health_ok", "Traffic healthy") : t("mbus_health_disabled", "Polling off"))}</span>
+        ${(() => {
+          // The bus state, the same one the health card shows: this pill said
+          // "Traffic healthy" whenever polling was on, whatever the bus did.
+          const st = String((mbus.runtime || {}).state || "unknown");
+          const meta = mbus.enabled ? (MBUS_HEALTH[st] || MBUS_HEALTH.unknown) : MBUS_HEALTH.disabled;
+          return `<span class="pill ${meta.cls}"><span class="dot"></span>${escapeHtml(
+            t(meta.key, mbus.enabled ? st : "Polling off"))}</span>`;
+        })()}
         <p class="mbus-untested"><strong>${escapeHtml(t("mbus_untested_title", "Not verified on a real bus."))}</strong>
           ${escapeHtml(t("mbus_untested_body", "The author has no wired M-Bus hardware. The protocol was tested against a simulator, your meters were not. If something does not work — or works and you want it to keep working — open an issue. That is the only way this gets fixed."))}
           <a href="https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/issues" target="_blank" rel="noopener">${escapeHtml(t("mbus_untested_link", "Report an issue"))}</a>
@@ -4191,10 +4284,7 @@
               <td><input type="text" class="mbus-m-addr" data-i="${index}" value="${escapeHtml(m.address || "")}"
                     oninput="window.__mbusMeterSet(${index}, 'address', this.value)"
                     onchange="window.__mbusAddressCommit()"></td>
-              <td><input type="text" class="mbus-m-type" data-i="${index}" list="mbus-driver-options"
-                    value="${escapeHtml(m.type || "auto")}"
-                    title="${escapeHtml(t("mbus_driver_picker_hint", "Choose a driver shipped with this add-on, leave auto, or type a custom driver name."))}"
-                    oninput="window.__mbusMeterSet(${index}, 'type', this.value)"></td>
+              <td>${mbusDriverField(index, m)}</td>
               <td><input type="text" class="mbus-m-poll" data-i="${index}" value="${escapeHtml(m.poll_interval || "")}"
                     placeholder="${escapeHtml(mbus.poll_interval || "15m")}"
                     oninput="window.__mbusMeterSet(${index}, 'poll_interval', this.value)"></td>
@@ -4213,17 +4303,6 @@
                 <button class="btn danger" data-action="mbus-del-meter" data-i="${index}">${escapeHtml(t("remove", "Remove"))}</button></div></td>
             </tr>`).join("")}
         </table></div>
-        <datalist id="mbus-driver-options">
-          <option value="auto"></option>
-          ${(state.drivers || [])
-            .filter((d, index, rows) => {
-              const name = String(d.driver || "").trim().toLowerCase();
-              return name && name !== "auto" && rows.findIndex(
-                other => String(other.driver || "").trim().toLowerCase() === name
-              ) === index;
-            })
-            .map(d => `<option value="${escapeHtml(d.driver || "")}">${escapeHtml(d.type || "")}</option>`).join("")}
-        </datalist>
         <div class="row-actions">
           <button class="btn" data-action="mbus-add-meter">${escapeHtml(t("mbus_add_meter", "Add meter"))}</button>
           <button class="btn primary" data-action="mbus-save-meters">${escapeHtml(t("mbus_save_meters", "Save meters"))}</button>

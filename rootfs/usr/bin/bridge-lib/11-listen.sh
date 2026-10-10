@@ -143,11 +143,18 @@ _process_listen_json_line() {
 }
 
 # The parser behind the pure LISTEN instance. bridge_ledger.py parses the
-# output and books every telegram of a candidate that is already registered
-# with the same driver and type, already announced and whose preview config
-# would stay as it is; the loop after it runs what stays in bash, when asked:
-# a new or changed candidate (emit_snippet_if_new, with the preview config and
-# its states), SEARCH (search_cache_candidate) and decoded JSON. Fields are
+# output and books every telegram: a known candidate (refresh), a new or
+# changed one (ListenBook.snippet: what emit_snippet_if_new does, with the
+# preview config and its states) and decoded JSON (ListenBook.json: what
+# _process_listen_json_line does). The loop after it runs what stays in
+# bash, when asked: SEARCH (search_cache_candidate) only with
+# LEDGER_SEARCH_IN_PYTHON=false - otherwise bridge_ledger.py's SearchBook
+# runs it with the SEARCH_* variables this subshell inherited
+# (_search_state) - and the one-shot decode
+# of a preview config just written (preview_decode_raw_if_requested) only
+# with LEDGER_PREVIEW_IN_PYTHON=false - by default bridge_ledger.py runs it.
+# emit_snippet_if_new and _process_listen_json_line stay as they are for the
+# one-shot decoder and for an older bridge_ledger.py. Fields are
 # separated by 0x1F, which `read` does not treat as whitespace, so empty ones
 # survive. python3 exits 0 only at the end of its input; any other exit is a
 # crash and it is started again on the same input, losing at most the block
@@ -161,14 +168,21 @@ _listen_parse_stage() {
   # $1: "nonzero" (default, the parallel LISTEN instance) or "zero" (the main
   # instance's listen output while no meter is configured; see run_once).
   local official="${1:-nonzero}"
+  local _search=()
+  [[ "${LEDGER_SEARCH_IN_PYTHON:-true}" == "true" ]] && _search=( "SEARCH_STATE=$(_search_state)" )
   # --name=value: a value starting with "-" must not read as an option.
-  until python3 -u "${BRIDGE_LEDGER}" listen \
+  until env "${_search[@]}" python3 -u "${BRIDGE_LEDGER}" listen \
       --candidates-file="${STATUS_CANDIDATES_FILE}" \
       --seen-file="${STATUS_SEEN_FILE}" \
       --recent-raw-file="${STATUS_RECENT_RAW_FILE}" \
       --candidate-raw-file="${STATUS_CANDIDATE_RAW_FILE}" \
       --candidate-analysis-file="${STATUS_CANDIDATE_ANALYSIS_FILE}" \
       --snippet-file="${SNIPPET_STATE}" \
+      --events-file="${STATUS_EVENTS_FILE}" \
+      --preview-state-file="${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" \
+      --preview-attempts-dir="${RUNTIME:-${BASE}}/.preview_attempts" \
+      --candidate-values-file="${STATUS_CANDIDATE_VALUES_FILE}" \
+      --preview-oneshot-runtime="$([[ "${LEDGER_PREVIEW_IN_PYTHON:-true}" == "true" ]] && echo "${RUNTIME:-${BASE}}")" \
       --official-count-file="${STATUS_OFFICIAL_METERS_COUNT_FILE}" \
       --meter-dir="${METER_DIR}" \
       --preview-meter-dir="${PREVIEW_METER_DIR}" \
@@ -185,6 +199,7 @@ _listen_parse_stage() {
     while IFS=$'\x1f' read -r _act _a _b _c _d; do
       case "${_act}" in
         snippet) emit_snippet_if_new "${_a}" "${_b}" "${_c}" "${_d}" ;;
+        preview) preview_decode_raw_if_requested "${_a}" "${_b}" ;;
         search) search_cache_candidate "${_a}" "${_b}" "${_c}" ;;
         json) _process_listen_json_line "${_a}" ;;
       esac
@@ -214,7 +229,7 @@ start_listen_instance() {
       # that polluted LISTEN_METER_DIR with meter-preview-* files.
       rm -f "${LISTEN_METER_DIR}/meter-"* 2>/dev/null || true
       log_verbose "[DIAG] LISTEN supervisor: starting pure-listen pipeline (empty config dir=${LISTEN_METER_DIR})"
-      ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
+      _raw_source \
         | awk '
             function ishex(s) { return (s ~ /^[0-9A-Fa-f]+$/) }
             {
