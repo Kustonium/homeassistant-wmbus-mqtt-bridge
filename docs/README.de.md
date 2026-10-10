@@ -614,8 +614,11 @@ Add-ons ist nicht nötig. Die Ausgabe dieser regulären Engine bleibt in der
 schreibgeschützten **Bus-Konsole** sichtbar; beliebige Bytes lassen sich dort nicht
 senden.
 
-Das Feld **Treiber** in der Zählertabelle schlägt alle im aktuellen Image
-enthaltenen Treiber vor und akzeptiert weiterhin eigene Namen. `auto` kann einen
+Das Feld **Treiber** in der Zählertabelle ist eine Liste aller im aktuellen Image
+enthaltenen Treiber; **Anderer…** am Ende macht daraus ein Textfeld für einen
+Treiber, den die Liste nicht enthält. **Zähler speichern** lehnt eine Liste ab, in
+der ein Name oder eine Adresse doppelt vorkommt: ein Name ist für den Decoder ein
+Zähler, eine Adresse ein Zähler am Bus. `auto` kann einen
 Zähler erkennen, wählt aber nicht für jede kabelgebundene Antwort garantiert einen
 nützlichen Treiber; liefert die automatische Dekodierung keinen Wert, verwenden Sie
 den in der Zählerdokumentation genannten Treiber.
@@ -643,6 +646,10 @@ einem anderen Protokoll von außen gleich aus: Es entstehen keine Entitäten. Di
 Bus-Status-Karte benennt den Fall — pro Zähler, samt dem Zeitpunkt der jeweils
 letzten Antwort:
 
+- *Ein Teil der Zähler antwortet* — der Bus arbeitet, aber ein Teil der
+  konfigurierten Zähler schweigt; jeder davon ist mit *keine Antwort seit …*
+  markiert, die übrigen zeigen ihre letzte Antwort. Der Adressscan (Abfrage aus)
+  zeigt, ob ein schweigender fremde oder beschädigte Rahmen sendet.
 - *Keine Antwort* — der Port ist offen, der adressierte Zähler schweigt. Adresse,
   Verkabelung oder ein Konverter, der den Bus nicht speist.
 - *Beschädigte Telegramme* — Prüfsummenfehler, meist zwei Zähler auf derselben

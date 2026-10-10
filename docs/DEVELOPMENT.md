@@ -94,6 +94,21 @@ the affected `.golden.json` with the pinned binary and review the field/value
 change before committing it. `GOLDEN_REQUIRE=0` can be used temporarily to
 print missing expected output, but it is not the normal protected build mode.
 
+### Publish contract
+
+`tests/test_publish_contract.sh` runs the real `bridge-lib` publishing code for
+a fixed set of decoded telegrams and compares everything it would send to the
+broker (topic, retain flag, payload, in order) with
+`tests/fixtures/publish_contract/expected.tsv`. Home Assistant derives entities
+and devices from these topics and payloads, so this file is the reference any
+rewrite of the publishing code has to reproduce byte for byte.
+
+Its inputs are `decoded.jsonl` and `listfields/` (recorded from the pinned
+binary by `tests/fixtures/publish_contract/gen_corpus.sh`) and the hand-written
+`extra.jsonl`. After a decoder upgrade, regenerate them with the new binary;
+after an intended change in what is published, rerun the test with
+`CONTRACT_UPDATE=1` and review the diff of `expected.tsv` before committing.
+
 ## Standalone Docker gate
 
 The `standalone-boot` job starts the freshly built amd64 image with its default

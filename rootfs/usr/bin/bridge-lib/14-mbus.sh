@@ -60,6 +60,11 @@ declare -A MBUS_LAST_ID=()
 # across in mbus_consume_line() once both halves are known.
 declare -A MBUS_EXCLUDE_BY_NAME=()
 declare -A MBUS_LAST_OK=()
+# The meter's last silence ("(meter) <name> <address> did not send a
+# response!") and its last event, "ok" or "silent": the bus state is taken
+# over every meter's last event.
+declare -A MBUS_LAST_SILENT=()
+declare -A MBUS_LAST_EVENT=()
 declare -A MBUS_CLASH=()
 
 MBUS_TRAFFIC_STATE="unknown"
@@ -108,14 +113,22 @@ mbus_write_status() {
   # yields nothing while the array holds entries), so the loop silently never
   # ran and every meter vanished from the status file. Meter names come from
   # user configuration and may contain spaces, so the keys stay quoted.
-  if (( ${#MBUS_LAST_ID[@]} > 0 )); then
-    for name in "${!MBUS_LAST_ID[@]}"; do
+  local names=()
+  (( ${#MBUS_LAST_ID[@]} > 0 )) && names+=("${!MBUS_LAST_ID[@]}")
+  if (( ${#MBUS_LAST_SILENT[@]} > 0 )); then
+    for name in "${!MBUS_LAST_SILENT[@]}"; do
+      [[ -n "${MBUS_LAST_ID[${name}]+x}" ]] || names+=("${name}")
+    done
+  fi
+  if (( ${#names[@]} > 0 )); then
+    for name in "${names[@]}"; do
       meters_json="$(printf '%s' "${meters_json}" | jq -c \
         --arg n "${name}" \
         --arg id "${MBUS_LAST_ID[${name}]:-}" \
         --arg clash "${MBUS_CLASH[${name}]:-}" \
         --argjson ts "${MBUS_LAST_OK[${name}]:-0}" \
-        '. + {($n): {id: $id, last_ok_epoch: $ts, clash_with: $clash}}' 2>/dev/null \
+        --argjson silent "${MBUS_LAST_SILENT[${name}]:-0}" \
+        '. + {($n): {id: $id, last_ok_epoch: $ts, last_silent_epoch: $silent, clash_with: $clash}}' 2>/dev/null \
         || printf '%s' "${meters_json}")"
     done
   fi
@@ -294,6 +307,11 @@ write_mbus_conf() {
 refresh_mbus_meter_files() {
   rm -f "${MBUS_METER_DIR}/meter-"* 2>/dev/null || true
   local n=0 skipped=0 meter_json name addr driver driver_other key poll calc stat excl calc_lines stat_lines file
+  # A second entry with a name or an address already taken is skipped: one
+  # name is one meter to the decoder, one address is one meter on the bus
+  # (options.json may come from the add-on's Configuration page, which does
+  # not check this; the WebUI refuses to save such a list).
+  local -A seen_name=() seen_addr=()
 
   MBUS_METERS_OK=0
   MBUS_METERS_SKIPPED=0
@@ -320,13 +338,29 @@ refresh_mbus_meter_files() {
       unset 'MBUS_EXCLUDE_BY_NAME[${name}]'
     fi
 
-    # Primary addresses are p1..p250; 0x00 is the factory "unset" value and
-    # 0xFB-0xFF are reserved or broadcast. Secondary addressing uses 8 hex.
-    if [[ ! "${addr}" =~ ^p([1-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|250)$ && ! "${addr}" =~ ^[0-9A-Fa-f]{8}$ ]]; then
-      warn "M-Bus: invalid address '${addr}' for '${name}' -> skipped (expected p1..p250 or 8 hex)"
+    # Primary addresses are p0..p250; 0xFB-0xFF are reserved or broadcast.
+    # p0 is the factory "unset" address: a meter answers there until it is
+    # given one, which works while it is the only unconfigured meter on the
+    # bus - the WebUI accepts it and says so. Secondary addressing uses 8 hex.
+    if [[ ! "${addr}" =~ ^p([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|250)$ && ! "${addr}" =~ ^[0-9A-Fa-f]{8}$ ]]; then
+      warn "M-Bus: invalid address '${addr}' for '${name}' -> skipped (expected p0..p250 or 8 hex)"
       skipped=$((skipped + 1))
       continue
     fi
+    # An empty name is no key of an associative array (it never was here:
+    # MBUS_EXCLUDE_BY_NAME fails on it too), so it is not checked.
+    if [[ -n "${name}" && -n "${seen_name[${name}]+x}" ]]; then
+      warn "M-Bus: name '${name}' is used twice (also at ${seen_name[${name}]}) -> '${name}' at ${addr} skipped"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    if [[ -n "${seen_addr[${addr,,}]+x}" ]]; then
+      warn "M-Bus: address ${addr} is used twice (also by '${seen_addr[${addr,,}]}') -> '${name}' skipped"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    [[ -n "${name}" ]] && seen_name["${name}"]="${addr}"
+    seen_addr["${addr,,}"]="${name}"
     if [[ -n "${key}" && "${key}" != "null" && ! "${key}" =~ ^[A-Fa-f0-9]{32}$ ]]; then
       warn "M-Bus: invalid key for '${name}' -> skipped"
       skipped=$((skipped + 1))
@@ -406,6 +440,27 @@ mbus_log_console_line() {
 #   "expected checksum 0xNN but got 0xMM"    -> damaged frame / address clash
 #   "did not send a response!"               -> silence (an E5-only meter is
 #                                               indistinguishable from silence)
+# The name in "(meter) <name> <address> did not send a response!": after the
+# first "(meter) ", before the last " did not send a response!", without the
+# last word (the address). Prints nothing for a line without "(meter) ".
+_mbus_silent_meter() {
+  local rest="$1"
+  [[ "${rest}" == *"(meter) "* ]] || return 0
+  rest="${rest#*"(meter) "}"
+  rest="${rest% did not send a response!*}"
+  printf '%s' "${rest% *}"
+}
+
+# True when some meter's last event is $1 ("ok" or "silent").
+_mbus_last_event_is() {
+  local name
+  (( ${#MBUS_LAST_EVENT[@]} > 0 )) || return 1
+  for name in "${!MBUS_LAST_EVENT[@]}"; do
+    [[ "${MBUS_LAST_EVENT[${name}]}" == "$1" ]] && return 0
+  done
+  return 1
+}
+
 mbus_consume_line() {
   local line="$1" id name
 
@@ -432,6 +487,7 @@ mbus_consume_line() {
       # still accepted (measured on the simulator), so "when did we last hear
       # from it" is the only answer that means anything.
       MBUS_LAST_OK["${name}"]="$(epoch_now)"
+      MBUS_LAST_EVENT["${name}"]="ok"
       # The id is only now known, and field_excluded_for_meter() looks the
       # patterns up by id. Set before emit_discovery_from_json() below, or
       # the first telegram of every run would publish the excluded fields.
@@ -462,7 +518,8 @@ mbus_consume_line() {
     # into "ok", because the per-meter timestamps move even when the state does
     # not. At poll intervals measured in minutes this costs nothing.
     MBUS_TRAFFIC_STATE="ok"
-    mbus_write_status "ok"
+    _mbus_last_event_is silent && MBUS_TRAFFIC_STATE="partial"
+    mbus_write_status "${MBUS_TRAFFIC_STATE}"
     echo "${line}"
     return
   fi
@@ -473,14 +530,126 @@ mbus_consume_line() {
     *"expected checksum"*)
       mbus_set_state "damaged_frames" ;;
     *"did not send a response"*)
+      name="$(_mbus_silent_meter "${line}")"
+      if [[ -n "${name}" ]]; then
+        MBUS_LAST_SILENT["${name}"]="$(epoch_now)"
+        MBUS_LAST_EVENT["${name}"]="silent"
+      fi
       # A named cause outranks plain silence: once the bus is known to carry
       # foreign or damaged bytes, "no reply" adds nothing and would hide it.
-      [[ "${MBUS_TRAFFIC_STATE}" == "not_mbus_traffic" || "${MBUS_TRAFFIC_STATE}" == "damaged_frames" ]] \
-        || mbus_set_state "no_reply" ;;
+      if [[ "${MBUS_TRAFFIC_STATE}" != "not_mbus_traffic" && "${MBUS_TRAFFIC_STATE}" != "damaged_frames" ]]; then
+        MBUS_TRAFFIC_STATE="no_reply"
+        _mbus_last_event_is ok && MBUS_TRAFFIC_STATE="partial"
+      fi
+      # Written on every silence: the meter's own timestamp moved.
+      mbus_write_status "${MBUS_TRAFFIC_STATE}" ;;
     *"no bus specified for meter"*|*"SpecifiedDeviceNotFound"*)
       mbus_set_state "bus_down" ;;
   esac
   echo "${line}"
+}
+
+# The bash consumer of the decoder's output - the fallback of
+# _mbus_consume_stage (MBUS_CONSUMER_IN_PYTHON=false).
+_mbus_consume_bash() {
+  local line
+  while IFS= read -r line; do
+    mbus_log_console_line "${line}"
+    mbus_consume_line "${line}"
+  done
+}
+
+# Publish one accepted telegram handed back by wmbus_mbus.py: what
+# mbus_consume_line does after its own bookkeeping ($1 name, $2 normalized
+# id, $3 the telegram, rssi_dbm already removed).
+_mbus_publish_telegram() {
+  local name="$1" id="$2" line="$3"
+  if [[ -n "${name}" && -n "${id}" ]]; then
+    # The id is only now known, and field_excluded_for_meter() looks the
+    # patterns up by id; set before emit_discovery_from_json() below.
+    if [[ -n "${MBUS_EXCLUDE_BY_NAME[${name}]:-}" ]]; then
+      # shellcheck disable=SC2034  # read by field_excluded_for_meter() in 08-discovery-helpers.sh
+      METER_EXCLUDE_FIELDS["${id,,}"]="${MBUS_EXCLUDE_BY_NAME[${name}]}"
+    else
+      unset 'METER_EXCLUDE_FIELDS[${id,,}]'
+    fi
+  fi
+  if [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]]; then
+    status_meter_seen "${line}"
+    emit_discovery_from_json "${line}"
+    mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
+    status_mark_discovery_published
+    write_status_json
+  fi
+  echo "${line}"
+}
+
+# The decoder's output: the console log, the traffic state and status_mbus.json
+# in wmbus_mbus.py (one process instead of a jq per telegram line and a log
+# append per line); the loop after it publishes what it accepts and echoes
+# the rest, in the decoder's order. Fields are separated by 0x1F, which `read`
+# keeps, so an empty name survives; the line is the last field, so `read`
+# hands it over whole, and a newline in it travels as 0x1E. python3 exits 0
+# only at the end of its input; any other exit is a crash and it is started
+# again on the same input.
+MBUS_CONSUMER="${MBUS_CONSUMER:-${BRIDGE_SCRIPT_DIR:-/usr/bin}/wmbus_mbus.py}"
+_mbus_consume_stage() {
+  if [[ "${MBUS_CONSUMER_IN_PYTHON:-true}" != "true" ]] || ! command -v python3 >/dev/null 2>&1; then
+    _mbus_consume_bash
+    return
+  fi
+  # --name=value: a value starting with "-" must not read as an option.
+  until python3 -u "${MBUS_CONSUMER}" consume \
+      --log="${MBUS_LOG}" --status-file="${MBUS_STATUS_FILE}" --options="${OPTIONS_JSON}" \
+      --events-file="${STATUS_EVENTS_FILE}" --alias="${MBUS_BUS_ALIAS}" \
+      --configured="${MBUS_METERS_OK:-0}" --skipped="${MBUS_METERS_SKIPPED:-0}" \
+      --state="${MBUS_TRAFFIC_STATE}"; do
+    sleep 1
+  done | {
+    local _act _a _b _c
+    while IFS=$'\x1f' read -r _act _a _b _c; do
+      case "${_act}" in
+        tg) _mbus_publish_telegram "${_a}" "${_b}" "${_c//$'\x1e'/$'\n'}" ;;
+        log) printf '%s\n' "${_c}" ;;
+      esac
+    done
+  }
+}
+
+# write_mbus_conf and refresh_mbus_meter_files, in wmbus_mbus.py config (one
+# process instead of a jq per option and per meter field); the values bash
+# keeps come back on its stdout: the alias, the poll default, the meter
+# counts and the exclude patterns by name, then write_mbus_conf's return
+# code. MBUS_CONFIG_IN_PYTHON=false, no python3 or no answer from it runs the
+# bash functions.
+_mbus_configure() {
+  if [[ "${MBUS_CONFIG_IN_PYTHON:-true}" == "true" ]] && command -v python3 >/dev/null 2>&1; then
+    local _out _k _a _b _rc=""
+    # --name=value: a value starting with "-" must not read as an option.
+    _out="$(python3 "${MBUS_CONSUMER}" config --options="${OPTIONS_JSON}" --conf="${MBUS_CONF_FILE}" \
+      --meter-dir="${MBUS_METER_DIR}" --status-file="${MBUS_STATUS_FILE}" \
+      --events-file="${STATUS_EVENTS_FILE}" --alias="${MBUS_BUS_ALIAS}" \
+      --configured="${MBUS_METERS_OK:-0}" --skipped="${MBUS_METERS_SKIPPED:-0}" \
+      --loglevel="${LOGLEVEL:-}")"
+    while IFS=$'\x1f' read -r _k _a _b; do
+      case "${_k}" in
+        set)
+          case "${_a}" in
+            MBUS_BUS_ALIAS|MBUS_POLL_DEFAULT|MBUS_METERS_OK|MBUS_METERS_SKIPPED) printf -v "${_a}" '%s' "${_b}" ;;
+          esac ;;
+        exclude) MBUS_EXCLUDE_BY_NAME["${_a}"]="${_b}" ;;
+        unexclude) unset 'MBUS_EXCLUDE_BY_NAME[${_a}]' ;;
+        rc) _rc="${_a}" ;;
+      esac
+    done <<< "${_out}"
+    if [[ -n "${_rc}" ]]; then
+      [[ "${_rc}" == "0" ]]
+      return
+    fi
+    warn "M-Bus: wmbus_mbus.py config gave no result -> writing the config in bash"
+  fi
+  write_mbus_conf || return 1
+  refresh_mbus_meter_files
 }
 
 # ------------------------------------------------------------
@@ -493,8 +662,7 @@ start_mbus_instance() {
     mbus_write_status "disabled"
     return 0
   fi
-  write_mbus_conf || return 0
-  refresh_mbus_meter_files
+  _mbus_configure || return 0
 
   # Armed, port fine, nothing to poll. Distinct from "no_reply": the decoder is
   # not silent, it was never asked to say anything.
@@ -510,13 +678,10 @@ start_mbus_instance() {
       local _t0
       _t0="$(epoch_now)"
       # tee wrote the decoder's line verbatim, with no time and no boundary
-      # between readings. Logging inside the loop instead lets the log carry a
-      # stamp while mbus_consume_line still gets the untouched line.
+      # between readings. Logging in the consumer instead lets the log carry a
+      # stamp while the parser still gets the untouched line.
       ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${MBUS_BASE}" 2>&1 \
-        | while IFS= read -r line; do
-            mbus_log_console_line "${line}"
-            mbus_consume_line "${line}"
-          done &
+        | _mbus_consume_stage &
       local pipeline_pid=$!
       wait "${pipeline_pid}" 2>/dev/null || true
       # Only an exiting process gets here. A vanished port does not end the

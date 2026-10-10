@@ -259,6 +259,35 @@ ensure_candidate_autodecode() {
   fi
 }
 
+# On every pipeline start: a preview config per registered candidate
+# (sync_candidate_autodecode_files), then none for an id that is now a
+# configured meter (prune_official_meter_previews) - by wmbus_meters.py
+# previews, which writes the same files and states and hands back the
+# one-shot decodes to start ("preview", fields separated by 0x1F), or by the
+# two bash functions with METER_FILES_IN_PYTHON=false or when it gives no
+# result.
+refresh_candidate_previews() {
+  if [[ "${METER_FILES_IN_PYTHON:-true}" == "true" ]] && command -v python3 >/dev/null 2>&1; then
+    local _out _k _a _b _rc=""
+    # --name=value: a value starting with "-" must not read as an option.
+    _out="$(python3 "${METER_FILES_TOOL}" previews --candidates-file="${STATUS_CANDIDATES_FILE}" \
+      --recent-raw-file="${STATUS_RECENT_RAW_FILE}" \
+      --preview-state-file="${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" --meter-dir="${METER_DIR}" \
+      --preview-meter-dir="${PREVIEW_METER_DIR}" --attempts-dir="${RUNTIME:-${BASE}}/.preview_attempts" \
+      --loglevel="${LOGLEVEL:-}")"
+    while IFS=$'\x1f' read -r _k _a _b; do
+      case "${_k}" in
+        preview) preview_decode_raw_if_requested "${_a}" "${_b}" ;;
+        rc) _rc="${_a}" ;;
+      esac
+    done <<< "${_out}"
+    [[ -n "${_rc}" ]] && return 0
+    warn "wmbus_meters.py previews gave no result -> syncing the preview configs in bash"
+  fi
+  sync_candidate_autodecode_files
+  prune_official_meter_previews
+}
+
 sync_candidate_autodecode_files() {
   local id driver type_line rest
   [[ -f "${STATUS_CANDIDATES_FILE}" ]] || return 0
@@ -288,6 +317,27 @@ prune_official_meter_previews() {
     fi
   done
   : "${_pruned}"  # preview files are one-shot inputs; LISTEN never reloads
+}
+
+# The heartbeat ticker's candidate cleanup: prune_stale_candidates, then
+# expire_stale_pending_previews - in one process by wmbus_meters.py
+# housekeeping (the same files and log lines), or by the two functions with
+# METER_FILES_IN_PYTHON=false or when it gives no result.
+candidate_housekeeping() {
+  if [[ "${METER_FILES_IN_PYTHON:-true}" == "true" ]] && command -v python3 >/dev/null 2>&1; then
+    local _out
+    # --name=value: a value starting with "-" must not read as an option.
+    _out="$(python3 "${METER_FILES_TOOL}" housekeeping --candidates-file="${STATUS_CANDIDATES_FILE}" \
+      --candidate-values-file="${STATUS_CANDIDATE_VALUES_FILE}" \
+      --preview-state-file="${STATUS_CANDIDATE_PREVIEW_STATE_FILE}" \
+      --preview-meter-dir="${PREVIEW_METER_DIR}" --attempts-dir="${RUNTIME:-${BASE}}/.preview_attempts" \
+      --prune-after="${CANDIDATE_PRUNE_AFTER_SECONDS:-}" \
+      --pending-timeout="${PREVIEW_PENDING_TIMEOUT_SECONDS:-}" --loglevel="${LOGLEVEL:-}")"
+    [[ "${_out}" == *$'rc\x1f0'* ]] && return 0
+    warn "wmbus_meters.py housekeeping gave no result -> cleaning the candidates in bash"
+  fi
+  prune_stale_candidates || true
+  expire_stale_pending_previews || true
 }
 
 # Flip preview rows stuck in "pending" to the terminal "no_decode_result".

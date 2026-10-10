@@ -42,13 +42,17 @@ import glob
 import json
 import math
 import os
+import queue
 import re
 import select
 import shutil
 import signal
+import socket
+import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 from decimal import Decimal
 from contextlib import contextmanager
@@ -256,20 +260,28 @@ def _apply(changes: List[Rows], lines: List[bytes]) -> List[bytes]:
     return lines
 
 
-def read_lines_flushing(stream, deferred: Deferred) -> Iterator[bytes]:
+def read_lines_flushing(stream, deferred: Deferred, waker=None) -> Iterator[bytes]:
     """The lines of stream, as iterating it gives them; while no line arrives,
-    the deferred writes are made when they fall due."""
+    the deferred writes are made when they fall due. waker (a PreviewDecoder)
+    is drained whenever its descriptor is readable: a one-shot finished."""
     try:
         fd = stream.fileno()
     except (AttributeError, OSError, ValueError):
         for line in stream:  # tests: an in-memory stream
             yield line
             deferred.flush_if_due()
+            if waker is not None:
+                waker.drain()
         return
     buf = b""
+    fds = [fd] + ([waker.fileno()] if waker is not None else [])
     while True:
         wait = deferred.due_in()
-        ready, _, _ = select.select([fd], [], [], wait)
+        ready, _, _ = select.select(fds, [], [], wait)
+        if waker is not None and waker.fileno() in ready:
+            waker.drain()
+            if fd not in ready:
+                continue
         if not ready:
             deferred.flush()
             continue
@@ -1324,6 +1336,502 @@ def autodecode_unchanged(files: CandidateFiles, meter: str, driver: str, type_li
         return False
 
 
+def normalize_id(text: str) -> str:
+    """05-raw.sh normalize_meter_id: 8 upper-case hex digits, "" when it is no id."""
+    t = re.sub(r"[ \t\n\r\f\v]", "", text)
+    if t in ("", "null"):
+        return ""
+    t = t[2:] if t[:2] in ("0x", "0X") else t
+    t = _ascii_upper(t)
+    if not re.fullmatch(r"[0-9A-F]+", t):
+        return ""
+    if len(t) < 8:
+        return t.rjust(8, "0")
+    return meter_id_from_raw_hex(t) if len(t) > 8 else t
+
+
+def jq_r(line: str, alternatives: Tuple[str, ...]) -> str:
+    """`$(jq -r '.a // .b // empty' <<< "$line" 2>/dev/null)` for top-level keys.
+
+    Every JSON value of the line is one input; a value that cannot be indexed
+    (number, string, array, boolean) is a jq error that prints nothing for it.
+    """
+    out = []
+    for v in jq_values(line + "\n"):
+        if v is None:
+            continue
+        if not isinstance(v, dict):
+            continue
+        for key in alternatives:
+            x = v.get(key[1:])
+            if x is not None and x is not False:
+                out.append(x if isinstance(x, str) else _jq_pretty(x))
+                break
+    return "\n".join(out).rstrip("\n")
+
+
+def jq_number_text(x: float) -> str:
+    """How jq prints a number it computed (a double), e.g. a sum."""
+    if x != x or x in (float("inf"), float("-inf")):
+        return "null" if x != x else ("1.7976931348623157e+308" if x > 0 else "-1.7976931348623157e+308")
+    if x == int(x) and abs(x) < 1e17:
+        return str(int(x))
+    return repr(x)
+
+
+_PRIMARY_CANONICAL = ("total_m3", "total_kwh", "total_wh", "total_energy_consumption_kwh", "total_volume_m3")
+_PRIMARY_LIKE = re.compile(r"(^total|_m3$|kwh|wh$|energy|volume)", re.I)
+_PRIMARY_NOT = re.compile(r"(last_month|last_year|previous_month|previous_year|previous|prev|at_history|"
+                          r"history|historic|billing|due_date|target|backflow|fraud|leak|tamper|alarm|"
+                          r"production|tariff|partial|negative|reactive)", re.I)
+_TARIFF_KWH = re.compile(r"^total_energy_consumption_tariff_[0-9]+_kwh$", re.I)
+_INSTANT = re.compile(r"(_kw$|_w$|_m3h$|_l_h$)", re.I)
+_META_KEYS = ("_", "id", "name", "meter", "media", "timestamp", "device_date_time", "rssi", "lqi",
+              "status", "driver", "type")
+
+
+def _tsv_cell(text: str) -> str:
+    """jq @tsv escaping of one string."""
+    return (text.replace("\\", "\\\\").replace("\t", "\\t").replace("\r", "\\r")
+            .replace("\n", "\\n"))
+
+
+def _first_object_lines(line: str, each: Callable[[dict], List[str]]) -> str:
+    """The first output line of a jq program run over every value of line;
+    a value the program fails on (not an object) prints nothing."""
+    for v in jq_values(line + "\n"):
+        if not isinstance(v, dict):
+            continue
+        out = each(v)
+        if out:
+            return out[0].split("\n", 1)[0]
+    return ""
+
+
+def select_primary_meter_value(line: str) -> str:
+    """07-meters.sh _select_primary_meter_value: "key<TAB>value" or ""."""
+    def each(v: dict) -> List[str]:
+        pair = next(([k, v[k]] for k in _PRIMARY_CANONICAL if _is_number(v.get(k))), None)
+        if pair is None:
+            pair = next(([k, x] for k, x in v.items() if _is_number(x) and _PRIMARY_LIKE.search(k)
+                         and not _PRIMARY_NOT.search(k)), None)
+        return [] if pair is None else [_tsv_cell(pair[0]) + "\t" + _jq_tostring(pair[1])]
+    return _first_object_lines(line, each)
+
+
+def store_candidate_value(line: str, values_file: str, state_file: str, attempts_dir: str,
+                          log: Callable[[str, str], None]) -> None:
+    """11-listen.sh _store_candidate_value: the preview's value of a decoded
+    candidate telegram, picked as status_meter_seen picks it, and the
+    preview state decoded_value (or decoded_without_numeric_value)."""
+    meter = normalize_id(jq_r(line, (".id",)))
+    if not re.fullmatch(r"[0-9A-Fa-f]{8}", meter):
+        return
+    value_key, value = _bash_read_tabs(select_primary_meter_value(line), 2)
+    if not value_key:
+        def tariffs(v: dict) -> List[str]:
+            vals = [float(x) for k, x in v.items() if _is_number(x) and _TARIFF_KWH.search(k)]
+            return [f"total_energy_consumption_kwh\t{jq_number_text(sum(vals))}"] if vals else []
+        value_key, value = _bash_read_tabs(_first_object_lines(line, tariffs), 2)
+    if not value_key:
+        value_key = _first_object_lines(
+            line, lambda v: [k for k, x in v.items() if _is_number(x) and _INSTANT.search(k)])
+    if value_key:
+        if not value:
+            for v in jq_values(line + "\n"):
+                if isinstance(v, dict) and v.get(value_key) not in (None, False):
+                    value = _jq_tostring(v[value_key]) if not isinstance(v[value_key], (dict, list)) \
+                        else _jq_pretty(v[value_key])
+                    break
+    else:
+        value_key, value = _bash_read_tabs(_first_object_lines(
+            line, lambda v: [f"{k}\t{_jq_tostring(x)}" for k, x in v.items()
+                             if k not in _META_KEYS and _is_number(x)]), 2)
+    if not value:
+        log("verbose", f"[DIAG] _store_candidate_value {meter}: no numeric value found, skipping")
+        set_preview_state(state_file, attempts_dir, meter, "decoded_without_numeric_value")
+        return
+    log("debug", f"[DIAG] _store_candidate_value {meter}: value_key={value_key} value={value}")
+    tsv_upsert(values_file, meter, f"{meter}\t{value}\t{value_key}\t{iso_now()}")
+    set_preview_state(state_file, attempts_dir, meter, "decoded_value")
+    log("debug", f"[DIAG] _store_candidate_value {meter}: wrote to status_candidate_values.tsv")
+
+
+def set_preview_state(path: str, attempts_dir: str, meter: str, state: str, note: str = "") -> None:
+    """06-candidates.sh _set_preview_state (see CLAUDE.md for the state machine).
+
+    A terminal state (decoded_value, decoded_without_numeric_value,
+    no_decode_result) discards the one-shot attempt counter.
+    """
+    tsv_upsert(path, meter, f"{meter}\t{state}\t{iso_now()}\t{note}")
+    if state in ("decoded_value", "decoded_without_numeric_value", "no_decode_result"):
+        _remove(os.path.join(attempts_dir, meter))
+
+
+def _remove(path: str) -> None:
+    """rm -f"""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def ensure_autodecode(files: CandidateFiles, meter: str, driver: str, type_line: str, reload: str,
+                      state_file: str, attempts_dir: str,
+                      log: Callable[[str, str], None], request: Callable[..., None]) -> None:
+    """06-candidates.sh ensure_candidate_autodecode.
+
+    Keeps meter-preview-<id> as the candidate's driver says. An official
+    meter or one that needs AES has none (an existing one is removed with its
+    attempt counter). A preview config that is written or changes sets the
+    state "pending", drops the attempt counter and, when the RAW ring holds a
+    telegram of the meter, asks for a one-shot decode of it ("preview":
+    preview_decode_raw_if_requested, which stays in bash for now). LISTEN is
+    never reloaded; reload is only logged, as in bash.
+    """
+    preview = os.path.join(files.preview_meter_dir, f"meter-preview-{meter}")
+    attempts = os.path.join(attempts_dir, meter)
+    if official_meter(files.meter_dir, meter):
+        if os.path.isfile(preview):
+            _remove(preview)
+            _remove(attempts)
+            log("info", f"autodecode {meter}: skipped (official meter), pruned orphaned preview")
+        return
+    log("debug", f"[DIAG] autodecode {meter}: file={preview} driver={driver or 'auto'} "
+                 f"type={type_line or '?'} reload={reload}")
+    if candidate_type_requires_aes(type_line):
+        log("verbose", f"[DIAG] autodecode {meter}: AES required, skipping preview")
+        if os.path.isfile(preview):
+            _remove(preview)
+            _remove(attempts)
+        return
+    os.makedirs(files.preview_meter_dir, exist_ok=True)
+    content = f"name=preview_{meter}\nid={meter.lower()}\n"
+    if driver and driver not in ("auto", "unknown"):
+        content += f"driver={driver}\n"
+    try:
+        with open(preview, "rb") as fh:
+            unchanged = fh.read() == _b(content)
+    except OSError:
+        unchanged = False
+    if unchanged:
+        log("debug", f"[DIAG] autodecode {meter}: {preview} unchanged, no reload triggered")
+        return
+    with open(preview + ".tmp", "wb") as fh:  # the temporary name bash uses
+        fh.write(_b(content))
+    os.replace(preview + ".tmp", preview)
+    log("verbose", f"[DIAG] autodecode {meter}: wrote {preview} (driver={driver or 'auto'})")
+    set_preview_state(state_file, attempts_dir, meter, "pending")
+    _remove(attempts)
+    found = find_recent_raw(files.recent_raw, meter)
+    if found and found[2]:
+        # The candidate id goes with it: the RAW A-field is not the id for
+        # manufacturer-specific layouts (Diehl/izar).
+        request("preview", found[2], meter)
+
+
+def append_event(path: str, level: str, message: str) -> None:
+    """status_add_event's file: append, then keep the last 40 lines. (Its
+    STATUS_LAST_EVENT lived in the bash subshell that called it, so nothing
+    reaches status.json from here.)"""
+    try:
+        with open(path, "ab") as fh:
+            fh.write(_b(f"{iso_now()}\t{level}\t{message}") + b"\n")
+        _replace_with(path, _tail_lines(path, 40))
+    except OSError:
+        pass
+
+
+def candidate_seen(files: CandidateFiles, meter: str, driver: str, type_line: str, manufacturer: str,
+                   reload: str, state_file: str, attempts_dir: str, events_file: str,
+                   log: Callable[[str, str], None], request: Callable[..., None]) -> None:
+    """06-candidates.sh status_candidate_seen for a normalized id, without
+    status.json (its callers here passed update_status=false or ran where
+    write_status_json is a no-op).
+
+    The refreshes still waiting for the deferred write happened before this:
+    written first, the rows keep the order in which the telegrams arrived
+    (and a waiting refresh of this candidate cannot overwrite it later).
+    """
+    _flush_candidate_refreshes(files)
+    existed = any(_first_field(ln) == _b(meter) for ln in _read_lines(files.candidates))
+    record_seen(files.seen, meter, "candidate")
+    last_seen = iso_now()
+    upsert_candidate_row(files.candidates, meter, driver, type_line, last_seen,
+                         seen_stats(files.seen, meter), manufacturer)
+    analyze_candidate_from_text(files, meter, type_line)
+    ensure_autodecode(files, meter, driver or "auto", type_line, reload, state_file, attempts_dir,
+                      log, request)
+    if not existed:
+        append_event(events_file, "candidate", f"Candidate detected {meter} ({driver})")
+
+
+def candidate_seen_from_json(files: CandidateFiles, line: str, state_file: str, attempts_dir: str,
+                             events_file: str, log: Callable[[str, str], None],
+                             request: Callable[..., None]) -> None:
+    """11-listen.sh status_candidate_seen_from_json."""
+    meter = normalize_id(jq_r(line, (".id",)))
+    if not re.fullmatch(r"[0-9A-Fa-f]{8}", meter):
+        return
+    driver = jq_r(line, (".meter", ".driver"))
+    if not driver or driver == "null":
+        driver = "auto"
+    type_line = jq_r(line, (".media",))
+    type_line = "" if type_line == "null" else type_line
+    row = next((_bash_read_tabs(_s(ln), 9) for ln in _read_lines(files.candidates)
+                if _first_field(ln) == _b(meter)), None)
+    existing_driver, existing_type = (row[1], row[2]) if row else ("", "")
+    # Decoded JSON wins; a stored value only fills what it lacks, and not
+    # the generic placeholders, so a decode heals a RAW-registered row.
+    if driver == "auto" and existing_driver and existing_driver != "auto":
+        driver = existing_driver
+    if not type_line and existing_type and existing_type != "wMBus telegram":
+        type_line = existing_type
+    # reload=false: no LISTEN reload per decoded preview telegram.
+    candidate_seen(files, meter, driver, type_line or "decoded", "", "false", state_file, attempts_dir,
+                   events_file, log, request)
+
+
+def _env_int(name: str, default: int) -> int:
+    """`${NAME:-default}`, then `[[ =~ ^[0-9]+$ ]] || default`."""
+    v = os.environ.get(name, "")
+    return int(v) if re.fullmatch(r"[0-9]+", v) else default
+
+
+def record_no_decode_attempt(attempts_dir: str, state_file: str, meter: str,
+                             log: Callable[[str, str], None]) -> None:
+    """06-candidates.sh _record_preview_no_decode_attempt: count the one-shots
+    that gave no JSON; three of them over 60 s or more make it no_decode_result."""
+    cnt_file = os.path.join(attempts_dir, meter)
+    cnt = start = 0
+    if os.path.isfile(cnt_file):
+        lines = _read_lines(cnt_file)
+        c, st = _bash_read_tabs(_s(lines[0]) if lines else "", 2)
+        cnt = int(c) if re.fullmatch(r"[0-9]+", c) else 0
+        start = int(st) if re.fullmatch(r"[0-9]+", st) else 0
+    ts = int(now())
+    start = start if start > 0 else ts
+    cnt += 1
+    elapsed = ts - start
+    try:  # mktemp "<file>.tmp.XXXXXX" && mv: nothing when the directory is gone
+        fd, tmp = tempfile.mkstemp(prefix=meter + ".tmp.", dir=attempts_dir)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(f"{cnt}\t{start}\n")
+        os.replace(tmp, cnt_file)
+    except OSError:
+        pass
+    if cnt >= 3 and elapsed >= 60:
+        log("verbose", f"[DIAG] preview one-shot {meter}: no JSON after {cnt} attempts ({elapsed}s)")
+        set_preview_state(state_file, attempts_dir, meter, "no_decode_result")
+    else:
+        log("debug", f"[DIAG] preview one-shot {meter}: no JSON attempt #{cnt} (elapsed={elapsed}s)")
+
+
+class PreviewDecoder:
+    """06-candidates.sh preview_decode_raw_if_requested: the one-shot preview decode.
+
+    A candidate's RAW frame is decoded by a short-lived wmbusmeters with a
+    temporary config holding only that candidate's meter-preview-<id> file.
+    The checks, the per-id lock, the parallel slots and the throttle are the
+    bash function's, on the same files, so either side can hold them. The
+    decoder runs in a thread, as bash ran it in the background; its result is
+    booked on the thread that reads the input (drain, woken through a pipe),
+    so the bookkeeping is never written from two threads. close() waits for
+    the decoders still running and books them, or frees their lock and slot.
+    """
+
+    def __init__(self, files: CandidateFiles, runtime: str, state_file: str, attempts_dir: str,
+                 values_file: str, events_file: str, loglevel: str,
+                 log: Callable[[str, str], None], request: Callable[..., None]) -> None:
+        self.files, self.runtime = files, runtime
+        self.state_file, self.attempts_dir = state_file, attempts_dir
+        self.values_file, self.events_file = values_file, events_file
+        self.loglevel, self.log, self.forward = loglevel, log, request
+        self.binary = os.environ.get("WMBUSMETERS_ONESHOT_BIN") or "/usr/bin/wmbusmeters"
+        self.results: "queue.SimpleQueue" = queue.SimpleQueue()
+        self.running: List[Tuple[threading.Thread, str, str, str]] = []
+        self.rfd, self.wfd = os.pipe()
+        os.set_blocking(self.rfd, False)
+
+    def fileno(self) -> int:
+        return self.rfd
+
+    def request(self, raw: str, id_hint: str = "") -> None:
+        """Everything up to the start of the decoder, as bash does it in the caller."""
+        raw = _ascii_upper(_BASH_SPACE.sub("", raw))
+        if not _HEX_UPPER.fullmatch(raw):
+            return
+        if re.fullmatch(r"[0-9A-Fa-f]{8}", id_hint):
+            meter = normalize_id(id_hint)
+        else:
+            # The preview config whose id is in the frame (little-endian), as
+            # the A-field is not the id for manufacturer-specific layouts.
+            meter, lower = "", raw.lower()
+            for path in sorted(glob.glob(os.path.join(self.files.preview_meter_dir, "meter-preview-*"))):
+                cand = os.path.basename(path)[len("meter-preview-"):]
+                if not os.path.exists(path) or not _ID8.fullmatch(cand):
+                    continue
+                if (cand[6:8] + cand[4:6] + cand[2:4] + cand[0:2]).lower() in lower:
+                    meter = cand.upper()
+                    break
+            meter = meter or meter_id_from_raw_hex(raw)
+        if not _ID8.fullmatch(meter):
+            return
+        cfg = os.path.join(self.files.preview_meter_dir, f"meter-preview-{meter}")
+        if not os.path.isfile(cfg):
+            return
+        locks = os.path.join(self.runtime, ".preview_decode_locks")
+        lasts = os.path.join(self.runtime, ".preview_decode_last")
+        os.makedirs(locks, exist_ok=True)
+        os.makedirs(lasts, exist_ok=True)
+        lock_dir, last_file = os.path.join(locks, meter), os.path.join(lasts, meter)
+        ts = int(now())
+        last = int(_digits_or_zero(last_file))
+        if ts - last < _env_int("PREVIEW_DECODE_MIN_INTERVAL_SECONDS", 20):
+            return
+        # A preview that already shows a value is decoded again at most every
+        # PREVIEW_DECODED_MIN_INTERVAL_SECONDS; any change of its config sets
+        # "pending" first, which decodes at once.
+        if (ts - last < _env_int("PREVIEW_DECODED_MIN_INTERVAL_SECONDS", 300)
+                and preview_state(self.state_file, meter) == "decoded_value"):
+            return
+        try:
+            os.mkdir(lock_dir)
+        except OSError:
+            return
+        slot = self._acquire_slot()
+        if not slot:
+            _rmdir(lock_dir)
+            return
+        try:
+            with open(last_file, "w") as fh:
+                fh.write(f"{ts}\n")
+        except OSError:
+            pass
+        try:
+            tmp = tempfile.mkdtemp(prefix=f".preview_decode.{meter}.", dir=self.runtime)
+        except OSError:
+            _rmdir(slot)
+            _rmdir(lock_dir)
+            return
+        try:
+            conf_dir = os.path.join(tmp, "etc", "wmbusmeters.d")
+            os.makedirs(conf_dir, exist_ok=True)
+            with open(os.path.join(tmp, "etc", "wmbusmeters.conf"), "w") as fh:
+                fh.write(f"loglevel={self.loglevel}\ndevice=stdin:hex\nlogfile=/dev/stdout\nformat=json\n")
+            shutil.copyfile(cfg, os.path.join(conf_dir, f"meter-preview-{meter}"))
+        except OSError:
+            pass
+        t = threading.Thread(target=self._decode, args=(meter, raw, tmp, slot, lock_dir), daemon=True)
+        self.running.append((t, tmp, slot, lock_dir))
+        t.start()
+
+    def _acquire_slot(self) -> str:
+        """_preview_acquire_slot: one of PREVIEW_DECODE_MAX_PARALLEL slot directories."""
+        n_max = max(_env_int("PREVIEW_DECODE_MAX_PARALLEL", 2), 1)
+        slots = os.path.join(self.runtime, ".preview_decode_slots")
+        os.makedirs(slots, exist_ok=True)
+        for n in range(1, n_max + 1):
+            slot = os.path.join(slots, str(n))
+            try:
+                os.mkdir(slot)
+                return slot
+            except OSError:
+                continue
+        return ""
+
+    def _decode(self, meter: str, raw: str, tmp: str, slot: str, lock_dir: str) -> None:
+        json_line = ""
+        try:
+            out = subprocess.run([self.binary, f"--useconfig={tmp}"], input=_b(raw + "\n"),
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout
+            json_line = next((ln for ln in _s(out).split("\n")
+                              if re.match(r'\{.*"_":"telegram"', ln)), "")
+        except OSError:
+            pass
+        self.results.put((meter, json_line, tmp, slot, lock_dir))
+        try:
+            os.write(self.wfd, b"x")
+        except OSError:
+            pass
+
+    def drain(self) -> None:
+        """Book the decoders that finished."""
+        try:
+            while os.read(self.rfd, 4096):
+                pass
+        except (BlockingIOError, OSError):
+            pass
+        while True:
+            try:
+                meter, json_line, tmp, slot, lock_dir = self.results.get_nowait()
+            except queue.Empty:
+                return
+            self.running = [r for r in self.running if r[1] != tmp]
+            try:
+                if json_line:
+                    self.log("debug", f"[DIAG] preview one-shot {meter}: decoded JSON")
+                    candidate_seen_from_json(self.files, json_line, self.state_file, self.attempts_dir,
+                                             self.events_file, self.log, self._route)
+                    store_candidate_value(json_line, self.values_file, self.state_file,
+                                          self.attempts_dir, self.log)
+                else:
+                    record_no_decode_attempt(self.attempts_dir, self.state_file, meter, self.log)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+                _rmdir(slot)
+                _rmdir(lock_dir)
+
+    def _route(self, *fields: str) -> None:
+        """A one-shot asked for while booking one (a preview config the decoded
+        driver changed) comes back here; it meets the throttle bash met."""
+        if fields[0] == "preview":
+            self.request(fields[1], fields[2])
+        else:
+            self.forward(*fields)
+
+    def close(self, timeout: float = 30.0) -> None:
+        """At the end of the input: book the decoders still running; a decoder
+        that does not finish in time leaves its candidate to the next one-shot
+        (its lock and slot are freed, its result dropped)."""
+        deadline = time.monotonic() + timeout
+        for t, _tmp, _slot, _lock in list(self.running):
+            t.join(max(0.0, deadline - time.monotonic()))
+        self.drain()
+        for _t, tmp, slot, lock_dir in self.running:
+            shutil.rmtree(tmp, ignore_errors=True)
+            _rmdir(slot)
+            _rmdir(lock_dir)
+        self.running = []
+        # A new pipe: a decoder that did not finish may still write to the old one.
+        for fd in (self.rfd, self.wfd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self.rfd, self.wfd = os.pipe()
+        os.set_blocking(self.rfd, False)
+
+
+def _rmdir(path: str) -> None:
+    try:
+        os.rmdir(path)
+    except OSError:
+        pass
+
+
+def _preview_decoder(a: argparse.Namespace, files: CandidateFiles, log: Callable[[str, str], None],
+                     forward: Callable[..., None]) -> Optional[PreviewDecoder]:
+    """The one-shot decoder of a book, when bash passed what it writes
+    (--preview-oneshot-runtime and the files of the preview state machine);
+    otherwise None and the one-shot is asked of bash ("preview" request)."""
+    need = [getattr(a, n, "") for n in ("preview_oneshot_runtime", "candidate_values_file",
+                                        "preview_attempts_dir", "preview_state_file", "events_file")]
+    if not all(need):
+        return None
+    return PreviewDecoder(files, need[0], need[3], need[2], need[1], need[4], a.loglevel, log, forward)
+
+
 _DEVICE_TYPES = {"02": "Electricity meter (0x02)", "03": "Gas meter (0x03)",
                  "04": "Heat meter (0x04)", "06": "Warm water meter (0x06)",
                  "07": "Water meter (0x07)", "08": "Heat Cost Allocator (0x08)",
@@ -1383,8 +1891,15 @@ class RawBook:
                                          a.candidate_raw_file, a.candidate_analysis_file,
                                          a.preview_meter_dir, a.meter_dir, self.deferred)
         self.ring_lines: Optional[int] = None
+        self.decoder = _preview_decoder(a, self.candidates, self.log, self.write_request)
 
     def request(self, *fields: str) -> None:
+        if fields[0] == "preview" and self.decoder is not None:
+            self.decoder.request(fields[1], fields[2] if len(fields) > 2 else "")
+            return
+        self.write_request(*fields)
+
+    def write_request(self, *fields: str) -> None:
         # A lost reader must not stop the counting itself.
         try:
             self.out.write("\t".join(fields) + "\n")
@@ -1438,7 +1953,9 @@ class RawBook:
             return
         code = mfct_code_from_raw_hex(norm)
         if code:
-            candidate_fill_manufacturer(a.candidates_file, meter, _MFCT_NAMES.get(code) or code)
+            full = _MFCT_NAMES.get(code) or code
+            if candidate_fill_manufacturer(a.candidates_file, meter, full):
+                self.log("debug", f"[DIAG] candidate {meter}: filled manufacturer fallback code={full}")
         if norm[4:8] != "304C":
             return
         driver, type_line = "", ""
@@ -1466,8 +1983,30 @@ class RawBook:
         if (driver == new_driver and type_line == new_type
                 and autodecode_unchanged(self.candidates, meter, new_driver, new_type)
                 and candidate_seen_refresh(self.candidates, meter, new_driver, new_type)):
+            # What ensure_candidate_autodecode logs for an unchanged candidate.
+            preview = os.path.join(self.candidates.preview_meter_dir, f"meter-preview-{meter}")
+            if not official_meter(self.candidates.meter_dir, meter):
+                self.log("debug", f"[DIAG] autodecode {meter}: file={preview} driver={new_driver} "
+                                  f"type={new_type} reload=true")
+                if candidate_type_requires_aes(new_type):
+                    self.log("verbose", f"[DIAG] autodecode {meter}: AES required, skipping preview")
+                else:
+                    self.log("debug", f"[DIAG] autodecode {meter}: {preview} unchanged, no reload triggered")
+            return
+        if a.preview_state_file and a.preview_attempts_dir:
+            # status_candidate_seen <id> <driver> <type> false: no status.json.
+            candidate_seen(self.candidates, meter, new_driver, new_type, "", "true",
+                           a.preview_state_file, a.preview_attempts_dir, a.events_file,
+                           self.log, self.request)
             return
         self.request("sap", raw)
+
+    def log(self, level: str, message: str) -> None:
+        """log ("info", always), log_verbose and log_debug, on stderr: stdout
+        carries the requests to the bash loop."""
+        if level == "info" or self.a.loglevel == "debug" or (
+                level == "verbose" and self.a.loglevel == "verbose"):
+            print(f"[wmbus-bridge] {message}", file=sys.stderr, flush=True)
 
     def preview(self, raw: str) -> None:
         """preview_decode_raw_if_requested up to its throttle; bash decides the rest."""
@@ -1569,7 +2108,7 @@ def run_lines(book: "RawBook", stream=None, err=None) -> None:
     stream = stream if stream is not None else sys.stdin.buffer
     err = err if err is not None else sys.stderr
     try:
-        for raw in read_lines_flushing(stream, book.deferred):
+        for raw in read_lines_flushing(stream, book.deferred, book.decoder):
             if not raw.endswith(b"\n"):  # `read` does not hand over an unterminated last line
                 continue
             try:
@@ -1581,6 +2120,8 @@ def run_lines(book: "RawBook", stream=None, err=None) -> None:
         # this process start it again; what is collected is written first.
         raise SystemExit(128 + signal.SIGTERM)
     finally:
+        if book.decoder is not None:
+            book.decoder.close()
         book.deferred.flush(err)
 
 
@@ -1603,12 +2144,14 @@ class ListenBook:
     behind it (see _listen_parse_stage), one request per line, fields
     separated by 0x1F so that empty fields survive `read`: a new or changed
     candidate ("snippet": emit_snippet_if_new), SEARCH ("search":
-    search_cache_candidate) and decoded JSON ("json").
+    search_cache_candidate, when bash did not pass SEARCH_STATE) and decoded
+    JSON ("json").
     """
 
     SEP = "\x1f"
 
-    def __init__(self, a: argparse.Namespace, out=None, err=None) -> None:
+    def __init__(self, a: argparse.Namespace, out=None, err=None,
+                 search: Optional["SearchBook"] = None) -> None:
         self.a = a
         self.out = out if out is not None else sys.stdout
         self.err = err if err is not None else sys.stderr
@@ -1617,8 +2160,20 @@ class ListenBook:
                                          a.candidate_raw_file, a.candidate_analysis_file,
                                          a.preview_meter_dir, a.meter_dir, self.deferred)
         self.block = ("", "", "", "")
+        self.decoder = _preview_decoder(a, self.candidates, self.log, self.write_request)
+        self.search = search
+        if search is None and a.search_mode == "true" and self.in_process():
+            state = search_state_from_env()
+            if state is not None:
+                self.search = SearchBook(a, state, err=self.err, request=self.write_request)
 
     def request(self, *fields: str) -> None:
+        if fields[0] == "preview" and self.decoder is not None:
+            self.decoder.request(fields[1], fields[2])
+            return
+        self.write_request(*fields)
+
+    def write_request(self, *fields: str) -> None:
         try:
             self.out.write(self.SEP.join(fields) + "\n")
             self.out.flush()
@@ -1626,13 +2181,18 @@ class ListenBook:
             pass
 
     def log(self, level: str, message: str) -> None:
-        """log_debug / log_verbose: printed only at those log levels."""
-        if self.a.loglevel == "debug" or (level == "verbose" and self.a.loglevel == "verbose"):
+        """log ("info", always), log_verbose and log_debug. On stderr: stdout
+        carries the requests to the bash loop."""
+        if level == "info" or self.a.loglevel == "debug" or (
+                level == "verbose" and self.a.loglevel == "verbose"):
             print(f"[wmbus-bridge] {message}", file=self.err, flush=True)
 
     def line(self, text: str) -> None:
         if text.startswith("{") and '"_":"telegram"' in text:
-            self.request("json", text)
+            if self.in_process() and self.a.candidate_values_file:
+                self.json(text)
+            else:
+                self.request("json", text)
             return
         meter, driver, type_line, manufacturer = self.block
         m = _LISTEN_RECEIVED.match(text)
@@ -1672,10 +2232,67 @@ class ListenBook:
         if (self.official_meters() > 0) != (self.a.official == "nonzero"):
             return
         if self.a.search_mode == "true" and self.a.search_expected != "0":
-            self.request("search", meter, driver, type_line)
+            if self.search is not None:
+                self.search.cache_candidate(
+                    meter, driver, type_line,
+                    lambda m, d, t: self.candidate_seen(m, d, t, "", "true"))
+            else:
+                self.request("search", meter, driver, type_line)
             return
         if not self.refresh(meter, driver, type_line or "listen", manufacturer):
-            self.request("snippet", meter, driver, type_line, manufacturer)
+            if self.in_process():
+                self.snippet(meter, driver, type_line, manufacturer)
+            else:
+                self.request("snippet", meter, driver, type_line, manufacturer)
+
+    def in_process(self) -> bool:
+        """bash passed the files status_candidate_seen writes: new and changed
+        candidates and decoded JSON are booked here, not asked of bash."""
+        return bool(self.a.preview_state_file and self.a.events_file and self.a.preview_attempts_dir)
+
+    def candidate_seen(self, meter: str, driver: str, type_line: str, manufacturer: str,
+                       reload: str) -> None:
+        """06-candidates.sh status_candidate_seen for a normalized id.
+
+        status.json is not written (write_status_json is a no-op in the bash
+        loop this replaces: its STATUS_* snapshot is stale).
+        """
+        candidate_seen(self.candidates, meter, driver, type_line, manufacturer, reload,
+                       self.a.preview_state_file, self.a.preview_attempts_dir, self.a.events_file,
+                       self.log, self.request)
+
+    def json(self, line: str) -> None:
+        """11-listen.sh _process_listen_json_line: a decoded telegram of a candidate."""
+        self.log("debug", f"[DIAG] LISTEN-parse: JSON telegram received: {line[:160]}")
+        if self.official_meters() > 0:
+            self.candidate_seen_from_json(line)
+        self.log("debug", "[DIAG] LISTEN-parse: calling _store_candidate_value")
+        store_candidate_value(line, self.a.candidate_values_file, self.a.preview_state_file,
+                              self.a.preview_attempts_dir, self.log)
+
+    def candidate_seen_from_json(self, line: str) -> None:
+        """11-listen.sh status_candidate_seen_from_json."""
+        candidate_seen_from_json(self.candidates, line, self.a.preview_state_file,
+                                 self.a.preview_attempts_dir, self.a.events_file, self.log, self.request)
+
+    def snippet(self, meter: str, driver: str, type_line: str, manufacturer: str) -> None:
+        """11-listen.sh emit_snippet_if_new."""
+        meter = normalize_id(meter)
+        if not re.fullmatch(r"[0-9A-Fa-f]{8}", meter):
+            return
+        self.candidate_seen(meter, driver or "auto", type_line or "listen", manufacturer, "true")
+        if _b(meter) not in _read_lines(self.a.snippet_file):
+            with open(self.a.snippet_file, "ab") as fh:
+                fh.write(_b(meter) + b"\n")
+            for line in ("=== NEW METER CANDIDATE DETECTED ===", f"Received telegram from: {meter}",
+                         *([f"Suggested driver: {driver}"] if driver else []),
+                         "Add to options.json meters[] (example):",
+                         f'  no key:   {{"id":"meter_{meter}","meter_id":"{meter}","type":"auto",'
+                         f'"type_other":"","key":""}}',
+                         f'  zero key: {{"id":"meter_{meter}","meter_id":"{meter}","type":"auto",'
+                         f'"type_other":"","key":"00000000000000000000000000000000"}}',
+                         "=================================="):
+                print(f"[wmbus-bridge][WARN] {line}", file=self.err, flush=True)
 
     def refresh(self, meter: str, driver: str, type_line: str, manufacturer: str) -> bool:
         """emit_snippet_if_new for a known, announced candidate; False leaves it to bash."""
@@ -1709,7 +2326,7 @@ def run_listen(book: ListenBook, stream=None, err=None) -> None:
     stream = stream if stream is not None else sys.stdin.buffer
     err = err if err is not None else sys.stderr
     try:
-        for raw in read_lines_flushing(stream, book.deferred):
+        for raw in read_lines_flushing(stream, book.deferred, book.decoder):
             if not raw.endswith(b"\n"):  # `read` does not hand over an unterminated last line
                 continue
             try:
@@ -1724,6 +2341,683 @@ def run_listen(book: ListenBook, stream=None, err=None) -> None:
         # As in run(): what is collected is written first.
         raise SystemExit(128 + signal.SIGTERM)
     finally:
+        if book.decoder is not None:
+            book.decoder.close()
+        book.deferred.flush(err)
+
+
+# ── SEARCH (10-search.sh) ───────────────────────────────────────────────────
+
+_SEARCH_STATE_NAMES = (
+    "SEARCH_EXPECTED_VALUE_M3", "SEARCH_TOLERANCE_M3", "SEARCH_DELTA_MODE", "SEARCH_MIN_DELTA_M3",
+    "SEARCH_TOPIC", "SEARCH_CANDIDATES_FILE", "SEARCH_MATCHES_FILE", "SEARCH_STATUS_FILE",
+    "SEARCH_USING_TEMP_METERS", "SEARCH_IGNORED_COUNT", "SEARCH_TEMP_METERS_LOADED",
+    "SEARCH_CHECKED_VALUES", "SEARCH_DECODED_JSON_COUNT", "SEARCH_MATCH_COUNT",
+    "SEARCH_LAST_CACHE_CHANGE", "SEARCH_LAST_CANDIDATE_ID", "SEARCH_LAST_CANDIDATE_DRIVER",
+    "SEARCH_LAST_CANDIDATE_TYPE", "SEARCH_LAST_CHECKED_ID", "SEARCH_LAST_CHECKED_DRIVER",
+    "SEARCH_LAST_CHECKED_FIELD", "SEARCH_LAST_CHECKED_VALUE", "SEARCH_LAST_CHECKED_DIFF",
+    "SEARCH_LAST_REASON", "SEARCH_LAST_IGNORED_REASON", "DISCOVERY_ENABLED")
+_SEARCH_COUNTERS = ("SEARCH_IGNORED_COUNT", "SEARCH_TEMP_METERS_LOADED", "SEARCH_CHECKED_VALUES",
+                    "SEARCH_DECODED_JSON_COUNT", "SEARCH_MATCH_COUNT")
+_AWK_NUM_PREFIX = re.compile(r"[ \t\n]*[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?")
+_AWK_STRNUM = re.compile(r"[ \t\n]*[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?[ \t\n]*")
+_SEARCH_CACHED_ROW = re.compile(rb"^[0-9A-Fa-f]{8}[ \t\r\v\f]")
+_SEARCH_NOT_FIELDS = ("_", "id", "name", "meter", "media", "timestamp", "device_date_time",
+                      "rssi", "lqi", "status")
+
+
+def search_state_from_env(env: Optional[Dict[str, str]] = None) -> Optional[Dict[str, str]]:
+    """SEARCH_STATE as _search_state (12-pipeline.sh) prints it: one
+    "name<0x1F>value" line per variable. None when bash did not pass it."""
+    text = (env if env is not None else os.environ).get("SEARCH_STATE")
+    if text is None:
+        return None
+    state = {name: "" for name in _SEARCH_STATE_NAMES}
+    for row in text.split("\n"):
+        k, sep, v = row.partition("\x1f")
+        if sep and k in state:
+            state[k] = v
+    return state
+
+
+def _awk_number(text: str) -> float:
+    """A string in awk arithmetic: its numeric prefix, 0 without one."""
+    m = _AWK_NUM_PREFIX.match(text)
+    return float(m.group(0)) if m else 0.0
+
+
+def _awk_compare(a: str, b: str, op: str) -> bool:
+    """`a <op> b` of two `awk -v` values: numeric when both look numeric, else as strings."""
+    if _AWK_STRNUM.fullmatch(a) and _AWK_STRNUM.fullmatch(b):
+        x, y = float(a), float(b)
+    else:
+        x, y = a, b  # type: ignore[assignment]
+    return x <= y if op == "<=" else x >= y
+
+
+def _bash_int(text: str) -> int:
+    """A counter as `$((X + 1))` reads it (an empty or odd value as 0)."""
+    return int(text) if re.fullmatch(r"-?[0-9]+", text.strip()) else 0
+
+
+def _ascii_lower(text: str) -> str:
+    return text.translate(_ASCII_LOWER)
+
+
+_ASCII_LOWER = {c: c + 32 for c in range(ord("A"), ord("Z") + 1)}
+
+
+def obj_id(text: str) -> str:
+    """01-utils.sh _obj_id: lower case, [a-z0-9_] only, no doubled, leading or trailing "_"."""
+    s = re.sub(r"[^a-z0-9_]", "_", text.lower())
+    while "__" in s:
+        s = s.replace("__", "_")
+    s = s[1:] if s.startswith("_") else s
+    return s[:-1] if s.endswith("_") else s
+
+
+def _tsv_escape(text: str) -> str:
+    """jq's @tsv for one field."""
+    return text.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
+
+
+class SearchBook:
+    """10-search.sh: SEARCH's candidate cache, its value check and search_status.json.
+
+    The SEARCH_* variables start as the process that runs it inherited them
+    (SEARCH_STATE). In bash the decode loop and the zero-meter LISTEN parser
+    it forked each kept their own copy and both wrote search_status.json with
+    it; here one book serves both (DecodeBook hands it to its ListenBook).
+    """
+
+    def __init__(self, a: argparse.Namespace, state: Dict[str, str], err=None,
+                 request: Optional[Callable[..., None]] = None) -> None:
+        self.a = a
+        self.v = dict(state)
+        for name in _SEARCH_COUNTERS:
+            self.v[name] = str(_bash_int(self.v.get(name, "")))
+        self.err = err if err is not None else sys.stderr
+        self.request = request
+        self.reported_expected: Set[str] = set()
+        self.reported_delta: Set[str] = set()
+        self.first_value: Dict[str, str] = {}
+        self.cleared_fields: Set[str] = set()
+        self.cleaned_legacy: Set[str] = set()
+
+    @property
+    def mode(self) -> bool:
+        return self.a.search_mode == "true"
+
+    def warn(self, message: str) -> None:
+        print(f"[wmbus-bridge][WARN] {message}", file=self.err, flush=True)
+
+    def bump(self, name: str) -> None:
+        self.v[name] = str(_bash_int(self.v[name]) + 1)
+
+    def cached_count(self) -> int:
+        """search_cached_count."""
+        return sum(1 for ln in _read_lines(self.v["SEARCH_CANDIDATES_FILE"])
+                   if _SEARCH_CACHED_ROW.match(ln))
+
+    def write_status(self, phase: str = "auto", reason: str = "") -> None:
+        """write_search_status."""
+        v = self.v
+        if not v["SEARCH_STATUS_FILE"]:
+            return
+        cached = self.cached_count()
+        try:
+            with open(v["SEARCH_MATCHES_FILE"], "rb") as fh:
+                matches = fh.read().count(b"\n")
+        except OSError:
+            matches = 0
+        if phase == "auto":
+            if _bash_int(v["SEARCH_MATCH_COUNT"]) > 0 or matches > 0:
+                phase = "matched"
+            elif v["SEARCH_USING_TEMP_METERS"] == "true":
+                phase = "search"
+            elif self.mode and v["SEARCH_EXPECTED_VALUE_M3"] != "0":
+                phase = "collecting"
+            else:
+                phase = "listen"
+        if reason:
+            v["SEARCH_LAST_REASON"] = reason
+
+        def num(name: str) -> Any:
+            return _jq_tonumber(v[name] or "0")
+
+        doc = {
+            "updated_at": iso_now(),
+            "phase": phase,
+            "search_mode": self.mode,
+            "expected_m3": num("SEARCH_EXPECTED_VALUE_M3"),
+            "tolerance_m3": num("SEARCH_TOLERANCE_M3"),
+            "cached_candidates": _jq_tonumber(str(cached)),
+            "ignored_candidates": num("SEARCH_IGNORED_COUNT"),
+            "loaded_temp_meters": num("SEARCH_TEMP_METERS_LOADED"),
+            "decoded_json": num("SEARCH_DECODED_JSON_COUNT"),
+            "checked_values": num("SEARCH_CHECKED_VALUES"),
+            "matches": _jq_tonumber(str(matches)),
+            "cache_changed_at": v["SEARCH_LAST_CACHE_CHANGE"],
+            "last_candidate": {"id": v["SEARCH_LAST_CANDIDATE_ID"],
+                               "driver": v["SEARCH_LAST_CANDIDATE_DRIVER"],
+                               "type": v["SEARCH_LAST_CANDIDATE_TYPE"]},
+            "last_checked": {"id": v["SEARCH_LAST_CHECKED_ID"], "driver": v["SEARCH_LAST_CHECKED_DRIVER"],
+                             "field": v["SEARCH_LAST_CHECKED_FIELD"],
+                             "value": v["SEARCH_LAST_CHECKED_VALUE"],
+                             "diff_m3": v["SEARCH_LAST_CHECKED_DIFF"]},
+            "last_reason": v["SEARCH_LAST_REASON"],
+            "last_ignored_reason": v["SEARCH_LAST_IGNORED_REASON"],
+        }
+        try:
+            _write_replace_tmp(v["SEARCH_STATUS_FILE"], _b(_jq_pretty(doc)) + b"\n")
+        except OSError:
+            pass
+
+    # ── a candidate of the LISTEN parser ──
+
+    def cache_candidate(self, meter: str, driver: str, type_line: str,
+                        candidate_seen: Callable[[str, str, str], None]) -> None:
+        """search_cache_candidate; candidate_seen is status_candidate_seen (id, driver, type)."""
+        v = self.v
+        mid = normalize_id(meter)
+        if not _ID8.fullmatch(mid):
+            return
+        driver = driver or "auto"
+        type_lc = _ascii_lower(type_line)
+        if not (type_lc and not candidate_type_requires_aes(type_lc) and "water" in type_lc):
+            self.bump("SEARCH_IGNORED_COUNT")
+            v["SEARCH_LAST_CANDIDATE_ID"] = mid
+            v["SEARCH_LAST_CANDIDATE_DRIVER"] = driver
+            v["SEARCH_LAST_CANDIDATE_TYPE"] = type_line or "unknown"
+            v["SEARCH_LAST_IGNORED_REASON"] = "not_water_m3_candidate_or_encrypted"
+            self.warn(f"SEARCH ignored: id={mid} driver={driver} type={type_line or 'unknown'} "
+                      f"reason=not_water_m3_candidate_or_encrypted (ignored={v['SEARCH_IGNORED_COUNT']}).")
+            self.write_status("auto", "candidate_ignored")
+            return
+        path = v["SEARCH_CANDIDATES_FILE"]
+        open(path, "ab").close()
+        if any(ln.startswith(_b(mid) + b"\t") for ln in _read_lines(path)):
+            return
+        with open(path, "ab") as fh:
+            fh.write(_b(f"{mid}\t{driver}\n"))
+        v["SEARCH_LAST_CACHE_CHANGE"] = iso_now()
+        v["SEARCH_LAST_CANDIDATE_ID"] = mid
+        v["SEARCH_LAST_CANDIDATE_DRIVER"] = driver
+        v["SEARCH_LAST_CANDIDATE_TYPE"] = type_line or "unknown"
+        self.warn(f"SEARCH discovered: id={mid} driver={driver} type={type_line or 'unknown'} stored as "
+                  f"water candidate (cached={self.cached_count()}, ignored={v['SEARCH_IGNORED_COUNT']}).")
+        candidate_seen(mid, driver, type_line or "unknown")
+        self.write_status("auto", "candidate_cached")
+
+    # ── a decoded telegram ──
+
+    def is_temp(self, line: str) -> bool:
+        """09-discovery.sh is_search_temp_json: a temporary search_<id> meter."""
+        return self.mode and jq_r(line, (".name",)).startswith("search_")
+
+    def telegram(self, line: str) -> bool:
+        """What the decode loop runs for SEARCH: status_mark_search_decoded_no_aes,
+        process_search_json and, for a temporary meter, clear_search_discovery_from_json.
+        True for a temporary meter (with any id): nothing else is done with it."""
+        temp = self.is_temp(line)
+        mid = normalize_id(jq_r(line, (".id",)))
+        if not _ID8.fullmatch(mid):
+            return temp
+        if temp and self.a.candidate_analysis_file:
+            # status_mark_search_decoded_no_aes. No LISTEN parser runs while
+            # temporary meters decode, so no candidate row waits for a write.
+            tsv_upsert(self.a.candidate_analysis_file, mid, f"{mid}\tno_aes\tTemporary SEARCH meter decoded without "
+                                                f"key; no AES key was required for this telegram\t\t\t0\t{iso_now()}")
+        self.process_json(line, mid, temp)
+        if temp:
+            self.clear_discovery(line, mid)
+        return temp
+
+    def process_json(self, line: str, mid: str, temp: bool) -> None:
+        """process_search_json."""
+        if not self.mode:
+            return
+        v = self.v
+        if temp:
+            self.bump("SEARCH_DECODED_JSON_COUNT")
+        expected = v["SEARCH_EXPECTED_VALUE_M3"]
+        for field, value in self.numbers(line):
+            if not field or not value:
+                continue
+            field_lc = _ascii_lower(field)
+            if "total_volume" not in field_lc and "m3" not in field_lc:
+                continue
+            meter = jq_r(line, (".meter",))
+            self.bump("SEARCH_CHECKED_VALUES")
+            v["SEARCH_LAST_CHECKED_ID"] = mid
+            v["SEARCH_LAST_CHECKED_DRIVER"] = meter or "auto"
+            v["SEARCH_LAST_CHECKED_FIELD"] = field
+            v["SEARCH_LAST_CHECKED_VALUE"] = value
+            key = f"{mid}|{field}"
+            diff = f"{_awk_number(value) - _awk_number(expected):.6f}"
+            d = float(diff)
+            absdiff = f"{-d if d < 0 else d:.6f}"
+            v["SEARCH_LAST_CHECKED_DIFF"] = absdiff
+            v["SEARCH_LAST_REASON"] = "value_out_of_tolerance"
+            if (expected != "0" and _awk_compare(absdiff, v["SEARCH_TOLERANCE_M3"], "<=")
+                    and key not in self.reported_expected):
+                media = jq_r(line, (".media",))
+                self.warn(f"SEARCH MATCH: id={mid} driver={meter or 'unknown'} media={media or 'unknown'} "
+                          f"field={field} value={value} m3 expected={expected} diff={absdiff} m3")
+                self.warn('SEARCH SUGGESTED CONFIG: {"id":"meter_%s","meter_id":"%s","type":"%s",'
+                          '"type_other":"","key":""}' % (mid, mid, meter or "auto"))
+                self.emit("value_match", line, field, value, absdiff, "0")
+                self.record_match(line, field, value, absdiff)
+                self.bump("SEARCH_MATCH_COUNT")
+                v["SEARCH_LAST_REASON"] = "value_match"
+                self.write_status("matched", "value_match")
+                self.reported_expected.add(key)
+            else:
+                self.write_status("auto", "value_out_of_tolerance")
+            if v["SEARCH_DELTA_MODE"] == "true":
+                if key not in self.first_value:
+                    self.first_value[key] = value
+                else:
+                    first = self.first_value[key]
+                    delta = f"{_awk_number(value) - _awk_number(first):.6f}"
+                    if (_awk_compare(delta, v["SEARCH_MIN_DELTA_M3"], ">=")
+                            and key not in self.reported_delta):
+                        self.warn(f"SEARCH delta: id={mid} field={field} first={first} now={value} "
+                                  f"delta={delta} m3")
+                        self.emit("delta_match", line, field, value, "0", delta)
+                        self.reported_delta.add(key)
+
+    @staticmethod
+    def numbers(line: str) -> List[Tuple[str, str]]:
+        """`jq -r 'to_entries[] | select((.value|type)=="number") | [.key, (.value|tostring)] | @tsv'`
+        read back with `IFS=$'\\t' read -r field value`."""
+        out = []
+        for doc in jq_values(line + "\n"):
+            if not isinstance(doc, dict):
+                continue
+            for k, x in doc.items():
+                if _is_number(x):
+                    field, value = bash_read_fields(_tsv_escape(k) + "\t" + jq_dumps(x), 2, "\t")
+                    out.append((field.strip("\t"), value.strip("\t")))
+        return out
+
+    def emit(self, kind: str, line: str, field: str, value: str, diff: str, delta: str) -> None:
+        """emit_search_payload."""
+        mid = normalize_id(jq_r(line, (".id",)))
+        if not _ID8.fullmatch(mid):
+            return
+        nums = []
+        for text in (value, self.v["SEARCH_EXPECTED_VALUE_M3"], diff, delta):
+            try:
+                vals = jq_values(text)
+            except ValueError:
+                return
+            if len(vals) != 1:
+                return  # jq: invalid JSON text passed to --argjson
+            nums.append(vals[0])
+        payload = jq_dumps({"event": kind, "id": mid, "meter": jq_r(line, (".meter",)),
+                            "media": jq_r(line, (".media",)), "name": jq_r(line, (".name",)),
+                            "field": field, "value_m3": nums[0], "expected_value_m3": nums[1],
+                            "diff_m3": nums[2], "delta_m3": nums[3]})
+        self.publish(self.v["SEARCH_TOPIC"], payload, False)
+
+    def record_match(self, line: str, field: str, value: str, diff: str) -> None:
+        """search_record_match: one row, the last 100 kept."""
+        v = self.v
+        mid = normalize_id(jq_r(line, (".id",)))
+        if not _ID8.fullmatch(mid):
+            return
+        row = "\t".join([iso_now(), mid, jq_r(line, (".meter",)) or "auto", jq_r(line, (".media",)),
+                         field, value, v["SEARCH_EXPECTED_VALUE_M3"], diff, v["SEARCH_TOLERANCE_M3"]])
+        path = v["SEARCH_MATCHES_FILE"]
+        try:
+            with open(path, "ab") as fh:
+                fh.write(_b(row) + b"\n")
+            _write_replace_tmp(path, b"".join(ln + b"\n" for ln in _read_lines(path)[-100:]))
+        except OSError:
+            pass
+
+    def clear_discovery(self, line: str, mid: str) -> None:
+        """clear_search_discovery_from_json: empty retained configs for what a
+        temporary meter would have announced, in case an older run did."""
+        prefix = self.a.discovery_prefix
+        if self.v["DISCOVERY_ENABLED"] == "true" and mid not in self.cleaned_legacy:
+            # clean_legacy_entities; mqtt_pub does not fail (mosquitto_pub || true).
+            self.publish(f"{prefix}/sensor/wmbus_{mid}/rssi_dbm/config", "", True)
+            self.cleaned_legacy.add(mid)
+        uniq = f"wmbus_{mid}"
+        for doc in jq_values(line + "\n"):
+            if not isinstance(doc, dict):
+                continue
+            for k, x in doc.items():
+                if k in _SEARCH_NOT_FIELDS or isinstance(x, (dict, list)):
+                    continue
+                for key in k.split("\n"):  # `jq -r .key` read line by line
+                    obj = obj_id(key)
+                    if not key or not obj or f"{mid}|{obj}" in self.cleared_fields:
+                        continue
+                    self.publish(f"{prefix}/sensor/{uniq}/{obj}/config", "", True)
+                    self.cleared_fields.add(f"{mid}|{obj}")
+        if f"{mid}|status" not in self.cleared_fields:
+            self.publish(f"{prefix}/sensor/{uniq}/status/config", "", True)
+            self.publish(f"{prefix}/binary_sensor/{uniq}/status_problem/config", "", True)
+            self.cleared_fields.add(f"{mid}|status")
+
+    def publish(self, topic: str, payload: str, retain: bool) -> None:
+        """mqtt_pub: a PUB frame to the publisher, else mosquitto_pub in the bash loop."""
+        data = _b(payload)
+        try:
+            with socket.create_connection(("127.0.0.1", int(self.a.publisher_port)), timeout=5) as s:
+                s.sendall(b"PUB %d %d " % (1 if retain else 0, len(data)) + _b(topic) + b"\n" + data + b"\n")
+            return
+        except (OSError, ValueError, AttributeError):
+            pass
+        if self.request is not None:
+            self.request("pub", topic, payload, "true" if retain else "false")
+
+# ── the decode pipeline's output (run_once's loop) ──────────────────────────
+
+_TARIFF_CAPTURE = re.compile(r"^total_energy_consumption_tariff_([0-9]+)_kwh$", re.I)
+_ELECTRIC_KEY = re.compile(r"(energy|power|voltage|current).*(_kwh|_wh|_kw|_w|_v|_a)$", re.I)
+_INSTANT_METER = re.compile(r"(_kw$|_w$|_m3h$|_l_h$|_c$|_rh$|_bar$)", re.I)
+_INSTANT_NOT = re.compile(r"(average|last_|previous|history|historic|minimum|maximum|min_|max_)", re.I)
+_DEC_ID = re.compile(r'"id":"?([^",}]*)')
+
+
+def _first_line(text: str) -> str:
+    return text.split("\n", 1)[0]
+
+
+def meter_metadata(line: str) -> List[str]:
+    r"""`jq -r '"\(.id // "")\u001f\(.name // "")\u001f\(.meter // "")\u001f\(.media // "")"'`
+    read with `IFS=$'\x1f' read -r id name meter media`: the first value that
+    gives a line (an object, or null), its first line."""
+    for v in jq_values(line + "\n"):
+        if v is None:
+            text = "\x1f\x1f\x1f"
+        elif isinstance(v, dict):
+            parts = []
+            for k in ("id", "name", "meter", "media"):
+                x = v.get(k)
+                parts.append("" if x is None or x is False else _jq_tostring(x))
+            text = "\x1f".join(parts)
+        else:
+            continue
+        fields = _first_line(text).split("\x1f", 3)
+        return fields + [""] * (4 - len(fields))
+    return ["", "", "", ""]
+
+
+def tariff_parts(line: str) -> str:
+    """status_meter_seen's value_parts: the consumption tariff registers,
+    `jq -rc` of [{label, key, value}] sorted by tariff number, "" when none."""
+    for v in jq_values(line + "\n"):
+        if not isinstance(v, dict):
+            continue
+        rows = []
+        for k, x in v.items():
+            m = _TARIFF_CAPTURE.match(k)
+            if _is_number(x) and m:
+                rows.append((float(m.group(1)), {"label": "T" + m.group(1), "key": k, "value": x}))
+        if not rows:
+            return ""
+        rows.sort(key=lambda r: r[0])  # sort_by is stable
+        return jq_dumps([r[1] for r in rows])
+    return ""
+
+
+def meter_value(line: str, media: str, meter: str, prev: Optional[List[str]]) -> Tuple[str, str, str]:
+    """status_meter_seen's (value_key, value, value_parts)."""
+    parts = tariff_parts(line)
+    key, value = _bash_read_tabs(select_primary_meter_value(line), 2)
+    if not key:
+        def tariffs(v: dict) -> List[str]:
+            vals = [float(x) for k, x in v.items() if _is_number(x) and _TARIFF_KWH.search(k)]
+            return [f"total_energy_consumption_kwh\t{jq_number_text(sum(vals))}"] if vals else []
+        key, value = _bash_read_tabs(_first_object_lines(line, tariffs), 2)
+    if key:
+        return key, value, parts
+    # No cumulative total in this telegram: keep the last one of the meter
+    # rather than flicker to the live power; electricity shows no value.
+    if prev is not None and prev[0] and _PRIMARY_LIKE.search(prev[0]) and not _PRIMARY_NOT.search(prev[0]):
+        return prev[0], prev[1], prev[2]
+    electric = "electric" in media.lower() or "energy" in media.lower() or "electric" in meter.lower()
+    if not electric:
+        for v in jq_values(line + "\n"):
+            if isinstance(v, dict):
+                electric = any(_ELECTRIC_KEY.search(k) for k in v)
+                break
+    if electric:
+        return "", "", parts
+    key = _first_object_lines(line, lambda v: [k for k, x in v.items() if _is_number(x)
+                                               and _INSTANT_METER.search(k) and not _INSTANT_NOT.search(k)])
+    if key:
+        value = ""
+        for v in jq_values(line + "\n"):
+            if isinstance(v, dict) and v.get(key) not in (None, False):
+                value = _jq_raw_text(v[key])
+                break
+        return key, value, parts
+    key, value = _bash_read_tabs(_first_object_lines(
+        line, lambda v: [_tsv_cell(k) + "\t" + _jq_tostring(x) for k, x in v.items() if _is_number(x)]), 2)
+    return key, value, parts
+
+
+def _jq_raw_text(x: Any) -> str:
+    """One value as `jq -r` prints it."""
+    return x if isinstance(x, str) else _jq_pretty(x)
+
+
+class DecodeBook:
+    """run_once's loop over the decode pipeline's output, for one pipeline.
+
+    A decoded telegram: the counters and "Decoded telegram received"
+    (status_add_event), status.json, the meter table (status_meter_seen: the
+    reception row, the reading, the last JSON, the key problem cleared), the
+    line in the log, and its hand-over to the publisher (a DEC frame with the
+    meter's exclude patterns), then status.json with Discovery published.
+    Any other line: the log, a key problem ("Permanently ignoring telegrams
+    from id:"), and - while no meter is configured (--zero) - the LISTEN
+    parser of the main instance, in this process (not while SEARCH decodes
+    its temporary meters).
+    With search_mode, SEARCH (SearchBook) checks every decoded telegram, and
+    one of a temporary search_<id> meter goes no further.
+
+    The STATUS_* values start as the pipeline's subshell inherited them
+    (--decoded-count etc.), as the bash loop's did. A DEC frame the publisher
+    does not take is asked of the bash loop behind ("publish": the
+    mosquitto_pub path of publish_decoded_json), as is a SEARCH message
+    ("pub": mqtt_pub).
+    """
+
+    def __init__(self, a: argparse.Namespace, out=None, err=None) -> None:
+        self.a = a
+        self.out = out if out is not None else sys.stdout
+        self.err = err if err is not None else sys.stderr
+        self.decoded = int(a.decoded_count) if re.fullmatch(r"[0-9]+", a.decoded_count or "") else 0
+        self.running = a.wmbusmeters_running
+        self.last_decoded = a.last_decoded_seen
+        self.last_event = a.last_event
+        self.disc_pub, self.disc_at = a.discovery_published, a.discovery_published_at
+        self.excludes: Dict[str, str] = {}
+        for row in (os.environ.get("METER_EXCLUDE_LINES") or "").split("\n"):
+            k, sep, v = row.partition("\x1f")
+            if sep:
+                self.excludes[k] = v
+        state = search_state_from_env()
+        self.search: Optional[SearchBook] = None
+        if a.search_mode == "true":
+            self.search = SearchBook(a, state or search_state_from_env({"SEARCH_STATE": ""}),
+                                     err=self.err, request=self.request)
+        self.listen: Optional["ListenBook"] = None
+        if a.zero == "true" and not (state and state["SEARCH_USING_TEMP_METERS"] == "true"):
+            la = argparse.Namespace(**vars(a))
+            la.official = "zero"
+            self.listen = ListenBook(la, out=self.out, err=self.err, search=self.search)
+        self.deferred = self.listen.deferred if self.listen else Deferred()
+        self.decoder = self.listen.decoder if self.listen else None
+
+    def request(self, *fields: str) -> None:
+        try:
+            self.out.write("\x1f".join(fields) + "\n")
+            self.out.flush()
+        except OSError:
+            pass
+
+    def echo(self, line: str) -> None:
+        print(line, file=self.err, flush=True)
+
+    def line(self, line: str) -> None:
+        if line.startswith("{") and '"_":"telegram"' in line:
+            self.telegram(line)
+            return
+        self.echo(line)
+        self.key_problem(line)
+        if self.listen is not None:
+            self.listen.line(line)
+
+    def telegram(self, line: str) -> None:
+        self.running = "true"
+        self.decoded += 1
+        self.last_decoded = iso_now()
+        self.add_event("ok", "Decoded telegram received")
+        self.write_status()
+        if self.search is not None and self.search.telegram(line):
+            return
+        self.meter_seen(line)
+        self.echo(line)
+        self.publish(line)
+
+    def add_event(self, level: str, message: str) -> None:
+        self.last_event = message
+        append_event(self.a.events_file, level, message)
+
+    def write_status(self) -> None:
+        """write_status_json from the decode loop's subshell."""
+        a = self.a
+        raw_count = _digits_or_zero(a.raw_count_file)
+        try:
+            with open(a.last_raw_file, "rb") as fh:
+                last_raw = _s(fh.read()).rstrip("\n")
+        except OSError:
+            last_raw = ""
+        pub, pub_at = self.disc_pub, self.disc_at
+        if os.path.isfile(a.discovery_flag_file) and os.path.getsize(a.discovery_flag_file) > 0:
+            lines = _read_lines(a.discovery_flag_file)
+            pub, pub_at = "true", _s(lines[0]) if lines else ""
+        doc = {
+            "updated_at": iso_now(),
+            "config": {"raw_topic": a.raw_topic, "state_prefix": a.state_prefix,
+                       "discovery_prefix": a.discovery_prefix,
+                       "search_mode": a.search_mode == "true", "loglevel": a.loglevel},
+            "mqtt": {"host": a.mqtt_host, "port": a.mqtt_port, "connected": a.mqtt_connected == "true"},
+            "pipeline": {"raw_count": _jq_tonumber(raw_count),
+                         "decoded_count": _jq_tonumber(str(self.decoded)),
+                         "wmbusmeters_running": self.running == "true",
+                         "discovery_published": pub == "true",
+                         "discovery_published_at": pub_at,
+                         "last_raw_seen": last_raw,
+                         "last_decoded_seen": self.last_decoded,
+                         "last_error": a.last_error,
+                         "last_event": self.last_event},
+        }
+        _write_replace_tmp(a.status_json_file, _b(_jq_pretty(doc)) + b"\n")
+
+    def meter_seen(self, line: str) -> None:
+        """07-meters.sh status_meter_seen."""
+        a = self.a
+        raw_id, name, meter, media = meter_metadata(line)
+        mid = normalize_id(raw_id)
+        if not _ID8.fullmatch(mid):
+            return
+        prev = next((_bash_read_tabs("\t".join(_field(_fields(ln), n) for n in (5, 6, 13)), 3)
+                     for ln in _read_lines(a.meters_file) if _first_field(ln) == _b(mid)), None)
+        key, value, parts = meter_value(line, media, meter, prev)
+        record_seen(a.seen_file, mid, "meter")
+        last_seen = iso_now()
+        stats = seen_stats(a.seen_file, mid)
+        tsv_upsert(a.meters_file, mid, "\t".join(
+            [mid, name, meter, media, key, value, last_seen, "published"] + [str(n) for n in stats] + [parts]))
+        tsv_upsert(a.meter_last_json_file, mid, f"{mid}\t{last_seen}\t{line}")
+        tsv_remove(a.key_problem_file, mid)
+
+    def key_problem(self, line: str) -> None:
+        """07-meters.sh status_detect_key_problem."""
+        marker = "Permanently ignoring telegrams from id:"
+        if marker not in line:
+            return
+        if "no key to decrypt" in line:
+            reason = "key_missing"
+        elif "correct decryption key" in line:
+            reason = "key_invalid"
+        else:
+            return
+        mid = line.rsplit(marker + " ", 1)[-1] if marker + " " in line else line
+        mid = normalize_id(mid.split(" ", 1)[0])
+        if not _ID8.fullmatch(mid):
+            return
+        tsv_upsert(self.a.key_problem_file, mid, f"{mid}\t{reason}\t{iso_now()}")
+        print(f"[wmbus-bridge][WARN] key problem for meter {mid}: {reason} (wmbusmeters ignores it until "
+              f"the next pipeline reload)", file=self.err, flush=True)
+
+    def publish(self, line: str) -> None:
+        """publish_decoded_json's DEC hand-over to the publisher."""
+        patterns = ""
+        if self.excludes:
+            m = _DEC_ID.search(line)
+            if m:
+                key = normalize_id(m.group(1)).lower()
+                if key:
+                    patterns = self.excludes.get(key, "")
+        payload = _b(patterns + "\n" + line)
+        try:
+            with socket.create_connection(("127.0.0.1", int(self.a.publisher_port)), timeout=5) as s:
+                s.sendall(b"DEC %d\n" % len(payload) + payload + b"\n")
+        except (OSError, ValueError):
+            # With this pipeline's counters: the bash path ends in
+            # write_status_json, whose subshell has only the inherited ones.
+            self.request("publish", str(self.decoded), self.last_decoded, self.last_event, line)
+            return
+        self.disc_pub, self.disc_at = "true", iso_now()
+        try:
+            _write_replace_tmp(self.a.discovery_flag_file, _b(self.disc_at) + b"\n")
+        except OSError:
+            pass
+        self.write_status()
+
+    def finish(self) -> None:
+        if self.listen is not None:
+            self.listen.flush()
+
+
+def _write_replace_tmp(path: str, data: bytes) -> None:
+    """`... > path.tmp && mv path.tmp path` (the temporary name bash uses)."""
+    with open(path + ".tmp", "wb") as fh:
+        fh.write(data)
+    os.replace(path + ".tmp", path)
+
+
+def run_decode(book: DecodeBook, stream=None, err=None) -> None:
+    """The decode loop (`while IFS= read -r line`)."""
+    stream = stream if stream is not None else sys.stdin.buffer
+    err = err if err is not None else sys.stderr
+    try:
+        for raw in read_lines_flushing(stream, book.deferred, book.decoder):
+            if not raw.endswith(b"\n"):  # `read` does not hand over an unterminated last line
+                continue
+            try:
+                book.line(_s(raw[:-1]))
+            except Exception as exc:  # one bad line must not stop the pipeline's bookkeeping
+                print(f"[wmbus-bridge][WARN] ledger: decoder line skipped: {exc!r}", file=err, flush=True)
+        try:
+            book.finish()
+        except Exception as exc:
+            print(f"[wmbus-bridge][WARN] ledger: LISTEN block skipped: {exc!r}", file=err, flush=True)
+    except _Terminated:
+        raise SystemExit(128 + signal.SIGTERM)
+    finally:
+        if book.decoder is not None:
+            book.decoder.close()
         book.deferred.flush(err)
 
 
@@ -1987,6 +3281,13 @@ def _parser() -> argparse.ArgumentParser:
     raw.add_argument("--preview-last-dir", required=True)
     raw.add_argument("--preview-min-interval", type=int, default=20)
     raw.add_argument("--preview-state-file", default="")
+    # With it (and --preview-state-file) a new or changed Diehl/SAP candidate
+    # is registered here (RawBook.candidate); without, it is asked of bash.
+    raw.add_argument("--preview-attempts-dir", default="")
+    # With these two the preview one-shot runs here (PreviewDecoder); without,
+    # it is asked of bash ("preview" request).
+    raw.add_argument("--preview-oneshot-runtime", default="")
+    raw.add_argument("--candidate-values-file", default="")
     raw.add_argument("--preview-decoded-min-interval", type=int, default=300)
     # Values the counter subshell inherits when the pipeline starts; they go
     # into status.json unchanged, as the bash counter wrote them.
@@ -2006,6 +3307,30 @@ def _parser() -> argparse.ArgumentParser:
     # Values the parser subshell inherits when the LISTEN instance starts.
     for name in ("official-count-default", "search-mode", "search-expected", "loglevel"):
         listen.add_argument(f"--{name}", default="")
+    # With these three a new or changed candidate is registered here
+    # (ListenBook.snippet); without, it is asked of the bash loop as before.
+    for name in ("events-file", "preview-state-file", "preview-attempts-dir", "candidate-values-file",
+                 "preview-oneshot-runtime"):
+        listen.add_argument(f"--{name}", default="")
+    dec = modes.add_parser("decode", help="output of the decode pipeline's wmbusmeters (run_once)")
+    for name in ("status-json", "raw-count", "last-raw", "discovery-flag", "events", "meters",
+                 "meter-last-json", "key-problem", "seen"):
+        dec.add_argument(f"--{name}-file", required=True)
+    dec.add_argument("--publisher-port", required=True)
+    dec.add_argument("--zero", choices=("true", "false"), default="false",
+                     help="hand the other lines to the main instance's LISTEN parser (no meter configured)")
+    # The STATUS_* values and settings the pipeline's subshell inherits.
+    for name in ("raw-topic", "state-prefix", "discovery-prefix", "search-mode", "loglevel", "mqtt-host",
+                 "mqtt-port", "mqtt-connected", "wmbusmeters-running", "decoded-count", "last-decoded-seen",
+                 "last-error", "last-event", "discovery-published", "discovery-published-at"):
+        dec.add_argument(f"--{name}", default="")
+    # The LISTEN parser's files (--zero true).
+    for name in ("candidates", "recent-raw", "candidate-raw", "candidate-analysis", "snippet",
+                 "official-count", "preview-state", "candidate-values"):
+        dec.add_argument(f"--{name}-file", default="")
+    for name in ("meter-dir", "preview-meter-dir", "official-count-default", "search-expected",
+                 "preview-attempts-dir", "preview-oneshot-runtime"):
+        dec.add_argument(f"--{name}", default="")
     rx = modes.add_parser("rx", help="wmbus/<board>/rx messages")
     for name in ("reception", "mode", "history", "sequence", "boots", "clock"):
         rx.add_argument(f"--{name}-file", required=True)
@@ -2029,7 +3354,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         args = _parser().parse_args(argv)
     except SystemExit as exc:  # usage errors: report, never raise out of main
         return int(exc.code or 0)
-    if args.mode in ("raw", "tracker", "rx", "listen"):
+    if args.mode in ("raw", "tracker", "rx", "listen", "decode"):
         # Stopping the add-on: write what is collected, then exit.
         signal.signal(signal.SIGTERM, _on_sigterm)
     if args.mode == "rssi":
@@ -2038,6 +3363,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         run_lines(RawBook(args))
     elif args.mode == "listen":
         run_listen(ListenBook(args))
+    elif args.mode == "decode":
+        run_decode(DecodeBook(args))
     elif args.mode == "tracker":
         run(TrackerBook(args.dev_pos, args.devices_file, args.meter_device_file,
                         args.reception_file, args.history_file))

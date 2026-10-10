@@ -580,8 +580,11 @@ sekúnd znovu načíta, reštart doplnku nie je potrebný. Výstup tohto bežné
 zostáva viditeľný v **Konzole zbernice**, ktorá je iba na čítanie a neumožňuje
 posielať ľubovoľné bajty.
 
-Pole **Ovládač** v tabuľke meračov ponúka všetky ovládače dodané v aktuálnom obraze
-a naďalej prijíma vlastný názov. `auto` môže merač rozpoznať, ale nezaručuje výber
+Pole **Ovládač** v tabuľke meračov je zoznam všetkých ovládačov dodaných v aktuálnom
+obraze; položka **Iný…** na jeho konci z neho urobí textové pole pre ovládač, ktorý
+zoznam nemá. **Uložiť merače** odmietne zoznam, v ktorom sa názov alebo adresa
+opakuje dvakrát: jeden názov je pre dekodér jeden merač, jedna adresa jeden merač
+na zbernici. `auto` môže merač rozpoznať, ale nezaručuje výber
 použiteľného ovládača pre každú káblovú odpoveď; ak automatické dekódovanie nevráti
 hodnotu, vyberte ovládač uvedený v dokumentácii merača.
 **Zistiť ovládač** vykoná jedno diagnostické dopytovanie a odovzdá prijatý rámec
@@ -605,6 +608,10 @@ prevodník, ktorý nenapája linku, a merač hovoriaci iným protokolom zvonku r
 nevzniknú žiadne entity. Karta stavu zbernice pomenuje, o ktorý prípad ide — po
 meračoch, spolu s okamihom poslednej odpovede každého z nich:
 
+- *Časť meračov odpovedá* — zbernica funguje, ale časť nastavených meračov mlčí;
+  každý z nich je označený *bez odpovede …*, ostatné ukazujú, kedy naposledy
+  odpovedali. Sken adries (dopytovanie vypnuté) ukáže, či mlčiaci posiela cudzie
+  alebo poškodené rámce.
 - *Bez odpovede* — port je otvorený, merač na tejto adrese mlčí. Adresa, kabeláž
   alebo prevodník, ktorý zbernicu nenapája.
 - *Poškodené rámce* — chyby kontrolného súčtu, najčastejšie dva merače na jednej

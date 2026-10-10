@@ -1,3 +1,48 @@
+## 1.6.0
+
+### Added
+- show each wired M-Bus meter's silence, a "Some meters answer" bus state and "x of y answer" on the panel (a2581a6)
+
+### Changed
+- publish everything through one persistent MQTT connection (fbb0daf)
+- build Home Assistant Discovery and state of decoded telegrams in the publisher (99f24cf)
+- run the ESP subscriptions (rssi, /rx, RAW tracker, health, HA birth, meter flags, summaries, snapshots, windows, diagnostic events, $SYS) in the publisher (9098ecb, 8dc9b8a, cbcaf70, aa94d3e, 5f07897)
+- feed the decode and LISTEN pipelines from the publisher's RAW stream (b8207e9)
+- book candidates, LISTEN, Diehl/SAP registration, the preview one-shot, the decode output and SEARCH in bridge_ledger.py (63574a1, 85fd575, 4c2949b, bd7260a, 004f88d)
+- read the wired M-Bus decoder output and write its config and meter files in wmbus_mbus.py (d259ffb, 4024586)
+- write the radio path's meter and preview files and clean up stale candidates in wmbus_meters.py (dc4db8f, d4044d3)
+- pick the M-Bus meter driver from a list of the shipped drivers, "Other…" for any other name (b6ecc18)
+
+### Fixed
+- stop removing the total_m3 entity from Home Assistant on every pipeline start (babfad5)
+- keep candidate preview values across a restart (eda2108)
+- keep the wired M-Bus decoder single across a soft reload - a second one on the same serial port split every reply (cac245c)
+- refuse a wired M-Bus meter list with a name or an address used twice (a2581a6)
+- accept the p0 address in the wired M-Bus meter files, as the WebUI does (5a0e0d7)
+- skip partial, negative and reactive registers as a meter's reading in the meter table (c985101)
+- show the bus state in the M-Bus tab header instead of a fixed "Traffic healthy" (cc6d356)
+
+### Notes
+- The add-on's work per frame and per telegram moved from bash to Python.
+  Discovery, states, the ESP subscriptions, candidates, the preview, SEARCH
+  and the wired M-Bus run in a few long-lived Python processes, instead of a
+  chain of jq/awk calls for every telegram. Nothing changes for the user:
+  entities, MQTT topics and options stay the same - the retained Discovery
+  configs of the old and the new version were compared byte for byte (51 of
+  51 identical) and the meter readings match to the last digit.
+- Measured on the same hardware with the same traffic, the old and the new
+  version switched in turn (CPU of the add-on, share of one core): on an
+  Intel N97 with Mosquitto 16.3% -> 4.4% on average and 41% -> 9% at peaks;
+  on an Intel i3-3220 with EMQX 12.8% -> 5.4% and 31% -> 12%. The add-on
+  keeps one connection to the MQTT broker instead of about a dozen.
+- Every moved part keeps its bash path as a fallback, switched by an
+  environment variable (for example LEDGER_DECODE_IN_PYTHON=false); none is
+  needed in normal operation.
+- Wired M-Bus: tested against a simulator through a real serial port
+  (answering, silent, late, foreign protocol, ACK only, two meters on one
+  address, damaged checksum, a water and an electricity meter), not against
+  real meters. Reports from real buses are welcome.
+
 ## 1.5.79
 
 ### Changed
