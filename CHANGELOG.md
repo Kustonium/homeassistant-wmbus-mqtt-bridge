@@ -1,7 +1,6 @@
 ## 1.6.1
 
 ### Fixed
-- cap add-meter modal body height so footer stays reachable on short viewports (8ecca5d)
 - Add-meter modal now scrolls on short / Full HD screens so the footer buttons stay reachable (#153).
 - Discovery Doctor and other dialogs now scroll on short / Full HD screens so their footer buttons stay reachable even with many meters.
 
