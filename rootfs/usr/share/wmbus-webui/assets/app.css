@@ -918,7 +918,30 @@ tr:last-child td {
 }
 
 .modal.modal-wide .modal-body {
-  overflow: auto;
+  overflow-y: auto;
+  /* Cap the body directly instead of relying on the flex column to shrink it:
+     max-height on the flex container (.modal.modal-wide) does NOT make its
+     height definite for flex-shrink in Chromium, so the body kept its full
+     content height and pushed .modal-actions below the viewport on short
+     screens (reported on Full HD, where taskbar + browser chrome leave
+     ~900px usable). Bounding the body makes its own scroll engage: the form
+     scrolls internally and the footer buttons stay in view. The 160px budget
+     covers .modal-head (~60), .modal-actions (~70) and the 20px backdrop
+     padding top+bottom. Above ~1040px tall the form fits and never scrolls,
+     so QHD/1080 behaviour is unchanged. */
+  max-height: calc(100vh - 160px);
+}
+
+/* Non-wide modals (Discovery Doctor, export report) need the same body cap.
+   Discovery Doctor renders one checklist row per meter that has a retained
+   discovery config, so on a fleet (~20+ entities) at Full HD its body grew
+   past the viewport and pushed .modal-actions — including "Force
+   re-discovery" — off-screen with no scrollbar. The more specific
+   .modal.modal-wide rule above still wins for wide modals (same value), so
+   this only changes the non-wide ones. */
+.modal .modal-body {
+  overflow-y: auto;
+  max-height: calc(100vh - 160px);
 }
 
 .compare-table-wrap {
