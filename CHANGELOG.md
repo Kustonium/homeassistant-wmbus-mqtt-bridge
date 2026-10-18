@@ -1,3 +1,14 @@
+## 1.6.2
+
+### Added
+- sticky filter bar + "include saved meters" toggle in Received/Search (fd0ac97)
+- generic driver + ID-prefix filtering in the Received/Search candidates table (0031c98)
+- Received/Search: filter detected candidates by driver (contains) and by serial-number prefix, alongside the existing media and value filters — helps large fleet deployments with hundreds of candidates. The filter bar stays pinned while the tables scroll, and an optional "include saved meters" toggle extends the driver/ID filter to the configured-meters table too (#151).
+
+### Fixed
+- stick the Received/Search filter bar below the topbar, not over it (117ab22)
+- clean up the sticky Received/Search filter bar edge (849a1e7)
+
 ## 1.6.1
 
 ### Fixed
