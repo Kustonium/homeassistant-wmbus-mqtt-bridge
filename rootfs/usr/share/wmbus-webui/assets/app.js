@@ -2125,7 +2125,7 @@
                   ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>`
                   : `<span style="color:var(--muted);">—</span>`;
                 return groupDivider(_arr[_i - 1], row) + `
-                  <tr data-value="${escapeHtml(previewVal)}">
+                  <tr data-value="${escapeHtml(previewVal)}" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(driver)}" data-media="${escapeHtml(mc)}" data-manufacturer="${escapeHtml(mfrRaw)}">
                     <td><strong>${escapeHtml(id)}</strong></td>
                     <td>${escapeHtml(driver)}</td>
                     <td style="color:#9eafba;font-size:12px;">${escapeHtml(row.type || "-")}</td>
@@ -2230,7 +2230,7 @@
   function discoverValueFilterBar(rowCount) {
     if (!rowCount) return "";
     return `
-      <section class="section">
+      <section class="section" style="position:sticky;top:64px;z-index:4;background:var(--bg);margin-top:0;padding-top:16px;padding-bottom:8px;box-shadow:0 8px 12px -6px rgba(0,0,0,0.55);">
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 12px;background:#0e1a23;border:1px solid #1e3040;border-radius:6px;">
           <label for="discover-search-value" style="font-size:12px;color:#9eafba;">${escapeHtml(t("filter_by_value", "Filter by value"))}:</label>
           <input id="discover-search-value" type="text" inputmode="decimal" placeholder="e.g. 23.91"
@@ -2240,6 +2240,19 @@
           <input id="discover-search-tolerance" type="text" inputmode="decimal" value="0.05"
             style="background:#0a1217;border:1px solid #2a4555;color:#e8f1f8;border-radius:4px;padding:5px 8px;font-size:12px;width:70px;font-family:monospace;"
             oninput="window.__discoverFilterByValue && window.__discoverFilterByValue()">
+          <label for="discover-filter-driver" style="font-size:12px;color:#9eafba;">${escapeHtml(t("filter_by_driver", "Driver contains"))}:</label>
+          <input id="discover-filter-driver" type="text" placeholder="e.g. izar"
+            style="background:#0a1217;border:1px solid #2a4555;color:#e8f1f8;border-radius:4px;padding:5px 8px;font-size:12px;width:110px;font-family:monospace;"
+            oninput="window.__discoverFilterByValue && window.__discoverFilterByValue()">
+          <label for="discover-filter-id" style="font-size:12px;color:#9eafba;">${escapeHtml(t("filter_by_id_prefix", "ID starts with"))}:</label>
+          <input id="discover-filter-id" type="text" placeholder="e.g. 2373"
+            style="background:#0a1217;border:1px solid #2a4555;color:#e8f1f8;border-radius:4px;padding:5px 8px;font-size:12px;width:110px;font-family:monospace;"
+            oninput="window.__discoverFilterByValue && window.__discoverFilterByValue()">
+          <label style="font-size:12px;color:#9eafba;display:inline-flex;align-items:center;gap:5px;cursor:pointer;">
+            <input id="discover-include-configured" type="checkbox" style="cursor:pointer;"
+              onchange="window.__discoverFilterByValue && window.__discoverFilterByValue()">
+            ${escapeHtml(t("filter_include_configured", "Include saved meters"))}
+          </label>
           <button type="button" class="btn"
             style="font-size:11px;padding:4px 10px;"
             onclick="window.__discoverClearValueFilter && window.__discoverClearValueFilter();">${escapeHtml(t("filter_clear", "Clear"))}</button>
@@ -2327,7 +2340,7 @@
                       <button class="btn" data-action="open-edit-driver" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(row.driver || "auto")}">${escapeHtml(t("change_driver_btn", "Driver…"))}</button>
                     </div>`;
                 return `
-                  <tr data-value="${escapeHtml(dataVal)}">
+                  <tr data-value="${escapeHtml(dataVal)}" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(row.driver || "")}">
                     <td style="text-align:center;">${selectCell}</td>
                     <td><strong>${escapeHtml(id)}</strong>${aesLockBadge(row)}</td>
                     <td><span style="margin-right:5px;font-size:15px;vertical-align:middle;">${mIcon}</span>${escapeHtml(row.name || id || "-")}</td>
@@ -2359,6 +2372,8 @@
   window.__discoverFilterByValue = function () {
     const valInp = document.getElementById("discover-search-value");
     const tolInp = document.getElementById("discover-search-tolerance");
+    const drvInp = document.getElementById("discover-filter-driver");
+    const idInp  = document.getElementById("discover-filter-id");
     const tables = [
       {tbody: document.getElementById("discover-configured-tbody"), count: document.getElementById("discover-configured-count"), suffix: ""},
       {tbody: document.getElementById("discover-candidates-tbody"), count: document.getElementById("discover-candidate-count"), suffix: ` ${t("webui_visible", "visible")}`},
@@ -2367,31 +2382,69 @@
     const searchStr = ((valInp && valInp.value) || "").trim();
     const searchVal = parseFloat(searchStr.replace(",", "."));
     const tolerance = parseFloat(((tolInp && tolInp.value) || "0.05").replace(",", ".")) || 0.05;
-    const active = searchStr !== "" && Number.isFinite(searchVal);
+    const valActive = searchStr !== "" && Number.isFinite(searchVal);
+    const drvTerm = ((drvInp && drvInp.value) || "").trim().toLowerCase();
+    const idTerm  = ((idInp && idInp.value) || "").trim().toLowerCase();
+    const incInp = document.getElementById("discover-include-configured");
+    const incConfigured = !!(incInp && incInp.checked);
+
+    // A group-divider row carries no data-id / data-value, just a colspan cell.
+    const isHeader = (r) => !r.hasAttribute("data-id") && !r.hasAttribute("data-value") && !!r.querySelector("td[colspan]");
+
+    // Each active filter ANDs with the others. The value filter applies to both
+    // tables; driver/id apply to the candidates table always, and to the
+    // configured ("saved meters") table only when the checkbox is on. A row that
+    // does not carry an attribute passes that filter.
+    const rowMatches = (r, applyDrvId) => {
+      if (valActive) {
+        const rowVal = parseFloat(r.dataset.value);
+        if (!(Number.isFinite(rowVal) && Math.abs(rowVal - searchVal) <= tolerance)) return false;
+      }
+      if (applyDrvId) {
+        if (drvTerm !== "" && r.dataset.driver !== undefined &&
+            !String(r.dataset.driver).toLowerCase().includes(drvTerm)) return false;
+        if (idTerm !== "" && r.dataset.id !== undefined &&
+            !String(r.dataset.id).toLowerCase().startsWith(idTerm)) return false;
+      }
+      return true;
+    };
 
     tables.forEach(({tbody, count, suffix}) => {
+      const applyDrvId  = tbody.id !== "discover-configured-tbody" || incConfigured;
+      const tableActive = valActive || (applyDrvId && (drvTerm !== "" || idTerm !== ""));
       const trs = Array.from(tbody.querySelectorAll("tr"));
-      const total = trs.length;
-      if (!active) {
+      const dataRows = trs.filter(r => !isHeader(r));
+      const total = dataRows.length;
+      if (!tableActive) {
         trs.forEach(r => { r.style.display = ""; });
         if (count) count.textContent = count.dataset.default || `${total}${suffix}`;
         return;
       }
 
       let matched = 0;
-      trs.forEach(r => {
-        const rowVal = parseFloat(r.dataset.value);
-        const match  = Number.isFinite(rowVal) && Math.abs(rowVal - searchVal) <= tolerance;
-        r.style.display = match ? "" : "none";
-        if (match) matched++;
+      dataRows.forEach(r => {
+        const ok = rowMatches(r, applyDrvId);
+        r.style.display = ok ? "" : "none";
+        if (ok) matched++;
+      });
+      // Hide a group header when every data row until the next header is hidden.
+      trs.forEach((r, i) => {
+        if (!isHeader(r)) return;
+        let anyVisible = false;
+        for (let j = i + 1; j < trs.length && !isHeader(trs[j]); j++) {
+          if (trs[j].style.display !== "none") { anyVisible = true; break; }
+        }
+        r.style.display = anyVisible ? "" : "none";
       });
       if (count) count.textContent = `${matched} / ${total}${suffix}`;
     });
   };
 
   window.__discoverClearValueFilter = function () {
-    const valInp = document.getElementById("discover-search-value");
-    if (valInp) valInp.value = "";
+    ["discover-search-value", "discover-filter-driver", "discover-filter-id"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = "";
+    });
     window.__discoverFilterByValue && window.__discoverFilterByValue();
   };
 
