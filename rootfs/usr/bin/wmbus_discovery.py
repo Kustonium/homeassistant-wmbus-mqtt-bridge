@@ -25,7 +25,7 @@ import bridge_ledger as bl
 
 Publish = Tuple[str, bytes, bool]
 
-_SKIP_KEYS = frozenset(("_", "id", "name", "meter", "media", "timestamp", "device_date_time",
+_SKIP_KEYS = frozenset(("_", "id", "name", "meter", "driver", "media", "timestamp", "device_date_time",
                         "rssi", "lqi", "status"))
 _BASH_SPACE = re.compile(r"[ \t\n\v\f\r]")
 _HEX = re.compile(r"[0-9A-F]+")
@@ -285,7 +285,7 @@ class Discovery:
         obj = values[0]
         id_raw = bl._jq_tostring(_alt(obj.get("id"), ""))
         name = bl._jq_tostring(_alt(obj.get("name"), _alt(obj.get("id"), "wmbus")))
-        meter = bl._jq_tostring(_alt(obj.get("meter"), ""))
+        meter = bl._jq_tostring(_alt(obj.get("meter"), _alt(obj.get("driver"), "")))
         media = bl._jq_tostring(_alt(obj.get("media"), ""))
         mid = normalize_meter_id(id_raw)
         if not _HEX8.fullmatch(mid):

@@ -569,7 +569,7 @@ def _decode_with_driver(raw: str, driver: str, mid: str, key: str) -> dict | Non
                 obj = json.loads(line)
             except ValueError:
                 return None
-            drop = {"_", "name", "id", "meter", "timestamp", "media"}
+            drop = {"_", "name", "id", "meter", "driver", "timestamp", "media"}
             return {k: v for k, v in obj.items() if k not in drop}
     return {}
 
@@ -986,6 +986,7 @@ NON_ENTITY_FIELDS: dict[str, str] = {
     "id": "identity",
     "name": "identity",
     "meter": "identity",
+    "driver": "identity",
     "media": "identity",
     "timestamp": "identity",
 }

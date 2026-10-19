@@ -101,7 +101,7 @@ emit_search_payload() {
   id="$(normalize_meter_id "$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
 
-  meter="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
+  meter="$(jq -r '.meter // .driver // empty' <<<"${json_line}" 2>/dev/null || true)"
   media="$(jq -r '.media // empty' <<<"${json_line}" 2>/dev/null || true)"
   name="$(jq -r '.name // empty' <<<"${json_line}" 2>/dev/null || true)"
 
@@ -226,7 +226,7 @@ process_search_json() {
     search_field_is_candidate "${field_lc}" || continue
 
     local meter_name
-    meter_name="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
+    meter_name="$(jq -r '.meter // .driver // empty' <<<"${json_line}" 2>/dev/null || true)"
     SEARCH_CHECKED_VALUES=$((SEARCH_CHECKED_VALUES + 1))
     SEARCH_LAST_CHECKED_ID="${id}"
     SEARCH_LAST_CHECKED_DRIVER="${meter_name:-auto}"
@@ -243,7 +243,7 @@ process_search_json() {
     if [[ "${SEARCH_EXPECTED_VALUE_M3}" != "0" && "${in_tolerance}" == "yes" && -z "${SEARCH_REPORTED_EXPECTED[${state_key}]+x}" ]]; then
       local media meter
       media="$(jq -r '.media // empty' <<<"${json_line}" 2>/dev/null || true)"
-      meter="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
+      meter="$(jq -r '.meter // .driver // empty' <<<"${json_line}" 2>/dev/null || true)"
       warn "SEARCH MATCH: id=${id} driver=${meter:-unknown} media=${media:-unknown} field=${field} value=${value} m3 expected=${SEARCH_EXPECTED_VALUE_M3} diff=${absdiff} m3"
       warn "SEARCH SUGGESTED CONFIG: {\"id\":\"meter_${id}\",\"meter_id\":\"${id}\",\"type\":\"${meter:-auto}\",\"type_other\":\"\",\"key\":\"\"}"
       emit_search_payload "value_match" "${json_line}" "${field}" "${value}" "${absdiff}" "0"
@@ -288,7 +288,7 @@ search_record_match() {
 
   id="$(normalize_meter_id "$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null || true)")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
-  meter="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
+  meter="$(jq -r '.meter // .driver // empty' <<<"${json_line}" 2>/dev/null || true)"
   media="$(jq -r '.media // empty' <<<"${json_line}" 2>/dev/null || true)"
   now="$(iso_now)"
 

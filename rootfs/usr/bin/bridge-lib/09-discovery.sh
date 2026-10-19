@@ -43,13 +43,14 @@ emit_discovery_from_json() {
   local id name meter media has_status _id_raw _feed
   local -a _fields=()
   _feed="$(jq -r '
-      "\(.id // "")\u001f\(.name // .id // "wmbus")\u001f\(.meter // "")\u001f\(.media // "")\u001f\(has("status"))",
+      "\(.id // "")\u001f\(.name // .id // "wmbus")\u001f\(.meter // .driver // "")\u001f\(.media // "")\u001f\(has("status"))",
       ( to_entries[]
         | select(.key as $k
           | ($k != "_")
           and ($k != "id")
           and ($k != "name")
           and ($k != "meter")
+          and ($k != "driver")
           and ($k != "media")
           and ($k != "timestamp")
           and ($k != "device_date_time")
@@ -395,6 +396,7 @@ clear_search_discovery_from_json() {
         and ($k != "id")
         and ($k != "name")
         and ($k != "meter")
+        and ($k != "driver")
         and ($k != "media")
         and ($k != "timestamp")
         and ($k != "device_date_time")

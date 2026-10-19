@@ -556,7 +556,7 @@ status_mark_search_decoded_no_aes() {
   # Search temporary meters are created without key=. If wmbusmeters decodes
   # numeric JSON from such a meter, then no AES key was required for that telegram.
   if is_search_temp_json "${json_line}"; then
-    meter="$(jq -r '.meter // empty' <<<"${json_line}" 2>/dev/null || true)"
+    meter="$(jq -r '.meter // .driver // empty' <<<"${json_line}" 2>/dev/null || true)"
     media="$(jq -r '.media // empty' <<<"${json_line}" 2>/dev/null || true)"
     field="$(jq -r 'to_entries[] | select((.value|type)=="number") | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
     status_upsert_candidate_analysis "${id}" "no_aes" "Temporary SEARCH meter decoded without key; no AES key was required for this telegram" "" "" "0" "$(iso_now)"

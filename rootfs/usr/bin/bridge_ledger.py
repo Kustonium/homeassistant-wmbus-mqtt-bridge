@@ -2362,7 +2362,7 @@ _SEARCH_COUNTERS = ("SEARCH_IGNORED_COUNT", "SEARCH_TEMP_METERS_LOADED", "SEARCH
 _AWK_NUM_PREFIX = re.compile(r"[ \t\n]*[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?")
 _AWK_STRNUM = re.compile(r"[ \t\n]*[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?[ \t\n]*")
 _SEARCH_CACHED_ROW = re.compile(rb"^[0-9A-Fa-f]{8}[ \t\r\v\f]")
-_SEARCH_NOT_FIELDS = ("_", "id", "name", "meter", "media", "timestamp", "device_date_time",
+_SEARCH_NOT_FIELDS = ("_", "id", "name", "meter", "driver", "media", "timestamp", "device_date_time",
                       "rssi", "lqi", "status")
 
 
@@ -2587,7 +2587,7 @@ class SearchBook:
             field_lc = _ascii_lower(field)
             if "total_volume" not in field_lc and "m3" not in field_lc:
                 continue
-            meter = jq_r(line, (".meter",))
+            meter = jq_r(line, (".meter", ".driver"))
             self.bump("SEARCH_CHECKED_VALUES")
             v["SEARCH_LAST_CHECKED_ID"] = mid
             v["SEARCH_LAST_CHECKED_DRIVER"] = meter or "auto"
@@ -2655,7 +2655,7 @@ class SearchBook:
             if len(vals) != 1:
                 return  # jq: invalid JSON text passed to --argjson
             nums.append(vals[0])
-        payload = jq_dumps({"event": kind, "id": mid, "meter": jq_r(line, (".meter",)),
+        payload = jq_dumps({"event": kind, "id": mid, "meter": jq_r(line, (".meter", ".driver")),
                             "media": jq_r(line, (".media",)), "name": jq_r(line, (".name",)),
                             "field": field, "value_m3": nums[0], "expected_value_m3": nums[1],
                             "diff_m3": nums[2], "delta_m3": nums[3]})
@@ -2667,7 +2667,7 @@ class SearchBook:
         mid = normalize_id(jq_r(line, (".id",)))
         if not _ID8.fullmatch(mid):
             return
-        row = "\t".join([iso_now(), mid, jq_r(line, (".meter",)) or "auto", jq_r(line, (".media",)),
+        row = "\t".join([iso_now(), mid, jq_r(line, (".meter", ".driver")) or "auto", jq_r(line, (".media",)),
                          field, value, v["SEARCH_EXPECTED_VALUE_M3"], diff, v["SEARCH_TOLERANCE_M3"]])
         path = v["SEARCH_MATCHES_FILE"]
         try:
@@ -2729,7 +2729,7 @@ def _first_line(text: str) -> str:
 
 
 def meter_metadata(line: str) -> List[str]:
-    r"""`jq -r '"\(.id // "")\u001f\(.name // "")\u001f\(.meter // "")\u001f\(.media // "")"'`
+    r"""`jq -r '"\(.id // "")\u001f\(.name // "")\u001f\(.meter // .driver // "")\u001f\(.media // "")"'`
     read with `IFS=$'\x1f' read -r id name meter media`: the first value that
     gives a line (an object, or null), its first line."""
     for v in jq_values(line + "\n"):
@@ -2739,6 +2739,8 @@ def meter_metadata(line: str) -> List[str]:
             parts = []
             for k in ("id", "name", "meter", "media"):
                 x = v.get(k)
+                if k == "meter" and (x is None or x is False):
+                    x = v.get("driver")
                 parts.append("" if x is None or x is False else _jq_tostring(x))
             text = "\x1f".join(parts)
         else:
