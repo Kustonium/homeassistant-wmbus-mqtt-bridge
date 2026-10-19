@@ -44,7 +44,7 @@ status_meter_seen() {
   # \x1f, not TAB: TAB is IFS whitespace, so an empty field would collapse
   # and shift the rest.
   IFS=$'\x1f' read -r _id_raw name meter media < <(
-    jq -r '"\(.id // "")\u001f\(.name // "")\u001f\(.meter // "")\u001f\(.media // "")"' \
+    jq -r '"\(.id // "")\u001f\(.name // "")\u001f\(.meter // .driver // "")\u001f\(.media // "")"' \
       <<<"${json_line}" 2>/dev/null || true
   ) || true
   id="$(normalize_meter_id "${_id_raw}")"

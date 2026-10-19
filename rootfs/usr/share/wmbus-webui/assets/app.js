@@ -1888,7 +1888,7 @@
   // reception rather than measuring anything. Mirrors the exclusion list in
   // rootfs/usr/bin/bridge-lib/09-discovery.sh; a checkbox next to them would
   // promise control that does not exist.
-  const METADATA_FIELDS = new Set(["_", "id", "name", "meter", "media", "timestamp", "device_date_time", "rssi", "lqi"]);
+  const METADATA_FIELDS = new Set(["_", "id", "name", "meter", "driver", "media", "timestamp", "device_date_time", "rssi", "lqi"]);
 
   // A wired meter is configured in mbus_meters under a NAME, but the table row
   // carries the id from its telegram - and those are different things: the id
