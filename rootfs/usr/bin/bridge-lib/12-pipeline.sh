@@ -112,9 +112,15 @@ start_mqtt_publisher() {
 # otherwise - or when that port does not answer (the publisher is
 # restarting) - a mosquitto_sub of its own, as before. exec: the stage stays
 # one process of the pipeline, which the soft-reload watcher stops as before.
+#
+# dd, not cat: cat (BusyBox and GNU alike) copies with sendfile/splice, and a
+# splice from a TCP socket hands its data on only once more data arrives. With
+# one meter every 30 s each telegram then waited for the next one and two were
+# decoded at the same moment (issue #157); with many meters the traffic hid
+# it. dd copies with plain read()/write(). tests/test_raw_source_latency.sh.
 _raw_source() {
   if [[ -n "${MQTT_PUB_RAW_PORT:-}" ]] && { exec 3<"/dev/tcp/127.0.0.1/${MQTT_PUB_RAW_PORT}"; } 2>/dev/null; then
-    exec cat <&3
+    exec dd bs=65536 status=none <&3
   fi
   # shellcheck disable=SC2086  # STDBUF_BIN is a command with its options
   exec ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p'
