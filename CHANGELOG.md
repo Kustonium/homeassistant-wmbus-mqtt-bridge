@@ -1,3 +1,12 @@
+## 1.6.6
+
+### Added
+- horizontal scrollbar above wide tables (36cf74c)
+
+### Fixed
+- recover from an add-on restart or an expired ingress session without F5 (3e06161)
+- no gap above the sticky filter on narrow screens, labels in cards (f76682d)
+
 ## 1.6.5
 
 ### Added
