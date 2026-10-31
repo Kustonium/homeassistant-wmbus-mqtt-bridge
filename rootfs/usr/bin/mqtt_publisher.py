@@ -228,7 +228,8 @@ def make_books(spec):
             book = bl.RssiBook(cfg["meter_dir"], cfg["rssi_file"])
         elif mode == "rx":
             book = bl.RxBook(cfg["reception_file"], cfg["mode_file"], cfg["history_file"],
-                             cfg["sequence_file"], cfg["boots_file"], cfg["clock_file"])
+                             cfg["sequence_file"], cfg["boots_file"], cfg["clock_file"],
+                             cfg.get("rssi_file", ""), cfg.get("band_enc_file", ""))
         elif mode == "tracker":
             book = bl.TrackerBook(int(cfg["dev_pos"]), cfg["devices_file"], cfg["meter_device_file"],
                                   cfg["reception_file"], cfg["history_file"])
@@ -251,6 +252,13 @@ def make_books(spec):
             deliver = book.deliver
             out.append((cfg["filter"].encode(), bool(cfg.get("no_retained")), deliver, book))
             continue
+        elif mode == "esp_log":
+            if not cfg.get("file"):
+                continue  # no RAM runtime directory: no live log (start_mqtt_publisher)
+            import esp_books
+            book = esp_books.EspLogBook(cfg["file"])
+            out.append((cfg["filter"].encode(), True, book.deliver, book))
+            continue
         elif mode == "broker_info":
             import esp_books
             book = esp_books.BrokerInfoBook(cfg["info_file"])
@@ -266,6 +274,14 @@ def make_books(spec):
                                  with_retained=cfg.get("format") == "retained")
         for flt in cfg.get("filters") or [cfg["filter"]]:
             out.append((flt.encode(), bool(cfg.get("no_retained")), deliver, book))
+    # The band of a frame is in its /rx metadata, its protection in the RAW
+    # telegram: the raw feed hands every telegram to the rx book's matcher.
+    feeds = [b for _f, _n, _d, b in out if isinstance(b, RawFeed)]
+    security = [b.band_security for _f, _n, _d, b in out
+                if getattr(b, "band_security", None) is not None and not isinstance(b, RawFeed)]
+    if feeds and security:
+        for feed in feeds:
+            feed.band_security = security[0]
     return out
 
 
@@ -281,12 +297,18 @@ class RawFeed:
 
     def __init__(self):
         self.readers = []  # [socket, pending bytes, dropped count]
+        self.band_security = None  # bridge_ledger.BandSecurity, set by make_books
 
     def add(self, conn):
         conn.setblocking(False)
         self.readers.append([conn, bytearray(), 0])
 
     def deliver(self, _topic, payload, _retain=False):
+        if self.band_security is not None:
+            try:
+                self.band_security.note_raw(payload.decode("ascii", "replace"))
+            except Exception as exc:  # bookkeeping must never stop the decoder's feed
+                log(f"band security: telegram skipped: {exc!r}")
         line = payload + b"\n"
         for r in self.readers:
             if len(r[1]) + len(line) > RAW_BACKLOG_MAX:

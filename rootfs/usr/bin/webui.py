@@ -160,6 +160,8 @@ STATUS_ESP_METER_RECEPTION_FILE = RUNTIME / "status_esp_meter_reception.tsv"
 # Same session view populated from structured ESP RF metadata. When rows exist
 # for a meter, these replace /telegram-derived counts for that meter.
 STATUS_ESP_RX_RECEPTION_FILE = RUNTIME / "status_esp_rx_reception.tsv"
+STATUS_ESP_RX_RSSI_FILE = RUNTIME / "status_esp_rx_rssi.tsv"
+STATUS_ESP_BAND_SECURITY_FILE = RUNTIME / "status_esp_band_security.tsv"
 STATUS_ESP_RX_MODE_FILE = RUNTIME / "status_esp_rx_mode.tsv"
 STATUS_ESP_RX_SEQUENCE_FILE = RUNTIME / "status_esp_rx_sequence.tsv"
 STATUS_ESP_RX_BOOTS_FILE = RUNTIME / "status_esp_rx_boots.tsv"
@@ -173,6 +175,11 @@ ESP_DIAG_HISTORY_FILE = BASE / "esp_diag_history.jsonl"
 STATUS_ESP_EVENTS_FILE = RUNTIME / "status_esp_events.tsv"
 STATUS_ESP_SUGGESTION_FILE = RUNTIME / "status_esp_suggestion.json"
 STATUS_ESP_BOOT_FILE = RUNTIME / "status_esp_boot.json"
+# Live logs (bridge.sh WEBUI_LOG_DIR): the boards' ESPHome log from
+# <node>/debug and the decoding wmbusmeters' output. Kept only when RUNTIME is
+# a RAM directory, never on the data disk.
+STATUS_ESP_LOG_FILE = RUNTIME / "status_esp_log.tsv"
+WMBUSMETERS_LOG_FILE = RUNTIME / "wmbusmeters.log"
 # Per-candidate preview values written by short-lived one-shot decoders
 # using PREVIEW_BASE/etc/wmbusmeters.d/.
 STATUS_CANDIDATE_VALUES_FILE = RUNTIME / "status_candidate_values.tsv"
@@ -683,6 +690,40 @@ def read_tsv(path: Path, fields: list[str], limit: int | None = None, reverse: b
         if limit and len(rows) >= limit:
             break
     return rows
+
+
+def live_log_payload(source: str, limit: int = 300) -> dict:
+    """GET /api/live-log: the last `limit` lines of one live log, newest last.
+
+    source "esp": rows of status_esp_log.tsv (epoch, node, level, tag,
+    message); source "wmbusmeters": lines of wmbusmeters.log ("date time
+    text"). `available` is false without a RAM runtime directory, where
+    bridge.sh keeps no live log at all.
+    """
+    limit = max(1, min(int(limit), 1000))
+    available = RUNTIME != BASE
+    path = STATUS_ESP_LOG_FILE if source == "esp" else WMBUSMETERS_LOG_FILE
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]
+    except OSError:
+        lines = []
+    rows = []
+    if source == "esp":
+        for line in lines:
+            parts = line.split("\t", 4)
+            if len(parts) != 5:
+                continue
+            try:
+                epoch = int(parts[0])
+            except ValueError:
+                continue
+            rows.append({"epoch": epoch, "node": parts[1], "level": parts[2],
+                         "tag": parts[3], "message": parts[4]})
+    else:
+        for line in lines:
+            stamp, text = line[:19], line[20:]
+            rows.append({"time": stamp, "text": text})
+    return {"ok": True, "source": source, "available": available, "rows": rows}
 
 
 def esp_rx_api_payload(limit: int = 1000, since: int = 0, until: int = 0,
@@ -2928,12 +2969,65 @@ def state(include_ignored: bool = False) -> dict:
                 for k, v in sorted(_modes_by_id.get(mid, {}).items(),
                                    key=lambda kv: (-kv[1], kv[0]))]
 
+    # Per meter and board (bridge_ledger.RxBook rssi_file): a running average
+    # of /rx rssi_dbm in that board's own scale, and the bands THIS board
+    # received THIS meter on, from each frame's /rx mode. rssi_best is the
+    # board that received the meter most often; rssi_by_esp and
+    # _rx_bands_by_pair feed the per-board pills. Rows older than 15 minutes
+    # are not shown.
+    _rssi_by_id: dict[str, dict] = {}
+    _rssi_esp_by_id: dict[str, dict] = {}
+    _rssi_count: dict[str, int] = {}
+    _rx_bands_by_pair: dict[tuple, str] = {}
+    _rssi_now = int(time.time())
+    for _rrow in read_tsv(STATUS_ESP_RX_RSSI_FILE, ["id", "esp", "dbm", "ts", "count", "bands"]):
+        _rmid = normalize_meter_id(_rrow.get("id"))
+        _rts = safe_int(_rrow.get("ts", 0))
+        if not (_rmid and _rts and _rssi_now - _rts <= 900):
+            continue
+        _resp = _rrow.get("esp", "")
+        _rb = [p.split(":", 1)[0] for p in str(_rrow.get("bands") or "").split(",") if ":" in p]
+        _rb = sorted({_band_norm(b) for b in _rb} - {""}, key=lambda b: {"T1": 0, "C1": 1, "S1": 2}[b])
+        if _rb:
+            _rx_bands_by_pair[(_rmid, _resp)] = "+".join(_rb)
+        try:
+            _rdbm = int(_rrow.get("dbm", ""))
+        except ValueError:
+            continue
+        _rcount = safe_int(_rrow.get("count", 0))
+        _rssi_esp_by_id.setdefault(_rmid, {})[_resp] = _rdbm
+        if _rcount > _rssi_count.get(_rmid, -1):
+            _rssi_count[_rmid] = _rcount
+            _rssi_by_id[_rmid] = {"esp": _resp, "dbm": _rdbm, "ts": _rts}
+
+    # Protection of a meter's frames per band (bridge_ledger.BandSecurity):
+    # counts of plain / AES / manufacturer-format / other frames, matched to
+    # their band through the /rx metadata. Lets the encryption column say
+    # "T1 plain, C1 AES" for a meter like Techem instead of one verdict.
+    _band_sec_by_id: dict[str, list] = {}
+    _band_order = {"T1": 0, "C1": 1, "S1": 2}
+    for _brow in read_tsv(STATUS_ESP_BAND_SECURITY_FILE,
+                          ["id", "band", "plain", "aes", "mfr", "other", "ts"]):
+        _bmid = normalize_meter_id(_brow.get("id"))
+        _bband = _band_norm(_brow.get("band"))
+        if not (_bmid and _bband):
+            continue
+        _band_sec_by_id.setdefault(_bmid, []).append({
+            "band": _bband,
+            "plain": safe_int(_brow.get("plain", 0)), "aes": safe_int(_brow.get("aes", 0)),
+            "mfr": safe_int(_brow.get("mfr", 0)), "other": safe_int(_brow.get("other", 0)),
+        })
+    for _blist in _band_sec_by_id.values():
+        _blist.sort(key=lambda b: _band_order.get(b["band"], 9))
+
     def _rx_esps(mid: str) -> list:
         _per = reception_by_esp.get(mid)
         if not _per:
             return []
         # Sort most-reading first: by telegram count, then %, then name.
-        return [{"esp": k, **v}
+        # "listen": the bands this board received this meter on ("T1", "C1",
+        # "T1+C1"), from the frames - not the board's listen_mode.
+        return [{"esp": k, **v, "listen": _rx_bands_by_pair.get((mid, k), "")}
                 for k, v in sorted(_per.items(),
                                    key=lambda kv: (-kv[1]["count"], kv[0]))]
 
@@ -2944,6 +3038,9 @@ def state(include_ignored: bool = False) -> dict:
         # Per-meter reception % (#15); -1 = no data (diag off / not highlighted / stale).
         c["reception_pct"] = reception_by_id.get(normalize_meter_id(c.get("id")), -1)
         c["reception_esps"] = _rx_esps(normalize_meter_id(c.get("id")))
+        c["rssi_best"] = _rssi_by_id.get(normalize_meter_id(c.get("id")))
+        c["rssi_by_esp"] = _rssi_esp_by_id.get(normalize_meter_id(c.get("id")), {})
+        c["band_security"] = _band_sec_by_id.get(normalize_meter_id(c.get("id")), [])
         # wM-Bus band the telegrams arrived on; "" when nothing can say so.
         c["band"] = band_by_id.get(normalize_meter_id(c.get("id")), "")
         c["band_source"] = band_source_by_id.get(normalize_meter_id(c.get("id")), "")
@@ -2969,6 +3066,9 @@ def state(include_ignored: bool = False) -> dict:
         m["esp_flagged"] = "true" if normalize_meter_id(m.get("id") or m.get("meter_id")) in esp_flagged_ids else "false"
         m["reception_pct"] = reception_by_id.get(normalize_meter_id(m.get("id") or m.get("meter_id")), -1)
         m["reception_esps"] = _rx_esps(normalize_meter_id(m.get("id") or m.get("meter_id")))
+        m["rssi_best"] = _rssi_by_id.get(normalize_meter_id(m.get("id") or m.get("meter_id")))
+        m["rssi_by_esp"] = _rssi_esp_by_id.get(normalize_meter_id(m.get("id") or m.get("meter_id")), {})
+        m["band_security"] = _band_sec_by_id.get(normalize_meter_id(m.get("id") or m.get("meter_id")), [])
         m["band"] = band_by_id.get(normalize_meter_id(m.get("id") or m.get("meter_id")), "")
         m["band_source"] = band_source_by_id.get(normalize_meter_id(m.get("id") or m.get("meter_id")), "")
         m["bands"] = _bands(normalize_meter_id(m.get("id") or m.get("meter_id")))
@@ -2986,6 +3086,9 @@ def state(include_ignored: bool = False) -> dict:
             m["esp_flagged"] = "false"
             m["reception_pct"] = -1
             m["reception_esps"] = []
+            m["rssi_best"] = None
+            m["rssi_by_esp"] = {}
+            m["band_security"] = []
             m["band"] = ""
             m["band_source"] = ""
             m["bands"] = []
@@ -4200,7 +4303,7 @@ class Handler(BaseHTTPRequestHandler):
             '/api/preview-candidate', '/api/cancel-preview',
             '/api/ignore', '/api/unignore', '/api/factory-reset',
             '/api/compare-driver', '/api/save-config', '/api/driver-fields',
-            '/api/esp-rx',
+            '/api/esp-rx', '/api/live-log',
             '/api/mbus', '/api/mbus/device', '/api/mbus/meters', '/api/mbus/probe',
             '/api/mbus/meter-fields',
             '/api/mbus/console', '/api/mbus/scan', '/api/mbus/poll-one',
@@ -4647,6 +4750,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json_download(200, payload, f'esp-rx-{stamp}Z.json')
             else:
                 self._send_json(200, payload)
+            return
+        if path.endswith('/api/live-log'):
+            source = (params.get('source') or ['esp'])[0].strip().lower()
+            if source not in ('esp', 'wmbusmeters'):
+                self._send_json(400, {"ok": False, "message": "source must be esp or wmbusmeters."})
+                return
+            try:
+                limit = int((params.get('limit') or ['300'])[0])
+            except ValueError:
+                limit = 300
+            self._send_json(200, live_log_payload(source, limit))
             return
         if path.endswith('/api/candidate-report'):
             meter_id = (params.get('meter_id') or [''])[0].strip()

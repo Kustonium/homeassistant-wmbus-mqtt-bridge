@@ -61,6 +61,11 @@ BASE="${WMBUS_BASE:-/data}"
 RUNTIME="$(python3 "${BRIDGE_LEDGER}" runtime --base "${BASE}" 2>/dev/null || true)"
 [[ -n "${RUNTIME}" ]] || RUNTIME="${BASE}"
 export WMBUS_RUNTIME="${RUNTIME}"
+# The live logs of the WebUI (ESPHome log, wmbusmeters output) change every
+# second; they are kept only in a RAM RUNTIME, never on the data disk.
+WEBUI_LOG_DIR=""
+# shellcheck disable=SC2034  # read by _wmbusmeters_log_stage and start_mqtt_publisher
+[[ "${RUNTIME}" != "${BASE}" ]] && WEBUI_LOG_DIR="${RUNTIME}"
 log "$(python3 "${BRIDGE_LEDGER}" runtime-restore --base "${BASE}" --runtime "${RUNTIME}" 2>&1 \
   || echo "runtime: restore into ${RUNTIME} failed")"
 OPTIONS_JSON="${BASE}/options.json"
@@ -729,12 +734,14 @@ run_once() {
     | tee >(_raw_counter_stage) \
     | "${QDS_STAGE[@]}" \
     | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
+    | _wmbusmeters_log_stage \
     | _decode_stage true
 else
   _raw_source \
     | tee >(_raw_counter_stage) \
     | "${QDS_STAGE[@]}" \
     | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
+    | _wmbusmeters_log_stage \
     | _decode_stage false
 fi
 

@@ -91,6 +91,22 @@
     try { window.localStorage.setItem(LS_VIEW_KEY, v); } catch (_) {}
   }
 
+  // Candidate table order, clickable column headers like a spreadsheet. The
+  // default is by ID: the backend order follows the newest telegram, so with
+  // live updates the rows kept moving under the reader. Persisted per browser.
+  const LS_CAND_SORT_KEY = "wmbus.candidateSort";
+  const CAND_SORT_KEYS = ["id", "last_seen", "seen_15m", "seen_60m", "rssi"];
+  function loadCandidateSort() {
+    try {
+      const v = JSON.parse(window.localStorage.getItem(LS_CAND_SORT_KEY) || "null");
+      if (v && CAND_SORT_KEYS.includes(v.key) && (v.dir === 1 || v.dir === -1)) return v;
+    } catch (_) {}
+    return {key: "id", dir: 1};
+  }
+  function saveCandidateSort(v) {
+    try { window.localStorage.setItem(LS_CAND_SORT_KEY, JSON.stringify(v)); } catch (_) {}
+  }
+
   const state = {
     route: currentRoute(),
     data: null,
@@ -127,7 +143,63 @@
     selectedRemoval: new Set(),
     // Meter ids with the "published fields" row expanded on the meters view.
     expandedMeterFields: new Set(),
+    // Live logs from api/live-log, polled only while their page is open:
+    // esp = the boards' ESPHome log, wmbusmeters = the decoder's output.
+    liveLog: {esp: {rows: []}, wmbusmeters: {rows: []}},
+    liveLogNode: "all",      // ESPHome log: node filter
+    liveLogLevel: "all",     // ESPHome log: "all" | "warn" (W and E only)
+    logsTab: "events",       // LOGS page: "events" | "wmbusmeters"
+    // Meter ids whose per-board reception list is expanded (compact column).
+    expandedReception: new Set(),
+    // Candidate ids with the secondary actions (Ignore, Report, Cancel
+    // preview) unfolded behind "⋯".
+    expandedActions: new Set(),
+    // wmbusmeters log: keys of the JSON lines shown in full.
+    expandedLogLines: new Set(),
+    candidateSort: loadCandidateSort(),
   };
+
+  let liveLogTimer = null;
+
+  function liveLogSourceForRoute() {
+    if (state.route === "esp-logs") return "esp";
+    if (state.route === "logs" && state.logsTab === "wmbusmeters") return "wmbusmeters";
+    return "";
+  }
+
+  async function loadLiveLog(source) {
+    const log = state.liveLog[source];
+    if (log.busy) return;
+    log.busy = true;
+    try {
+      const response = await fetch(`api/live-log?source=${source}&limit=400`, {cache: "no-store"});
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      state.liveLog[source] = {rows: asArray(payload.rows), available: payload.available !== false, loaded: true};
+    } catch (error) {
+      state.liveLog[source] = {rows: log.rows || [], available: true, loaded: true, error: String(error.message || error)};
+    }
+    scheduleRender();
+  }
+
+  // Called from renderRoute: starts a 3 s poll for the log of the open page
+  // and stops it once no log page is open.
+  function ensureLiveLogPolling() {
+    const source = liveLogSourceForRoute();
+    if (!source) {
+      if (liveLogTimer) window.clearInterval(liveLogTimer);
+      liveLogTimer = null;
+      return;
+    }
+    if (!state.liveLog[source].loaded) loadLiveLog(source);
+    if (!liveLogTimer) {
+      liveLogTimer = window.setInterval(() => {
+        const current = liveLogSourceForRoute();
+        if (current) loadLiveLog(current);
+        else ensureLiveLogPolling();
+      }, 3000);
+    }
+  }
 
   let liveSource = null;
   let liveLang = "";
@@ -496,10 +568,33 @@
           missing: Number(e.missing) || 0,
           outOfOrder: Number(e.out_of_order) || 0,
           bootId: String(e.boot_id || ""),
+          esp: String(e.esp || ""),
+          listen: String(e.listen || ""),
         });
       });
+      // The bands this board received this meter on (T1, C1, T1+C1), from the
+      // frames' /rx mode - not the board's listen_mode.
+      const boardListen = (v) => v.listen ? ` · ${escapeHtml(v.listen)}` : "";
       const fmtTel = (n) => n >= 1000 ? `${Math.round(n / 100) / 10}k` : String(n);
-      rxHtml = Array.from(byLabel.entries()).map(([label, v]) => {
+      // The board's own average signal for this meter, coloured like the
+      // badge; each value is in that board's scale (boards differ by dB).
+      const rssiByEsp = row.rssi_by_esp || {};
+      const boardRssi = (v) => {
+        const dbm = Number(rssiByEsp[v.esp]);
+        if (!(v.esp in rssiByEsp) || !Number.isFinite(dbm)) return "";
+        const cls = dbm >= -80 ? "good" : dbm >= -92 ? "mid" : "weak";
+        return ` · <span class="board-rssi ${cls}">${Math.round(dbm)} dBm</span>`;
+      };
+      // Compact by default: the board that heard the meter most, and "+N"
+      // that unfolds the others. Five stacked boards made every row ~200 px
+      // tall; most users have one board and never see the "+N" at all.
+      const rowId = String(row.id || row.meter_id || "");
+      const entries = Array.from(byLabel.entries()).sort((a, b) => b[1].count - a[1].count);
+      const expanded = entries.length < 2 || state.expandedReception.has(rowId);
+      const shown = expanded ? entries : entries.slice(0, 1);
+      const moreChip = entries.length < 2 ? ""
+        : `<span data-action="reception-toggle" data-id="${escapeHtml(rowId)}" title="${escapeHtml(t("reception_toggle_hint", "Show or hide the other boards"))}" style="${pill}background:#1e2a33;color:#9eafba;cursor:pointer;">${expanded ? "▴" : `+${entries.length - 1} ▾`}</span>`;
+      rxHtml = shown.map(([label, v]) => {
         if (v.countSource === "bridge_session" || v.countSource === "esp_rx") {
           const first = v.firstSeen ? new Date(v.firstSeen * 1000).toLocaleString() : "-";
           const last = v.lastSeen ? new Date(v.lastSeen * 1000).toLocaleString() : "-";
@@ -510,10 +605,10 @@
             ? `\nseq: ${v.lastSeq} · ${t("missing_rx_events", "missing RX events")}: ${v.missing} · ${t("out_of_order_rx_events", "out of order")}: ${v.outOfOrder}\nboot_id: ${v.bootId}`
             : "";
           const title = `${countLabel}: ${v.count}\n${t("first_received", "first received")}: ${first}\n${t("last_received", "last received")}: ${last}${continuity}`;
-          return `<span title="${escapeHtml(title)}" style="${pill}background:#12354a;color:#65c7f2;cursor:help;">📶 ${escapeHtml(label)} · ${fmtTel(v.count)}</span>`;
+          return `<span title="${escapeHtml(title)}" style="${pill}background:#12354a;color:#65c7f2;cursor:help;">📶 ${escapeHtml(label)}${boardListen(v)} · ${fmtTel(v.count)}${boardRssi(v)}</span>`;
         }
-        return `<span title="${escapeHtml(t("reception_pct_per_esp", "reception % on this ESP"))}: ${escapeHtml(label)}" style="${pill}${rxPctStyle(v.pct)}">📶 ${escapeHtml(label)} ${v.pct}%${v.count > 0 ? ` · ${fmtTel(v.count)}` : ""}</span>`;
-      }).join("");
+        return `<span title="${escapeHtml(t("reception_pct_per_esp", "reception % on this ESP"))}: ${escapeHtml(label)}" style="${pill}${rxPctStyle(v.pct)}">📶 ${escapeHtml(label)}${boardListen(v)} ${v.pct}%${v.count > 0 ? ` · ${fmtTel(v.count)}` : ""}${boardRssi(v)}</span>`;
+      }).join("") + moreChip;
     } else if (bestPct >= 0) {
       rxHtml = `<span title="${escapeHtml(t("reception_pct_title", "reception % over the diagnostic window"))}" style="${pill}${rxPctStyle(bestPct)}">📶 ${bestPct}%</span>`;
     }
@@ -547,8 +642,10 @@
         : t("band_exact", "link mode the ESP decoded this meter's telegram with");
       bandHtml = `<span title="${escapeHtml(bandTitle)}" style="${pill}background:#2b3550;color:#9fb4e6;cursor:help;">📻 ${escapeHtml(band)}${approx ? "?" : ""}</span>`;
     }
+    // The signal is shown on each board's pill (boardRssi), not as a separate
+    // badge: one value from one board said less than the per-board list.
     if (!flagBadge && !rxHtml && !bandHtml) return "";
-    return `<div style="margin-top:5px;display:flex;flex-direction:column;align-items:flex-start;gap:4px;">${flagBadge}${bandHtml}${rxHtml}</div>`;
+    return `<div class="rx-badges" style="margin-top:5px;display:flex;flex-wrap:wrap;align-items:center;gap:4px;">${flagBadge}${bandHtml}${rxHtml}</div>`;
   }
 
   // Legend for the reception column, attached to the column HEADER as an "ⓘ"
@@ -598,6 +695,41 @@
     const effNote = note || (bad ? t("enc_where_key", "This meter encrypts its telegrams — without the 32-hex AES key it cannot be decoded (this is not a bug). Ask your building manager, the utility company or the meter installer for the key.") : "");
     const title = effNote ? ` title="${escapeHtml(effNote)}"` : "";
     return `<span class="pill ${cls}"${title}>${escapeHtml(label)}</span>`;
+  }
+
+  // Protection per band, from the frames matched to their band through the
+  // /rx metadata (row.band_security). One pill per band the meter was heard
+  // on: "T1 · no AES", "C1 · AES", "T1 · partly AES" when one band carries
+  // both. A manufacturer-specific format counts as no AES once the meter
+  // decoded without a key, otherwise it says so ("own format"), as some of
+  // them (Apator NA-1) need a key anyway. "" when nothing was matched, and
+  // the caller falls back to the single verdict.
+  function bandSecurityBadges(row, decoded) {
+    const bands = asArray(row.band_security);
+    const pills = bands.map((b) => {
+      const plain = Number(b.plain) || 0, aes = Number(b.aes) || 0;
+      const mfr = Number(b.mfr) || 0, other = Number(b.other) || 0;
+      if (plain + aes + mfr + other === 0) return "";
+      const clear = plain + (decoded ? mfr : 0);
+      let cls, label;
+      // Short labels: the band and the colour carry most of it, and a pill
+      // that wraps over three lines made the row three times as tall.
+      if (aes && (plain || mfr)) {
+        cls = "warn"; label = t("enc_band_partial", "partly AES");
+      } else if (aes) {
+        cls = "bad"; label = "AES";
+      } else if (clear) {
+        cls = "ok"; label = t("enc_band_no_aes", "no AES");
+      } else if (mfr) {
+        cls = "muted"; label = t("enc_mfr_format", "own format");
+      } else {
+        cls = "muted"; label = "?";
+      }
+      const title = `${b.band}: ${t("enc_band_counts", "frames plain / AES / own format / other")} ${plain} / ${aes} / ${mfr} / ${other}`;
+      return `<span class="pill ${cls}" style="white-space:nowrap;" title="${escapeHtml(title)}">${escapeHtml(b.band)} · ${escapeHtml(label)}</span>`;
+    }).filter(Boolean);
+    if (!pills.length) return "";
+    return `<div style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;">${pills.join("")}</div>`;
   }
 
   // ── #6 Manufacturer compact formatter ────────────────────────────────────
@@ -1961,7 +2093,7 @@
   function meterTable(rows, withActions = true) {
     if (!rows.length) return `<div class="empty">${escapeHtml(t("webui_no_meters", "No meters yet."))}</div>`;
     return `
-      <div class="table-wrap">
+      <div class="table-wrap cards-sm">
         <table>
           <thead>
             <tr>
@@ -2041,6 +2173,34 @@
     const colspan = withActions ? 12 : 11;
     const _mc = (r) => mediaIcon(r.type || "", r.driver || "auto").mc;
     const _silent = (r) => r.recent_silent === "true";
+    // Re-order inside the groups the backend made (media, silent block last),
+    // by the column the user picked; ties fall back to the ID.
+    const sort = state.candidateSort;
+    const groupRank = new Map();
+    rows.forEach((r) => {
+      const g = _silent(r) ? "~silent" : _mc(r);
+      if (!groupRank.has(g)) groupRank.set(g, groupRank.size);
+    });
+    const sortValue = (r) => {
+      if (sort.key === "last_seen") return Date.parse(r.last_seen || "") || 0;
+      if (sort.key === "seen_15m" || sort.key === "seen_60m") return Number(r[sort.key]) || 0;
+      if (sort.key === "rssi") return r.rssi_best ? Number(r.rssi_best.dbm) : -999;
+      return 0;
+    };
+    rows = rows.slice().sort((a, b) => {
+      const ga = groupRank.get(_silent(a) ? "~silent" : _mc(a));
+      const gb = groupRank.get(_silent(b) ? "~silent" : _mc(b));
+      if (ga !== gb) return ga - gb;
+      const d = sort.key === "id" ? 0 : (sortValue(a) - sortValue(b)) * sort.dir;
+      if (d) return d;
+      return String(a.id || "").localeCompare(String(b.id || "")) * (sort.key === "id" ? sort.dir : 1);
+    });
+    const sortTh = (key, label, extra = "") => {
+      // Every sortable header carries a mark, so it is visible that the
+      // column can be clicked: a dim "⇅", or ▲/▼ on the active one.
+      const mark = sort.key === key ? (sort.dir === 1 ? "▲" : "▼") : "⇅";
+      return `<th class="sortable${sort.key === key ? " sorted" : ""}" data-action="candidate-sort" data-key="${key}" title="${escapeHtml(t("sort_by_column", "Sort by this column"))}">${escapeHtml(label)} <span class="sort-mark">${mark}</span>${extra}</th>`;
+    };
     const groupDivider = (prev, cur) => {
       if (_silent(cur)) {
         if (!prev || !_silent(prev)) {
@@ -2054,21 +2214,21 @@
       return "";
     };
     return `
-      <div class="table-wrap">
+      <div class="table-wrap cards-sm">
         <table>
           <thead>
             <tr>
-              <th>${escapeHtml(t("webui_id", "ID"))}</th>
+              ${sortTh("id", t("webui_id", "ID"))}
               <th>${escapeHtml(t("driver", "Driver"))}</th>
               <th>${escapeHtml(t("webui_type", "Type"))}</th>
               <th>${escapeHtml(t("media", "Medium"))}</th>
               <th>${escapeHtml(t("manufacturer_col", "Manufacturer"))}</th>
               <th>${escapeHtml(t("encryption_label", "Encryption"))}</th>
               <th>${escapeHtml(t("preview_value_col", "Preview value"))}</th>
-              <th>${escapeHtml(t("webui_last_seen", "Last seen"))}</th>
-              <th>15m</th>
-              <th>60m</th>
-              <th>${escapeHtml(t("reception", "Interval"))}${receptionLegendInfo()}</th>
+              ${sortTh("last_seen", t("webui_last_seen", "Last seen"))}
+              ${sortTh("seen_15m", "15m")}
+              ${sortTh("seen_60m", "60m")}
+              ${sortTh("rssi", t("reception", "Interval"), receptionLegendInfo())}
               ${withActions ? "<th></th>" : ""}
             </tr>
           </thead>
@@ -2102,8 +2262,11 @@
                 // Parallel LISTEN decoded a valid JSON telegram without an AES key →
                 // encryption is resolved as no_aes. Override "unknown" for display only;
                 // status_candidate_analysis.tsv is updated asynchronously by bridge.sh.
+                // A shown preview value is a decode as well: the state row can be
+                // missing (e.g. lost over a restart) while the value is still there.
                 const previewDecoded = previewState === "decoded_value" ||
-                                       previewState === "decoded_without_numeric_value";
+                                       previewState === "decoded_without_numeric_value" ||
+                                       previewVal !== "";
                 // A telegram decoded without a key settles "unknown" as no AES; if
                 // the analysed telegram was encrypted, the meter sends both kinds.
                 const effectiveEnc  = (enc === "unknown" && previewDecoded) ? "no_aes"
@@ -2131,7 +2294,7 @@
                     <td style="color:#9eafba;font-size:12px;">${escapeHtml(row.type || "-")}</td>
                     <td>${mediaIconHtml(row.type || "", driver)} ${escapeHtml(mediaLabel)}</td>
                     <td>${mfrCell}</td>
-                    <td>${encBadge(effectiveEnc, note)}</td>
+                    <td>${bandSecurityBadges(row, previewDecoded) || encBadge(effectiveEnc, note)}</td>
                     <td>${previewCell}</td>
                     <td>${fmtTime(row.last_seen)}</td>
                     <td>${escapeHtml(String(seen15mAdj))}</td>
@@ -2139,11 +2302,13 @@
                     <td style="color:var(--muted);font-size:12px;">${escapeHtml(fmtInterval(row.avg_interval_s))}${espReceptionBadges(row)}</td>
                     ${
                       withActions
-                        ? `<td><div class="actions">
+                        ? `<td><div class="actions actions-compact">
                             <button class="btn primary" data-action="open-add" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(driver)}" data-enc="${escapeHtml(effectiveEnc)}">${escapeHtml(t("webui_add", "Add"))}</button>
+                            <button class="btn btn-more" data-action="candidate-more" data-id="${escapeHtml(id)}" title="${escapeHtml(t("more_actions", "More actions"))}" aria-expanded="${state.expandedActions.has(id) ? "true" : "false"}">⋯</button>
+                            ${state.expandedActions.has(id) ? `
                             <button class="btn" data-action="ignore" data-id="${escapeHtml(id)}">${escapeHtml(t("ignore", "Ignore"))}</button>
                             <button class="btn" data-action="export-report" data-id="${escapeHtml(id)}" title="${escapeHtml(t("export_report_title", "wmbusmeters issue report"))}">${escapeHtml(t("export_report_btn", "Report…"))}</button>
-                            ${row.preview_active === "true" ? `<button class="btn" data-action="cancel-preview" data-id="${escapeHtml(id)}">${escapeHtml(t("cancel_preview", "Cancel preview"))}</button>` : ""}
+                            ${row.preview_active === "true" ? `<button class="btn" data-action="cancel-preview" data-id="${escapeHtml(id)}">${escapeHtml(t("cancel_preview", "Cancel preview"))}</button>` : ""}` : ""}
                           </div></td>`
                         : ""
                     }
@@ -2284,7 +2449,7 @@
             style="${selCount ? "" : "opacity:.5;cursor:not-allowed;"}white-space:nowrap;">🗑 ${escapeHtml(t("remove_selected", "Remove selected"))}${selCount ? ` (${selCount})` : ""}</button>
           <span style="font-size:11px;color:var(--muted);">${escapeHtml(t("remove_selected_hint", "Tick the meters you want to remove from the configuration."))}</span>
         </div>
-        <div class="table-wrap">
+        <div class="table-wrap cards-sm">
           <table>
             <thead>
               <tr>
@@ -2457,7 +2622,10 @@
     const pending = pendingMeters();
     const rxDownloadEnabled = Boolean(data.options?.esp_rx_api_enabled);
     const candidateCountLabel = `${filteredCandidates.length}${filteredCandidates.length !== allCandidates.length ? `/${allCandidates.length}` : ""} ${t("webui_visible", "visible")}`;
+    // The RX history download sits above everything: it is what one comes to
+    // this page for when exporting, and the candidate list below runs long.
     return `
+      ${rxDownloadEnabled ? `<div class="page-actions"><a class="btn" href="api/esp-rx?limit=100000&amp;download=1" download>${escapeHtml(t("download_rx_history", "Download RX history"))}</a></div>` : ""}
       ${discoverValueFilterBar(filteredMeters.length + filteredCandidates.length)}
       ${discoverConfiguredPanel(filteredMeters)}
       ${pending.length ? pendingMetersSection(pending, data.analysis || {}) : ""}
@@ -2466,7 +2634,6 @@
           <h2>${escapeHtml(t("detected_candidates", "Detected candidates"))}</h2>
           <div class="actions">
             <span id="discover-candidate-count" data-default="${escapeHtml(candidateCountLabel)}">${escapeHtml(candidateCountLabel)}</span>
-            ${rxDownloadEnabled ? `<a class="btn" href="api/esp-rx?limit=100000&amp;download=1" download>${escapeHtml(t("download_rx_history", "Download RX history"))}</a>` : ""}
           </div>
         </div>
         ${filterChips()}
@@ -2686,14 +2853,80 @@
     `;
   }
 
+  // Notice above a live log: no RAM directory (the log is off), a failed
+  // fetch, or nothing logged yet.
+  function liveLogNotice(log, emptyText) {
+    const box = (text) => `<div class="empty">${escapeHtml(text)}</div>`;
+    if (log.available === false) {
+      return box(t("live_log_unavailable", "Live logs are kept only in the add-on's RAM directory (/tmp on tmpfs). This system has none, so they are off to spare the data disk."));
+    }
+    if (log.error) return box(`${t("live_log_error", "Cannot load the log")}: ${log.error}`);
+    if (!log.loaded) return box(t("webui_loading", "Loading..."));
+    if (!asArray(log.rows).length) return box(emptyText);
+    return "";
+  }
+
+  function logsTabs() {
+    const tabs = [
+      ["events", t("live_log_events_tab", "Add-on events")],
+      ["wmbusmeters", t("live_log_wmbusmeters_tab", "wmbusmeters")],
+    ];
+    return `<div class="filters">${tabs.map(([key, label]) =>
+      `<span class="filter${state.logsTab === key ? " active" : ""}" data-action="logs-tab" data-tab="${key}" style="cursor:pointer;">${escapeHtml(label)}</span>`
+    ).join("")}</div>`;
+  }
+
+  // One line of the wmbusmeters log. A decoded telegram (a JSON line) is one
+  // row "name · id · driver" with the start of the JSON; a click shows the
+  // whole JSON formatted. Other lines (warnings, key errors, start-up) as is.
+  function wmbusmetersLogRow(row) {
+    const time = `<span class="live-log-time">${escapeHtml(row.time.slice(11))}</span>`;
+    if (!row.text.startsWith("{")) {
+      return `<div class="live-log-row">${time}<span class="live-log-msg">${escapeHtml(row.text)}</span></div>`;
+    }
+    let parsed = null;
+    try { parsed = JSON.parse(row.text); } catch (error) { parsed = null; }
+    const key = `${row.time}|${row.text.length}|${row.text.slice(0, 80)}`;
+    const open = state.expandedLogLines.has(key);
+    const head = parsed
+      ? [parsed.name, parsed.id, parsed.meter || parsed.driver].filter(Boolean).join(" · ")
+      : t("live_log_json_cut", "JSON (cut)");
+    return `
+      <div class="live-log-row json" data-action="log-line-toggle" data-key="${escapeHtml(key)}" style="cursor:pointer;">
+        ${time}
+        <span class="live-log-msg">
+          <span class="live-log-head">${open ? "▾" : "▸"} ${escapeHtml(head)}</span>
+          ${open
+            ? `<pre class="live-log-json">${escapeHtml(parsed ? JSON.stringify(parsed, null, 2) : row.text)}</pre>`
+            : `<span class="live-log-preview">${escapeHtml(row.text)}</span>`}
+        </span>
+      </div>`;
+  }
+
+  // The decoding wmbusmeters' own output, newest first.
+  function wmbusmetersLogSection() {
+    const log = state.liveLog.wmbusmeters;
+    const rows = asArray(log.rows).slice().reverse();
+    const notice = liveLogNotice(log, t("live_log_wmbusmeters_empty", "Nothing from wmbusmeters yet. Its output appears here line by line as it decodes."));
+    return `
+      <section class="section">
+        <div class="section-head"><h2>${escapeHtml(t("live_log_wmbusmeters_title", "wmbusmeters output"))}</h2><span>${rows.length} ${escapeHtml(t("webui_rows", "rows"))}</span></div>
+        ${logsTabs()}
+        ${notice || `<div class="live-log">${rows.map((row) => wmbusmetersLogRow(row)).join("")}</div>`}
+      </section>
+    `;
+  }
+
   function logsPage() {
     const data = state.data || {};
+    if (state.logsTab === "wmbusmeters") return wmbusmetersLogSection();
     // Legend ported from old webui page_logs: explains what "RAW" and
     // "candidate" entries mean in the event stream, plus a color key
     // matching the new event-level CSS classes (ok / warn / candidate /
     // error). Helps users read the log without having to learn the
     // colour code by trial and error.
     return `
+      ${logsTabs()}
       <section class="section">
         <div class="section-head"><h2>${escapeHtml(t("webui_runtime_events", "Runtime events"))}</h2><span>${asArray(data.events).length} ${escapeHtml(t("webui_rows", "rows"))}</span></div>
         <div style="margin-bottom:12px;padding:10px 14px;border:1px dashed #2c4555;border-radius:8px;color:#9eafba;font-size:12px;display:grid;gap:6px;">
@@ -2959,18 +3192,58 @@
         </div>
       </div>`;
 
+    // The diagnostic events are folded under the real log; the open state
+    // lives in `state`, as a <details> would close on every live re-render.
+    const diagOpen = Boolean(state.espDiagOpen);
     return `
+      ${espLiveLogSection()}
       <section class="section">
-        <div class="section-head">
-          <h2>${escapeHtml(t("webui_esp_events", "ESP events"))}</h2>
+        <div class="section-head" data-action="esp-diag-toggle" style="cursor:pointer;">
+          <h2>${diagOpen ? "▾" : "▸"} ${escapeHtml(t("webui_esp_events", "ESP events"))}</h2>
           <span>${visibleEvents.length} ${escapeHtml(t("webui_rows", "rows"))}${activeDeviceBadges}</span>
         </div>
-        ${helpNotice}
-        ${espEventsTable(events, activeDevices)}
+        ${diagOpen ? `
+          ${helpNotice}
+          ${espEventsTable(events, activeDevices)}
+          <div class="section-head" style="margin-top:14px;"><h2>${escapeHtml(t("webui_suggestion", "Suggestion"))}</h2></div>
+          ${Object.keys(suggestion).length ? objectKv(suggestion) : `<div class="empty">${escapeHtml(t("webui_no_suggestion", "No tuning suggestion."))}</div>`}
+        ` : ""}
       </section>
+    `;
+  }
+
+  // The boards' own ESPHome log (what `esphome logs` shows), from the
+  // <node>/debug topic ESPHome's mqtt: component publishes. Newest first,
+  // filterable by node and to warnings/errors.
+  function espLiveLogSection() {
+    const log = state.liveLog.esp;
+    const all = asArray(log.rows);
+    const nodes = [...new Set(all.map((row) => row.node))].sort();
+    if (state.liveLogNode !== "all" && !nodes.includes(state.liveLogNode)) state.liveLogNode = "all";
+    const rows = all
+      .filter((row) => state.liveLogNode === "all" || row.node === state.liveLogNode)
+      .filter((row) => state.liveLogLevel !== "warn" || row.level === "W" || row.level === "E")
+      .reverse();
+    const chip = (action, key, value, label) =>
+      `<span class="filter${value === key ? " active" : ""}" data-action="${action}" data-value="${escapeHtml(key)}" style="cursor:pointer;">${escapeHtml(label)}</span>`;
+    const notice = liveLogNotice(log, t("live_log_esp_empty", "No ESPHome log yet. The boards publish it on <node name>/debug when the mqtt: component keeps its default log_topic; a board that set log_topic: null sends none."));
+    const levelName = {E: "error", W: "warn", I: "info", D: "debug", V: "verbose", C: "config"};
+    return `
       <section class="section">
-        <div class="section-head"><h2>${escapeHtml(t("webui_suggestion", "Suggestion"))}</h2></div>
-        ${Object.keys(suggestion).length ? objectKv(suggestion) : `<div class="empty">${escapeHtml(t("webui_no_suggestion", "No tuning suggestion."))}</div>`}
+        <div class="section-head"><h2>${escapeHtml(t("live_log_esp_title", "ESPHome log"))}</h2><span>${rows.length} ${escapeHtml(t("webui_rows", "rows"))}</span></div>
+        ${nodes.length ? `<div class="filters">
+          ${chip("live-log-node", "all", state.liveLogNode, t("filter_all", "All"))}
+          ${nodes.map((node) => chip("live-log-node", node, state.liveLogNode, node)).join("")}
+          <span style="flex:1"></span>
+          ${chip("live-log-level", "warn", state.liveLogLevel, t("live_log_warn_only", "Warnings and errors only"))}
+        </div>` : ""}
+        ${notice || `<div class="live-log">${rows.map((row) => `
+          <div class="live-log-row lvl-${escapeHtml(row.level || "I")}">
+            <span class="live-log-time">${escapeHtml(fmtClock(new Date(row.epoch * 1000).toISOString()))}</span>
+            <span class="live-log-node">${escapeHtml(row.node)}</span>
+            <span class="live-log-level">${escapeHtml(levelName[row.level] || row.level || "")}</span>
+            <span class="live-log-msg"><span class="live-log-tag">[${escapeHtml(row.tag)}]</span> ${escapeHtml(row.message)}</span>
+          </div>`).join("")}</div>`}
       </section>
     `;
   }
@@ -4399,6 +4672,7 @@
         </div>
       `;
     }
+    ensureLiveLogPolling();
     switch (state.route) {
       case "meters":
         return shell(metersPage());
@@ -4486,6 +4760,60 @@
 
     if (action === "media-filter") {
       state.mediaFilter = target.dataset.filter || "all";
+      render();
+      return;
+    }
+
+    if (action === "logs-tab") {
+      state.logsTab = target.dataset.tab === "wmbusmeters" ? "wmbusmeters" : "events";
+      render();
+      return;
+    }
+    if (action === "live-log-node") {
+      state.liveLogNode = target.dataset.value || "all";
+      render();
+      return;
+    }
+    if (action === "live-log-level") {
+      state.liveLogLevel = state.liveLogLevel === "warn" ? "all" : "warn";
+      render();
+      return;
+    }
+    if (action === "esp-diag-toggle") {
+      state.espDiagOpen = !state.espDiagOpen;
+      render();
+      return;
+    }
+    if (action === "candidate-sort") {
+      const key = target.dataset.key || "id";
+      const cur = state.candidateSort;
+      // A second click on the same column reverses it; a new column starts
+      // ascending for the ID and descending (newest, most, strongest) otherwise.
+      state.candidateSort = cur.key === key
+        ? {key, dir: -cur.dir}
+        : {key, dir: key === "id" ? 1 : -1};
+      saveCandidateSort(state.candidateSort);
+      render();
+      return;
+    }
+    if (action === "candidate-more") {
+      const id = target.dataset.id || "";
+      if (state.expandedActions.has(id)) state.expandedActions.delete(id);
+      else state.expandedActions.add(id);
+      render();
+      return;
+    }
+    if (action === "log-line-toggle") {
+      const key = target.dataset.key || "";
+      if (state.expandedLogLines.has(key)) state.expandedLogLines.delete(key);
+      else state.expandedLogLines.add(key);
+      render();
+      return;
+    }
+    if (action === "reception-toggle") {
+      const id = target.dataset.id || "";
+      if (state.expandedReception.has(id)) state.expandedReception.delete(id);
+      else state.expandedReception.add(id);
       render();
       return;
     }
