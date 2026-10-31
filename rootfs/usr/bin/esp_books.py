@@ -479,3 +479,52 @@ class HaPresenceBook:
         if state not in ("online", "offline"):
             return
         _replace(self.path, f"{state}\t{int(bl.now())}\n".encode())
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+_ESPHOME_LOG = re.compile(r"^\[([A-Z])\]\[([^\]]*)\]:? ?(.*)$", re.S)
+
+
+class EspLogBook:
+    """<node>/debug -> status_esp_log.tsv, the boards' own ESPHome log.
+
+    ESPHome publishes every log line on <node name>/debug when the mqtt:
+    component is configured (its default log_topic). The node name is not the
+    board name of the wmbus/<board>/ topics, so the boards are recognised by
+    what they log: a node joins once it logs a wmbus tag, and the lines of
+    other ESPHome devices on the same broker never reach the file. The last
+    MAX_LINES lines are kept (epoch, node, level, tag, message) and the file
+    is rewritten at most once a second.
+    """
+
+    MAX_LINES = 600
+    MAX_MESSAGE = 600
+
+    def __init__(self, path: str) -> None:
+        import collections
+        self.path = path
+        self.lines = collections.deque(maxlen=self.MAX_LINES)
+        self.nodes: set = set()
+        self.last_write = 0.0
+        self.dirty = False
+
+    def deliver(self, topic_b: bytes, payload_b: bytes, _retain: bool = False) -> None:
+        topic = bl._s(topic_b)
+        if not topic.endswith("/debug") or not payload_b:
+            return
+        node = topic[:-len("/debug")]
+        text = _ANSI.sub("", bl._s(payload_b)).strip()
+        m = _ESPHOME_LOG.match(text)
+        level, tag, message = (m.group(1), m.group(2), m.group(3)) if m else ("", "", text)
+        if node not in self.nodes:
+            if not tag.startswith("wmbus"):
+                return
+            self.nodes.add(node)
+        message = _SPACE.sub(" ", message)[:self.MAX_MESSAGE]
+        self.lines.append(f"{int(bl.now())}\t{node}\t{level}\t{_SPACE.sub(' ', tag)}\t{message}\n")
+        self.dirty = True
+        now = bl.now()
+        if now - self.last_write >= 1.0:
+            _replace(self.path, "".join(self.lines).encode())
+            self.last_write = now
+            self.dirty = False

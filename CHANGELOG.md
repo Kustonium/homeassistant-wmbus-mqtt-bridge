@@ -1,3 +1,18 @@
+## 1.6.5
+
+### Added
+- signal of every board in the unfolded reception list (dc86ac1)
+- signal badge per meter, compact candidate actions, readable wmbusmeters log (a406e1f)
+- live ESPHome and wmbusmeters logs, compact reception column, cards on narrow screens (636428c)
+
+### Fixed
+- board pill shows the band the board received the meter on (ab6de49)
+- signal and listen band on each board pill, no separate signal badge (97eebac)
+- short per-band encryption labels that do not wrap (6e97dea)
+- encryption per band in the candidate table (609b7a1)
+- mark sortable headers, keep candidate actions on one line (8075fd4)
+- candidate table sorted by ID by default, sortable columns (d4171d1)
+
 ## 1.6.4
 
 ### Fixed

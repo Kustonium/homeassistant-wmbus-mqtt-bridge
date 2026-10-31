@@ -54,6 +54,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import zlib
 from decimal import Decimal
 from contextlib import contextmanager
 from datetime import datetime
@@ -748,17 +749,164 @@ def upsert_rx_clock(path: str, source: str, received: str, ts: int,
     _rewrite_keyed(path, lambda f: _field(f, 1) == source, update, new_row, defer)
 
 
+def frame_security(raw: str) -> str:
+    """The protection of one RAW frame, from its CI field: "aes" (OMS header
+    with a non-zero security mode), "plain" (OMS header with mode 0, or no
+    header), "mfr" (a manufacturer-specific CI: its own format, which may or
+    may not need a key) or "other" (ELL and anything else).
+
+    CI 0x7A is the short header (CFG at bytes 13-14), 0x72 the long one (CFG
+    at 21-22); the mode is the low five bits of CFG's high byte, as in
+    raw_is_encrypted."""
+    raw = raw.upper()
+    if len(raw) < 22:
+        return "other"
+    ci = raw[20:22]
+    cfg_at = {"7A": 28, "72": 44}.get(ci)
+    if cfg_at is not None:
+        cfg_hi = raw[cfg_at:cfg_at + 2]
+        if not re.fullmatch(r"[0-9A-F]{2}", cfg_hi):
+            return "other"
+        return "aes" if int(cfg_hi, 16) & 0x1F else "plain"
+    if ci == "78":
+        return "plain"
+    if re.fullmatch(r"A[0-9A-F]|B[0-7]", ci):
+        return "mfr"
+    return "other"
+
+
+class BandSecurity:
+    """Which band a meter's frames are protected on (band_enc_file).
+
+    A meter can send plain frames on one band and AES ones on another - Techem
+    sends its own plain format on T1 and an OMS AES frame on C1 - so a single
+    verdict per meter is wrong half of the time. The band is not in the RAW
+    telegram, it is in the /rx metadata of the same frame; both carry the
+    frame's identity, the IEEE CRC-32 of the normalized bytes (frame_crc32,
+    the same bytes /telegram turns into HEX). The two halves wait for each
+    other in small maps whatever order they arrive in, and each frame is
+    counted once however many boards received it. The table (id, band,
+    plain, aes, mfr, other, last seen) is written at most every WRITE_EVERY_S
+    with the RxBook's deferred batch.
+    """
+
+    KEEP = 4096
+    WRITE_EVERY_S = 30
+    MAX_AGE_S = 86400
+
+    def __init__(self, path: str, deferred: "Deferred") -> None:
+        import collections
+        self.path, self.deferred = path, deferred
+        self.rx: "collections.OrderedDict[str, Tuple[str, str]]" = collections.OrderedDict()
+        self.raw: "collections.OrderedDict[str, str]" = collections.OrderedDict()
+        self.counted: "collections.OrderedDict[str, None]" = collections.OrderedDict()
+        self.stats: Dict[Tuple[str, str], List[int]] = {}  # (meter, band) -> [plain, aes, mfr, other, ts]
+        self.written = 0.0
+
+    @staticmethod
+    def _keep(od, key, value, limit) -> None:
+        od[key] = value
+        od.move_to_end(key)
+        while len(od) > limit:
+            od.popitem(last=False)
+
+    def note_rx(self, crc: str, meter: str, band: str) -> None:
+        crc = crc.upper()
+        if crc in self.counted:
+            return
+        self._keep(self.rx, crc, (meter, band), self.KEEP)
+        self._match(crc)
+
+    def note_raw(self, raw_hex: str) -> None:
+        raw = re.sub(r"\s+", "", raw_hex)
+        if raw[:2].lower() == "0x":
+            raw = raw[2:]
+        try:
+            crc = f"{zlib.crc32(bytes.fromhex(raw)) & 0xFFFFFFFF:08X}"
+        except ValueError:
+            return
+        if crc in self.counted:
+            return
+        self._keep(self.raw, crc, frame_security(raw), self.KEEP)
+        self._match(crc)
+
+    def _match(self, crc: str) -> None:
+        if crc not in self.rx or crc not in self.raw:
+            return
+        (meter, band), kind = self.rx.pop(crc), self.raw.pop(crc)
+        self._keep(self.counted, crc, None, self.KEEP)
+        st = self.stats.setdefault((meter, band), [0, 0, 0, 0, 0])
+        st[("plain", "aes", "mfr", "other").index(kind)] += 1
+        st[4] = int(now())
+        if now() - self.written >= self.WRITE_EVERY_S:
+            self.deferred.task("band_security", self._write)
+
+    def _write(self) -> None:
+        self.written = now()
+        cutoff = self.written - self.MAX_AGE_S
+        for pair in [p for p, st in self.stats.items() if st[4] < cutoff]:
+            del self.stats[pair]
+        _write_replace(self.path, "".join(
+            f"{meter}\t{band}\t{st[0]}\t{st[1]}\t{st[2]}\t{st[3]}\t{st[4]}\n"
+            for (meter, band), st in sorted(self.stats.items())).encode())
+
+
 class RxBook:
     """_esp_rx_handle_message: structured /rx metadata into six files."""
 
     TRIM_EVERY = 1000
+    # Per meter and board for the WebUI (rssi_file): a running average of the
+    # rssi_dbm, and the bands the board received this meter's frames on (from
+    # the frame's own /rx mode - not the board's listen_mode, which says T1+C1
+    # for a board in both mode even when the meter sends only T1). Kept here in
+    # memory; the file holds a row per meter and board (id, board, dBm or
+    # empty, last seen, frames, "T1:10,C1:2"), written with the deferred batch
+    # but at most every RSSI_WRITE_EVERY_S: a row per pair is ~5x the rows of
+    # one per meter, and none of it needs 5 s freshness. Pairs not heard for
+    # RSSI_MAX_AGE_S are dropped.
+    RSSI_ALPHA = 0.2
+    RSSI_MAX_AGE_S = 3600
+    RSSI_WRITE_EVERY_S = 30
 
     def __init__(self, reception: str, mode: str, history: str, sequence: str,
-                 boots: str, clock: str) -> None:
+                 boots: str, clock: str, rssi_file: str = "", band_enc_file: str = "") -> None:
         self.reception, self.mode, self.history = reception, mode, history
         self.sequence, self.boots, self.clock = sequence, boots, clock
+        self.rssi_file = rssi_file
+        # (meter, board) -> [frames, average dBm or None, last ts, {band: frames}]
+        self.rssi_stats: Dict[Tuple[str, str], List[Any]] = {}
+        self.rssi_written = 0.0
         self.since_trim = 0
         self.deferred = Deferred()
+        # Fed with the RAW telegrams too (mqtt_publisher.make_books hands it
+        # to the raw feed); None without a band_enc_file.
+        self.band_security = BandSecurity(band_enc_file, self.deferred) if band_enc_file else None
+
+    def _note_rssi(self, meter: str, device: str, rssi: Any, mode: str, ts: int) -> None:
+        if not self.rssi_file or not meter:
+            return
+        value = float(_num(rssi)) if rssi is not None and _is_number(rssi) else None
+        st = self.rssi_stats.get((meter, device))
+        if st is None:
+            st = self.rssi_stats[(meter, device)] = [0, value, ts, {}]
+        elif value is not None:
+            st[1] = value if st[1] is None else st[1] + self.RSSI_ALPHA * (value - st[1])
+        st[0] += 1
+        st[2] = ts
+        if mode:
+            st[3][mode] = st[3].get(mode, 0) + 1
+        if now() - self.rssi_written >= self.RSSI_WRITE_EVERY_S:
+            self.deferred.task("rx_rssi", self._write_rssi)
+
+    def _write_rssi(self) -> None:
+        self.rssi_written = now()
+        cutoff = self.rssi_written - self.RSSI_MAX_AGE_S
+        for pair in [p for p, st in self.rssi_stats.items() if st[2] < cutoff]:
+            del self.rssi_stats[pair]
+        _write_replace(self.rssi_file, "".join(
+            f"{meter}\t{device}\t{'' if st[1] is None else round(st[1])}\t{int(st[2])}\t{int(st[0])}\t"
+            + ",".join(f"{b}:{n}" for b, n in sorted(st[3].items())) + "\n"
+            for (meter, device), st in sorted(self.rssi_stats.items())).encode())
 
     def __call__(self, topic_b: bytes, payload_b: bytes) -> None:
         if not topic_b or not payload_b:
@@ -784,8 +932,11 @@ class RxBook:
         d = self.deferred
         upsert_meter_reception(self.reception, meter, device, ts, topic, d)
         upsert_meter_mode(self.mode, meter, mode, ts, d)
+        self._note_rssi(meter, device, first.get("rssi_dbm"), mode, ts)
         lines = []
         for n in normalized:
+            if self.band_security is not None:
+                self.band_security.note_rx(str(n["frame_crc32"]), str(n["meter_id"]), str(n["mode"]))
             merged = dict(n)
             merged["bridge_rx_time"] = ts
             merged["source"] = device
@@ -3145,6 +3296,9 @@ RUNTIME_RESTORED = ".restored"
 # status files that stay in the data directory: a user's decision, and the
 # error run.sh writes before the bridge starts
 RUNTIME_KEEP_ON_DISK = ("status_ignored_candidates.tsv", "status_run_error.txt")
+# live logs for the WebUI: written only to a RAM runtime directory, rewritten
+# every second, worthless after a restart, so never saved in the snapshot
+RUNTIME_LOGS = ("status_esp_log.tsv", "wmbusmeters.log")
 
 
 def tmp_is_tmpfs(mounts: str = "/proc/mounts") -> bool:
@@ -3176,7 +3330,8 @@ def _runtime_names(directory: str) -> List[str]:
     for name in sorted(os.listdir(directory)):
         path = os.path.join(directory, name)
         if (not os.path.isfile(path) or os.path.islink(path) or name.endswith(".lock")
-                or ".tmp." in name or name.endswith(".tmp") or name == RUNTIME_RESTORED):
+                or ".tmp." in name or name.endswith(".tmp") or name == RUNTIME_RESTORED
+                or name in RUNTIME_LOGS):
             continue
         out.append(name)
     return out

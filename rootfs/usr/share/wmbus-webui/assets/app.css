@@ -1704,3 +1704,253 @@ tr:last-child td {
 .mbus-console-line.bad {
   color: var(--bad);
 }
+
+/* ───── Page-level actions (above the first section) ───── */
+.page-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+/* ───── Live logs (ESPHome log, wmbusmeters output) ───── */
+.live-log {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.live-log-row {
+  display: grid;
+  grid-template-columns: 70px 150px 56px minmax(0, 1fr);
+  gap: 10px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.live-log-row:last-child {
+  border-bottom: 0;
+}
+
+.live-log-row.json,
+.live-log-row:not(.lvl-I):not(.lvl-W):not(.lvl-E):not(.lvl-D):not(.lvl-V):not(.lvl-C) {
+  grid-template-columns: 70px minmax(0, 1fr);
+}
+
+.live-log-msg {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.live-log-row.json .live-log-msg {
+  color: var(--muted);
+}
+
+.live-log-node,
+.live-log-time,
+.live-log-tag {
+  color: var(--quiet);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-log-row.lvl-W .live-log-level,
+.live-log-row.lvl-W .live-log-msg {
+  color: #f3c84b;
+}
+
+.live-log-row.lvl-E .live-log-level,
+.live-log-row.lvl-E .live-log-msg {
+  color: #ff646b;
+}
+
+.live-log-row.lvl-I .live-log-level {
+  color: #2de36f;
+}
+
+/* ───── Narrow screens: meter tables become cards ─────
+   The same markup as the desktop table; under 680 px (a phone, or the HA
+   app) each row is a card and the header row is dropped. */
+@media (max-width: 680px) {
+  .table-wrap.cards-sm {
+    border: 0;
+    background: transparent;
+    overflow: visible;
+  }
+
+  .table-wrap.cards-sm table {
+    min-width: 0;
+  }
+
+  .table-wrap.cards-sm thead {
+    display: none;
+  }
+
+  .table-wrap.cards-sm table,
+  .table-wrap.cards-sm tbody,
+  .table-wrap.cards-sm tr {
+    display: block;
+    width: 100%;
+  }
+
+  /* Cells flow side by side and wrap, so short ones (driver, medium,
+     15M/60M) share a line instead of each taking a row of the card. */
+  .table-wrap.cards-sm td {
+    display: inline-block;
+    width: auto;
+    max-width: 100%;
+    vertical-align: top;
+  }
+
+  .table-wrap.cards-sm td[colspan] {
+    display: block;
+  }
+
+  .table-wrap.cards-sm tr {
+    margin: 0 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    padding: 6px 4px;
+  }
+
+  .table-wrap.cards-sm td {
+    border-bottom: 0;
+    padding: 4px 10px;
+  }
+
+  .table-wrap.cards-sm td:empty {
+    display: none;
+  }
+
+  .live-log-row {
+    grid-template-columns: 62px minmax(0, 1fr);
+  }
+
+  .live-log-level {
+    display: none;
+  }
+
+  .live-log-node,
+  .live-log-msg {
+    grid-column: 2;
+  }
+
+  .page-actions {
+    justify-content: stretch;
+  }
+
+  .page-actions .btn {
+    flex: 1;
+    text-align: center;
+  }
+}
+
+/* ───── Candidate actions: "Add" and "⋯" in one row ───── */
+.actions.actions-compact {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.actions.actions-compact .btn-more {
+  min-width: 36px;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+/* ───── wmbusmeters log: decoded telegram as one row, JSON on click ───── */
+.live-log-head {
+  color: var(--text);
+  margin-right: 10px;
+}
+
+.live-log-preview {
+  color: var(--quiet);
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.live-log-row.json .live-log-msg {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.live-log-json {
+  margin: 6px 0 2px;
+  white-space: pre-wrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.live-log-row.json .live-log-msg:has(.live-log-json) {
+  white-space: normal;
+}
+
+/* ───── Sortable column headers (candidate table) ───── */
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+th.sortable:hover,
+th.sortable.sorted {
+  color: var(--text);
+}
+
+th.sortable .sort-mark {
+  color: var(--quiet);
+  opacity: 0.6;
+  font-size: 10px;
+}
+
+th.sortable:hover .sort-mark {
+  opacity: 1;
+}
+
+th.sortable.sorted .sort-mark {
+  color: #4dd0e1;
+  opacity: 1;
+}
+
+th.sortable:hover {
+  text-decoration: underline dotted;
+}
+
+/* "Add" and "⋯" stay on one line; the unfolded actions wrap below them. */
+.actions.actions-compact {
+  min-width: 170px;
+}
+
+.actions.actions-compact > .btn.primary,
+.actions.actions-compact > .btn-more {
+  white-space: nowrap;
+}
+
+/* Per-board signal inside a reception pill (unfolded "+N" list). */
+.board-rssi {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.board-rssi.good {
+  color: #4df08d;
+}
+
+.board-rssi.mid {
+  color: #f3c84b;
+}
+
+.board-rssi.weak {
+  color: #ff646b;
+}
