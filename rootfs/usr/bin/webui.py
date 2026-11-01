@@ -2979,6 +2979,9 @@ def state(include_ignored: bool = False) -> dict:
     _rssi_esp_by_id: dict[str, dict] = {}
     _rssi_count: dict[str, int] = {}
     _rx_bands_by_pair: dict[tuple, str] = {}
+    # Per band on that board: [{"band", "count", "dbm"}], T1/C1/S1 order.
+    # "T1:10:-87" since 1.6.7; an older "T1:10" row has no dBm per band.
+    _rx_band_stats_by_pair: dict[tuple, list] = {}
     _rssi_now = int(time.time())
     for _rrow in read_tsv(STATUS_ESP_RX_RSSI_FILE, ["id", "esp", "dbm", "ts", "count", "bands"]):
         _rmid = normalize_meter_id(_rrow.get("id"))
@@ -2986,10 +2989,21 @@ def state(include_ignored: bool = False) -> dict:
         if not (_rmid and _rts and _rssi_now - _rts <= 900):
             continue
         _resp = _rrow.get("esp", "")
-        _rb = [p.split(":", 1)[0] for p in str(_rrow.get("bands") or "").split(",") if ":" in p]
-        _rb = sorted({_band_norm(b) for b in _rb} - {""}, key=lambda b: {"T1": 0, "C1": 1, "S1": 2}[b])
+        _rbs: dict[str, dict] = {}
+        for _part in str(_rrow.get("bands") or "").split(","):
+            _f = _part.split(":")
+            _bn = _band_norm(_f[0]) if len(_f) >= 2 else ""
+            if not _bn:
+                continue
+            try:
+                _bdbm = int(_f[2]) if len(_f) >= 3 and _f[2] != "" else None
+            except ValueError:
+                _bdbm = None
+            _rbs[_bn] = {"band": _bn, "count": safe_int(_f[1]), "dbm": _bdbm}
+        _rb = sorted(_rbs, key=lambda b: {"T1": 0, "C1": 1, "S1": 2}[b])
         if _rb:
             _rx_bands_by_pair[(_rmid, _resp)] = "+".join(_rb)
+            _rx_band_stats_by_pair[(_rmid, _resp)] = [_rbs[b] for b in _rb]
         try:
             _rdbm = int(_rrow.get("dbm", ""))
         except ValueError:
@@ -3026,8 +3040,10 @@ def state(include_ignored: bool = False) -> dict:
             return []
         # Sort most-reading first: by telegram count, then %, then name.
         # "listen": the bands this board received this meter on ("T1", "C1",
-        # "T1+C1"), from the frames - not the board's listen_mode.
-        return [{"esp": k, **v, "listen": _rx_bands_by_pair.get((mid, k), "")}
+        # "T1+C1"), from the frames - not the board's listen_mode; "bands":
+        # frames and dBm per band on this board.
+        return [{"esp": k, **v, "listen": _rx_bands_by_pair.get((mid, k), ""),
+                 "bands": _rx_band_stats_by_pair.get((mid, k), [])}
                 for k, v in sorted(_per.items(),
                                    key=lambda kv: (-kv[1]["count"], kv[0]))]
 

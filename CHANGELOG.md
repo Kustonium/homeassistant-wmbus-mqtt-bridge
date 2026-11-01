@@ -1,3 +1,9 @@
+## 1.6.7
+
+### Added
+- pin the top table scrollbar under the sticky bars (25802d0)
+- frames and RSSI per band on each board's pill (fc3b80f)
+
 ## 1.6.6
 
 ### Added
