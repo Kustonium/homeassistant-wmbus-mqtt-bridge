@@ -570,6 +570,7 @@
           bootId: String(e.boot_id || ""),
           esp: String(e.esp || ""),
           listen: String(e.listen || ""),
+          bands: asArray(e.bands),
         });
       });
       // The bands this board received this meter on (T1, C1, T1+C1), from the
@@ -579,11 +580,27 @@
       // The board's own average signal for this meter, coloured like the
       // badge; each value is in that board's scale (boards differ by dB).
       const rssiByEsp = row.rssi_by_esp || {};
+      const dbmSpan = (dbm) => {
+        const cls = dbm >= -80 ? "good" : dbm >= -92 ? "mid" : "weak";
+        return ` · <span class="board-rssi ${cls}">${Math.round(dbm)} dBm</span>`;
+      };
       const boardRssi = (v) => {
         const dbm = Number(rssiByEsp[v.esp]);
         if (!(v.esp in rssiByEsp) || !Number.isFinite(dbm)) return "";
-        const cls = dbm >= -80 ? "good" : dbm >= -92 ? "mid" : "weak";
-        return ` · <span class="board-rssi ${cls}">${Math.round(dbm)} dBm</span>`;
+        return dbmSpan(dbm);
+      };
+      // Per band on this board: "T1 · 1.2k · -87 dBm ┃ C1 · 120 · -90 dBm".
+      // A board in both mode hears T1 and C1 at different levels and rates,
+      // so one summed count and one averaged dBm would hide which band it is
+      // short on. Falls back to listen + count + board dBm without per-band
+      // data (a file from before 1.6.7).
+      const bandSegs = (v) => {
+        const bs = v.bands.filter((b) => b && b.band);
+        if (!bs.length) return "";
+        return " · " + bs.map((b) => {
+          const dbm = b.dbm == null ? NaN : Number(b.dbm);
+          return `${escapeHtml(String(b.band))} · ${fmtTel(Number(b.count) || 0)}${Number.isFinite(dbm) ? dbmSpan(dbm) : ""}`;
+        }).join(' <span class="band-sep">┃</span> ');
       };
       // Compact by default: the board that heard the meter most, and "+N"
       // that unfolds the others. Five stacked boards made every row ~200 px
@@ -605,9 +622,12 @@
             ? `\nseq: ${v.lastSeq} · ${t("missing_rx_events", "missing RX events")}: ${v.missing} · ${t("out_of_order_rx_events", "out of order")}: ${v.outOfOrder}\nboot_id: ${v.bootId}`
             : "";
           const title = `${countLabel}: ${v.count}\n${t("first_received", "first received")}: ${first}\n${t("last_received", "last received")}: ${last}${continuity}`;
-          return `<span title="${escapeHtml(title)}" style="${pill}background:#12354a;color:#65c7f2;cursor:help;">📶 ${escapeHtml(label)}${boardListen(v)} · ${fmtTel(v.count)}${boardRssi(v)}</span>`;
+          const body = bandSegs(v) || `${boardListen(v)} · ${fmtTel(v.count)}${boardRssi(v)}`;
+          return `<span title="${escapeHtml(title)}" style="${pill}background:#12354a;color:#65c7f2;cursor:help;">📶 ${escapeHtml(label)}${body}</span>`;
         }
-        return `<span title="${escapeHtml(t("reception_pct_per_esp", "reception % on this ESP"))}: ${escapeHtml(label)}" style="${pill}${rxPctStyle(v.pct)}">📶 ${escapeHtml(label)}${boardListen(v)} ${v.pct}%${v.count > 0 ? ` · ${fmtTel(v.count)}` : ""}${boardRssi(v)}</span>`;
+        const pctBody = bandSegs(v) ? ` ${v.pct}%${bandSegs(v)}`
+          : `${boardListen(v)} ${v.pct}%${v.count > 0 ? ` · ${fmtTel(v.count)}` : ""}${boardRssi(v)}`;
+        return `<span title="${escapeHtml(t("reception_pct_per_esp", "reception % on this ESP"))}: ${escapeHtml(label)}" style="${pill}${rxPctStyle(v.pct)}">📶 ${escapeHtml(label)}${pctBody}</span>`;
       }).join("") + moreChip;
     } else if (bestPct >= 0) {
       rxHtml = `<span title="${escapeHtml(t("reception_pct_title", "reception % over the diagnostic window"))}" style="${pill}${rxPctStyle(bestPct)}">📶 ${bestPct}%</span>`;
@@ -4790,7 +4810,17 @@
       '<div class="table-scroll-top" aria-hidden="true"><div></div></div><div class="table-wrap');
   }
 
+  // Where a pinned top scrollbar must stop: under the filter bar when the
+  // page has one (it is sticky itself), else under the top bar, which is
+  // sticky only above 980 px.
+  function stickyScrollOffset() {
+    const fb = document.querySelector(".filter-sticky");
+    if (fb) return (parseFloat(getComputedStyle(fb).top) || 0) + fb.offsetHeight;
+    return window.matchMedia("(max-width: 980px)").matches ? 0 : 64;
+  }
+
   function syncTopScrollbars() {
+    document.documentElement.style.setProperty("--scroll-top-offset", `${stickyScrollOffset()}px`);
     document.querySelectorAll(".table-scroll-top").forEach((top) => {
       const wrap = top.nextElementSibling;
       if (!wrap || !wrap.classList.contains("table-wrap")) return;

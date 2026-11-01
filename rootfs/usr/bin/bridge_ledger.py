@@ -860,7 +860,9 @@ class RxBook:
     # the frame's own /rx mode - not the board's listen_mode, which says T1+C1
     # for a board in both mode even when the meter sends only T1). Kept here in
     # memory; the file holds a row per meter and board (id, board, dBm or
-    # empty, last seen, frames, "T1:10,C1:2"), written with the deferred batch
+    # empty, last seen, frames, "T1:10:-87,C1:2:-91" - frames and average dBm
+    # per band, dBm empty when the board sent none; files from before 1.6.7
+    # have only "T1:10"), written with the deferred batch
     # but at most every RSSI_WRITE_EVERY_S: a row per pair is ~5x the rows of
     # one per meter, and none of it needs 5 s freshness. Pairs not heard for
     # RSSI_MAX_AGE_S are dropped.
@@ -873,7 +875,8 @@ class RxBook:
         self.reception, self.mode, self.history = reception, mode, history
         self.sequence, self.boots, self.clock = sequence, boots, clock
         self.rssi_file = rssi_file
-        # (meter, board) -> [frames, average dBm or None, last ts, {band: frames}]
+        # (meter, board) -> [frames, average dBm or None, last ts,
+        #                    {band: [frames, average dBm or None]}]
         self.rssi_stats: Dict[Tuple[str, str], List[Any]] = {}
         self.rssi_written = 0.0
         self.since_trim = 0
@@ -894,7 +897,10 @@ class RxBook:
         st[0] += 1
         st[2] = ts
         if mode:
-            st[3][mode] = st[3].get(mode, 0) + 1
+            band = st[3].setdefault(mode, [0, None])
+            band[0] += 1
+            if value is not None:
+                band[1] = value if band[1] is None else band[1] + self.RSSI_ALPHA * (value - band[1])
         if now() - self.rssi_written >= self.RSSI_WRITE_EVERY_S:
             self.deferred.task("rx_rssi", self._write_rssi)
 
@@ -905,7 +911,8 @@ class RxBook:
             del self.rssi_stats[pair]
         _write_replace(self.rssi_file, "".join(
             f"{meter}\t{device}\t{'' if st[1] is None else round(st[1])}\t{int(st[2])}\t{int(st[0])}\t"
-            + ",".join(f"{b}:{n}" for b, n in sorted(st[3].items())) + "\n"
+            + ",".join(f"{b}:{n}:{'' if v is None else round(v)}" for b, (n, v) in sorted(st[3].items()))
+            + "\n"
             for (meter, device), st in sorted(self.rssi_stats.items())).encode())
 
     def __call__(self, topic_b: bytes, payload_b: bytes) -> None:
