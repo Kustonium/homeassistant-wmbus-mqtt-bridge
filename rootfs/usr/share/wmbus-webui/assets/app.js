@@ -223,6 +223,7 @@
       if (document.querySelector(".table-wrap:hover, .table-scroll-top:hover")
           && !state.modal && !state.reportModal && !state.editModal) {
         liveRenderDeferred = true;
+        showLivePaused(true);
         return;
       }
       liveRenderDeferred = false;
@@ -230,9 +231,29 @@
     }, 150);
   }
 
+  // The held render is invisible otherwise: an expanded panel under the
+  // pointer (a meter's Fields) simply stops updating, which a user reported
+  // as a bug. A small badge outside #app (morphdom never touches it) says so.
+  function showLivePaused(on) {
+    let el = document.getElementById("live-paused");
+    if (!on) {
+      if (el) el.hidden = true;
+      return;
+    }
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "live-paused";
+      el.className = "live-paused";
+      document.body.appendChild(el);
+    }
+    el.textContent = `⏸ ${t("live_paused_hover", "Live updates paused while the pointer is over a table")}`;
+    el.hidden = false;
+  }
+
   document.addEventListener("mouseover", () => {
     if (liveRenderDeferred && !document.querySelector(".table-wrap:hover, .table-scroll-top:hover")) {
       liveRenderDeferred = false;
+      showLivePaused(false);
       scheduleRender();
     }
   });
@@ -2110,7 +2131,17 @@
   // reception rather than measuring anything. Mirrors the exclusion list in
   // rootfs/usr/bin/bridge-lib/09-discovery.sh; a checkbox next to them would
   // promise control that does not exist.
-  const METADATA_FIELDS = new Set(["_", "id", "name", "meter", "driver", "media", "timestamp", "device_date_time", "rssi", "lqi"]);
+  const METADATA_FIELDS = new Set(["_", "id", "name", "meter", "driver", "driver_deprecated_by", "media", "timestamp", "device_date_time", "rssi", "lqi"]);
+
+  function driverDeprecationPill(row) {
+    let fields = null;
+    try { fields = JSON.parse(row.last_json || ""); } catch (_) { fields = null; }
+    const replacement = fields && typeof fields === "object"
+      ? String(fields.driver_deprecated_by || "").trim()
+      : "";
+    if (!replacement) return "";
+    return `<div style="margin-top:3px;"><span class="pill warn" title="${escapeHtml(t("driver_deprecated_hint", "Change the configured driver before the upstream deadline. This notice is shown here instead of becoming a Home Assistant entity."))}">⚠ ${escapeHtml(t("driver_deprecated_warning", "Driver deprecated: {replacement}").replace("{replacement}", replacement))}</span></div>`;
+  }
 
   // A wired meter is configured in mbus_meters under a NAME, but the table row
   // carries the id from its telegram - and those are different things: the id
@@ -2156,7 +2187,10 @@
               const byGlob = kind === "glob";
               let cell;
               if (meta) {
-                cell = `<span style="color:var(--muted);" title="${escapeHtml(t("published_fields_meta_hint", "Meter identity — always in the attributes, never its own entity."))}">—</span>`;
+                const metaHint = k === "driver_deprecated_by"
+                  ? t("driver_deprecated_hint", "Change the configured driver before the upstream deadline. This notice is shown here instead of becoming a Home Assistant entity.")
+                  : t("published_fields_meta_hint", "Meter identity — always in the attributes, never its own entity.");
+                cell = `<span style="color:var(--muted);" title="${escapeHtml(metaHint)}">—</span>`;
               } else {
                 cell = `<input type="checkbox" ${kind === "" ? "checked" : ""} ${byGlob ? "disabled" : ""}
                   data-action="toggle-meter-field" data-id="${escapeHtml(meterId)}"
@@ -2219,7 +2253,7 @@
                   <tr>
                     <td><strong>${escapeHtml(id)}</strong>${aesLockBadge(row)}</td>
                     <td><span style="margin-right:5px;font-size:15px;vertical-align:middle;">${mIcon}</span>${escapeHtml(row.name || row.id || "-")}</td>
-                    <td>${escapeHtml(row.driver || "-")}</td>
+                    <td>${escapeHtml(row.driver || "-")}${driverDeprecationPill(row)}</td>
                     <td>${mfrCell}</td>
                     <td>
                       ${meterValueCell(row)}
@@ -2382,7 +2416,7 @@
                     <td><strong>${escapeHtml(id)}</strong></td>
                     <td>${escapeHtml(driver)}</td>
                     <td style="color:#9eafba;font-size:12px;">${escapeHtml(row.type || "-")}</td>
-                    <td>${mediaIconHtml(row.type || "", driver)} ${escapeHtml(mediaLabel)}</td>
+                    <td><span class="candidate-medium">${mediaIconHtml(row.type || "", driver)}<span>${escapeHtml(mediaLabel)}</span></span></td>
                     <td>${mfrCell}</td>
                     <td>${bandSecurityBadges(row, previewDecoded) || encBadge(effectiveEnc, note)}</td>
                     <td>${previewCell}</td>
@@ -4016,13 +4050,46 @@
     </div>`;
   }
 
+  // The report as shown, copied and sent: anonymised unless the user unticked it.
+  function reportModalText(rm) {
+    return (rm.anon ? rm.reportAnon : rm.report) || "";
+  }
+
+  // Clipboard API needs a secure context — HA ingress over plain HTTP falls
+  // back to the legacy textarea + execCommand path. True when it worked.
+  async function copyToClipboard(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      return true;
+    } catch (error) {
+      toast(error.message, true);
+      return false;
+    }
+  }
+
   function renderReportModal() {
     const rm = state.reportModal || {};
     const body = rm.loading
       ? `<p style="color:#9eafba;">${escapeHtml(t("export_report_loading", "Analyzing telegram…"))}</p>`
       : rm.error
         ? `<p style="color:#f3c84b;">${escapeHtml(rm.error)}</p>`
-        : `<pre class="mono" style="max-height:50vh;overflow:auto;white-space:pre-wrap;word-break:break-all;background:#0b141b;border:1px solid #1d2f3c;border-radius:6px;padding:10px;font-size:11px;">${escapeHtml(rm.report || "")}</pre>`;
+        : `<pre class="mono" style="max-height:50vh;overflow:auto;white-space:pre-wrap;word-break:break-all;background:#0b141b;border:1px solid #1d2f3c;border-radius:6px;padding:10px;font-size:11px;">${escapeHtml(reportModalText(rm))}</pre>`;
+    const anonToggle = rm.reportAnon ? `
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin:0 0 8px;cursor:pointer;">
+              <input type="checkbox" data-action="toggle-report-anon"${rm.anon ? " checked" : ""}>
+              ${escapeHtml(t("export_report_anonymize", "Hide the meter number (replaced by 99999999)"))}
+            </label>` : "";
     return `
       <div class="modal-backdrop">
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="export-report-title">
@@ -4030,14 +4097,18 @@
             <h2 id="export-report-title">${escapeHtml(t("export_report_title", "wmbusmeters issue report"))} — ${escapeHtml(rm.id || "")}</h2>
           </div>
           <div class="modal-body">
-            <p style="font-size:11px;color:#f3c84b;margin:0 0 8px;">⚠️ ${escapeHtml(t("export_report_privacy", "The telegram contains your meter's serial number. The AES key is never included."))}</p>
+            <p style="font-size:11px;color:#f3c84b;margin:0 0 8px;">⚠️ ${escapeHtml(rm.anon
+              ? t("export_report_privacy_anon", "The meter number and common serial/fabrication fields are masked. Review the report before sharing it; the AES key is never included.")
+              : t("export_report_privacy", "The telegram contains your meter's serial number. The AES key is never included."))}</p>
             ${rm.keyUsed ? `<p style="font-size:11px;color:#f3c84b;margin:0 0 8px;">🔓 ${escapeHtml(t("export_report_key_used", "The analysis was decrypted with your configured AES key — the report reveals meter readings, but never the key itself."))}</p>` : ""}
+            ${anonToggle}
             ${body}
           </div>
           <div class="modal-actions">
-            <button class="btn" type="button" data-action="close-report-modal">${escapeHtml(t("webui_cancel", "Cancel"))}</button>
+            <button class="btn danger" type="button" data-action="close-report-modal">${escapeHtml(t("webui_cancel", "Cancel"))}</button>
             ${rm.report ? `
               <a class="btn" href="https://github.com/wmbusmeters/wmbusmeters/issues/new" target="_blank" rel="noopener noreferrer">${escapeHtml(t("export_report_open_issue", "Open a new wmbusmeters issue"))}</a>
+              <button class="btn" type="button" data-action="ask-author-report" title="${escapeHtml(t("export_report_ask_hint", "Opens a new question in the add-on's GitHub Discussions with this report filled in. You review it and post it from your own account."))}">${escapeHtml(t("export_report_ask", "Ask the add-on author"))}</button>
               <button class="btn primary" type="button" data-action="copy-report">${escapeHtml(t("copy", "Copy"))}</button>` : ""}
           </div>
         </div>
@@ -4850,6 +4921,9 @@
   window.addEventListener("resize", () => syncTopScrollbars());
 
   function render() {
+    // Any render brings the page up to date, so nothing is held any more.
+    liveRenderDeferred = false;
+    showLivePaused(false);
     const newHtml = withTopScrollbars(renderRoute());
     if (typeof morphdom !== "undefined") {
       // morphdom patches only the DOM nodes that actually changed —
@@ -5497,7 +5571,9 @@
         const resp = await fetch(`api/candidate-report?meter_id=${encodeURIComponent(id)}`, {cache: "no-store"});
         const data = await resp.json().catch(() => ({}));
         if (resp.ok && data.ok) {
-          state.reportModal = {id, report: data.report || "", keyUsed: !!data.key_used};
+          // Anonymised by default: what is shown is what Copy and Ask copy.
+          state.reportModal = {id, report: data.report || "", reportAnon: data.report_anon || "",
+                               anon: !!data.report_anon, keyUsed: !!data.key_used};
         } else {
           const msg = data.error === "no_raw_telegram"
             ? t("export_report_no_raw", "No raw telegram stored for this meter yet.")
@@ -5517,28 +5593,38 @@
       return;
     }
 
-    if (action === "copy-report") {
-      const text = (state.reportModal || {}).report || "";
+    if (action === "toggle-report-anon") {
+      if (state.reportModal) state.reportModal.anon = !state.reportModal.anon;
+      render();
+      return;
+    }
+
+    if (action === "ask-author-report") {
+      // A new Q&A discussion in the add-on's repository with the report as its
+      // body. The user sees it in their own GitHub session and posts it from
+      // their own account; nothing is sent from the add-on. A report too long
+      // for a URL goes to the clipboard and the page opens with an empty body.
+      const rm = state.reportModal || {};
+      const text = reportModalText(rm);
       if (!text) return;
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          await navigator.clipboard.writeText(text);
-        } else {
-          // Clipboard API needs a secure context — HA ingress over plain HTTP
-          // falls back to the legacy textarea + execCommand path.
-          const ta = document.createElement("textarea");
-          ta.value = text;
-          ta.style.position = "fixed";
-          ta.style.opacity = "0";
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand("copy");
-          ta.remove();
-        }
-        toast(t("export_report_copied", "Copied to clipboard."));
-      } catch (error) {
-        toast(error.message, true);
+      const title = `Meter ${rm.anon ? "99999999" : rm.id} – decoding question`;
+      const base = "https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/discussions/new"
+        + `?category=q-a&title=${encodeURIComponent(title)}`;
+      const body = `&body=${encodeURIComponent(text)}`;
+      if ((base + body).length <= 7000) {
+        window.open(base + body, "_blank", "noopener,noreferrer");
+      } else {
+        await copyToClipboard(text);
+        toast(t("export_report_ask_copied", "Report copied - paste it into the new discussion."));
+        window.open(base, "_blank", "noopener,noreferrer");
       }
+      return;
+    }
+
+    if (action === "copy-report") {
+      const text = reportModalText(state.reportModal || {});
+      if (!text) return;
+      if (await copyToClipboard(text)) toast(t("export_report_copied", "Copied to clipboard."));
       return;
     }
 

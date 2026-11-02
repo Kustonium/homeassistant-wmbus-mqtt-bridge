@@ -297,6 +297,7 @@ _decode_stage() {
       --events-file="${STATUS_EVENTS_FILE}" --meters-file="${STATUS_METERS_FILE}" \
       --meter-last-json-file="${STATUS_METER_LAST_JSON_FILE}" \
       --key-problem-file="${STATUS_METER_KEY_PROBLEM_FILE}" --seen-file="${STATUS_SEEN_FILE}" \
+      --kpl-sanxing-file="${METER_KPL_SANXING_FILE:-}" --reload-flag-file="${BASE}/.reload_pipeline" \
       --publisher-port="${MQTT_PUB_PORT}" --zero="${zero}" \
       --raw-topic="${RAW_TOPIC:-}" --state-prefix="${STATE_PREFIX:-}" \
       --discovery-prefix="${DISCOVERY_PREFIX:-}" --search-mode="${SEARCH_MODE:-false}" \
@@ -392,6 +393,11 @@ publish_decoded_json() {
   # field and needs no special case downstream.
   line="$(inject_rssi_into_json "${id}" "${line}")"
   emit_discovery_from_json "${line}"
+  # wmbusmeters 3.1 renamed `meter` to `driver`. Preserve the old MQTT field
+  # as an alias so existing Node-RED flows keep working. This is the fallback
+  # path; the persistent Python publisher applies the same transformation.
+  line="$(jq -c 'if has("meter") or ((.driver? // "") == "") then . else . + {meter: .driver} end' \
+    <<<"${line}" 2>/dev/null || printf '%s' "${line}")"
   mqtt_pub "${STATE_PREFIX}/${id}/state" "${line}" "${STATE_RETAIN}" || true
   status_mark_discovery_published
   write_status_json

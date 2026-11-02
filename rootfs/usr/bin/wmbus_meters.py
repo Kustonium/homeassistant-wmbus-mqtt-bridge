@@ -194,6 +194,15 @@ class MeterFiles(Tool):
     def configured_meters(self, entries: List[Any]) -> int:
         excludes: Dict[str, str] = {}
         loaded = 0
+        # Tauron/KPL ids wmbusmeters rejected under amiplus (07-meters.sh
+        # _kpl_amiplus_rejected): their meter file says sanxing.
+        kpl_sanxing = set()
+        if self.a.kpl_sanxing_file:
+            try:
+                with open(self.a.kpl_sanxing_file, encoding="utf-8", errors="replace") as fh:
+                    kpl_sanxing = {ln.split("\t", 1)[0].strip().upper() for ln in fh if ln.strip()}
+            except OSError:
+                pass
         for m in entries:
             name = jq_r_alt(m, "id", "meter", self.err)
             driver = jq_r_alt(m, "type", "auto", self.err)
@@ -219,6 +228,10 @@ class MeterFiles(Tool):
             if not mid:
                 self.warn(f"Invalid meter_id for '{name}' -> skipping (got: '{mid_raw}')")
                 continue
+            if driver == "amiplus" and mid.upper() in kpl_sanxing:
+                self.log("info", f"meter: {name} id={mid}: Tauron/KPL meter, driver amiplus -> sanxing "
+                                 f"(see _kpl_amiplus_rejected)")
+                driver = "sanxing"
             low = mid.lower()
             if excl and excl != "null":
                 excludes[low] = excl
@@ -390,7 +403,7 @@ def main(argv=None) -> int:
     r = sub.add_parser("refresh", help="refresh_meter_files")
     for name in ("options", "meter-dir", "search-candidates-file"):
         r.add_argument(f"--{name}", required=True)
-    for name in ("search-mode", "search-expected", "search-tolerance", "loglevel"):
+    for name in ("search-mode", "search-expected", "search-tolerance", "loglevel", "kpl-sanxing-file"):
         r.add_argument(f"--{name}", default="")
     p = sub.add_parser("previews", help="sync_candidate_autodecode_files + prune_official_meter_previews")
     for name in ("candidates-file", "recent-raw-file", "preview-state-file", "meter-dir", "preview-meter-dir",

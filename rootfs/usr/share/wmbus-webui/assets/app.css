@@ -984,6 +984,9 @@ tr:last-child td {
 
 .modal-actions {
   display: flex;
+  /* Four buttons (the issue report) do not fit a narrow modal in one row;
+     without wrapping the first one was pushed out past the left edge. */
+  flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
   border-top: 1px solid var(--line);
@@ -1938,6 +1941,17 @@ th.sortable:hover {
   white-space: nowrap;
 }
 
+/* Keep the candidate medium identical in every locale: icon above the label.
+   Natural table wrapping put German "Wasser" beside the icon while the other
+   translations wrapped below it. */
+.candidate-medium {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  white-space: nowrap;
+}
+
 /* Per-board signal inside a reception pill (unfolded "+N" list). */
 .board-rssi {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
@@ -2001,4 +2015,20 @@ th.sortable:hover {
 
 .table-scroll-top > div {
   height: 1px;
+}
+
+/* Shown while a live re-render is held because the pointer is over a table. */
+.live-paused {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 50;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 12px;
+  box-shadow: var(--shadow);
+  pointer-events: none;
 }

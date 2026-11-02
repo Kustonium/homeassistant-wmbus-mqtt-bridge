@@ -174,6 +174,39 @@ status_detect_key_problem() {
   _tsv_upsert "${STATUS_METER_KEY_PROBLEM_FILE}" "${id}" \
     "$(printf '%s\t%s\t%s' "${id}" "${reason}" "$(iso_now)")"
   warn "key problem for meter ${id}: ${reason} (wmbusmeters ignores it until the next pipeline reload)"
+  if [[ "${reason}" == "key_invalid" && "${line}" == *"mfct: (KPL)"* ]]; then
+    _kpl_amiplus_rejected "${id}"
+  fi
+}
+
+# Tauron/KPL meters (manufacturer KPL, Sanxing S34U28). Up to wmbusmeters
+# 3.0.0 they decoded as amiplus only through the add-on's local patch 0001,
+# and the README told users to configure amiplus. From 3.1 upstream decodes
+# them with its own sanxing driver - same fields and values, measured on a
+# real meter's records (tests/fixtures/sanxing/real) - the patch retires, and
+# amiplus fails with "decrypted content failed check". Entities are keyed on
+# id + field, so moving the driver keeps them and their history.
+#
+# The switch is made on wmbusmeters' own word, not guessed up front: when it
+# rejects a KPL meter whose meter file says amiplus, the id goes into
+# METER_KPL_SANXING_FILE once and the pipeline reloads; refresh_meter_files
+# then writes sanxing for it. A wrong key under sanxing fails again, but the id
+# is listed by then, so there is one reload at most, never a loop. The user's
+# options.json is not changed.
+_kpl_sanxing_listed() {
+  [[ -n "${METER_KPL_SANXING_FILE:-}" && -f "${METER_KPL_SANXING_FILE}" ]] || return 1
+  awk -F '\t' -v id="${1^^}" 'toupper($1) == id { f = 1 } END { exit !f }' "${METER_KPL_SANXING_FILE}"
+}
+
+_kpl_amiplus_rejected() {
+  local id="$1" f
+  [[ -n "${METER_KPL_SANXING_FILE:-}" ]] || return 0
+  _kpl_sanxing_listed "${id}" && return 0
+  f="$(grep -lix "id=${id,,}" "${METER_DIR}"/meter-* 2>/dev/null | head -n 1)"
+  [[ -n "${f}" ]] && grep -qx "driver=amiplus" "${f}" || return 0
+  printf '%s\t%s\n' "${id}" "$(iso_now)" >> "${METER_KPL_SANXING_FILE}"
+  warn "meter ${id}: Tauron/KPL meter rejected with driver amiplus; this wmbusmeters decodes KPL with sanxing - switching the meter to sanxing and reloading"
+  touch "${BASE}/.reload_pipeline" 2>/dev/null || true
 }
 
 # NB refresh_meter_files() fills METER_EXCLUDE_FIELDS, which is declared next to
@@ -249,6 +282,7 @@ refresh_meter_files() {
     _out="$(python3 "${METER_FILES_TOOL}" refresh --options="${OPTIONS_JSON}" --meter-dir="${METER_DIR}" \
       --search-candidates-file="${SEARCH_CANDIDATES_FILE:-}" --search-mode="${SEARCH_MODE:-false}" \
       --search-expected="${SEARCH_EXPECTED_VALUE_M3:-0}" --search-tolerance="${SEARCH_TOLERANCE_M3:-}" \
+      --kpl-sanxing-file="${METER_KPL_SANXING_FILE:-}" \
       --loglevel="${LOGLEVEL:-}")"
     METER_EXCLUDE_FIELDS=()
     OFFICIAL_METERS_COUNT=0
@@ -340,6 +374,11 @@ _refresh_meter_files_bash() {
       if [[ -z "${mid}" ]]; then
         warn "Invalid meter_id for '${friendly_name}' -> skipping (got: '${mid_raw}')"
         continue
+      fi
+
+      if [[ "${driver}" == "amiplus" ]] && _kpl_sanxing_listed "${mid}"; then
+        log "meter: ${friendly_name} id=${mid}: Tauron/KPL meter, driver amiplus -> sanxing (see _kpl_amiplus_rejected)"
+        driver="sanxing"
       fi
 
       if [[ -n "${exclude_fields}" && "${exclude_fields}" != "null" ]]; then

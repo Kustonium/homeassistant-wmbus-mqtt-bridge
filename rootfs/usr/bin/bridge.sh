@@ -109,6 +109,12 @@ FACTORY_RESET_REQUEST_FILE="${BASE}/.factory_reset_request"
 # successfully decoded JSON (status_meter_seen). Read by webui.py.
 # Format: id<TAB>reason<TAB>iso_timestamp
 STATUS_METER_KEY_PROBLEM_FILE="${RUNTIME}/status_meter_key_problem.tsv"
+# Tauron/KPL meters configured as amiplus that wmbusmeters rejected, so their
+# meter file says sanxing instead (07-meters.sh _kpl_amiplus_rejected). In
+# /data, not the RAM runtime: the switch must hold across restarts.
+# Format: id<TAB>iso_timestamp
+# shellcheck disable=SC2034  # read by 07-meters.sh and 12-pipeline.sh (sourced libs)
+METER_KPL_SANXING_FILE="${BASE}/meter_kpl_sanxing.tsv"
 # Per-candidate decoded value preview — written by _store_candidate_value when
 # a preview one-shot decodes a candidate's RAW frame.
 # Format: id<TAB>value<TAB>value_key<TAB>iso_timestamp

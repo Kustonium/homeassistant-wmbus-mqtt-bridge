@@ -671,17 +671,21 @@ wsparciu AI. Kopia repozytorium znajduje się w [NOTICE.md](../NOTICE.md).
 
 ### Liczniki energii Tauron / KPL (Polska)
 
-Te liczniki wstawiają niestandardowy prefiks w miejscu, w którym standard wM-Bus trzyma
-bajty potwierdzające udane odszyfrowanie. Upstreamowy `wmbusmeters` czyta to jako zły
-klucz i odrzuca cały telegram, pisząc *„did you use the correct decryption key?"* mimo że
-klucz jest prawidłowy. Ten dodatek niesie lokalną poprawkę, stosowaną wyłącznie do
-liczników z flagą producenta `KPL`.
+Te liczniki (producent `KPL`, np. Sanxing S34U28) wstawiają niestandardowy
+przedrostek tam, gdzie norma wM-Bus przewiduje bajty potwierdzające udane
+odszyfrowanie. Od wersji 3.1 wmbusmeters obsługuje to sam, sterownikiem
+**`sanxing`**, który wybiera też automatyczne rozpoznanie.
 
-Taki licznik skonfiguruj z driverem **`amiplus`** — automatyczne rozpoznanie go nie
-znajdzie, bo żaden driver upstreamu nie zgłasza tego producenta.
+Taki licznik skonfiguruj ze sterownikiem **`sanxing`** albo **`auto`**.
 
-**Niesprawdzone u nas.** Nikt po tej stronie nie ma takiego licznika; poprawka opiera się
-na zgłoszeniu użytkownika. Jeśli masz taki licznik, zgłoś issue z surowym telegramem.
+Skonfigurowany jako **`amiplus`** (tak mówiła ta instrukcja do wersji dodatku
+1.6.8, gdy lokalna łatka pozwalała temu sterownikowi przyjąć te liczniki): przy
+pierwszym odrzuceniu licznika przez wmbusmeters dodatek zapisuje go odtąd ze
+sterownikiem `sanxing` i przeładowuje dekoder - mówi o tym linia w logu. Twoja
+konfiguracja się nie zmienia. Pola i wartości są te same (sprawdzone na
+rekordach prawdziwego licznika), `sanxing` dodaje `absolute_max_power_consumption_kw`
+i `fabrication_no`; encje i ich historia zostają, bo są przypisane do numeru
+licznika i nazwy pola.
 
 ## 9. Język interfejsu
 
