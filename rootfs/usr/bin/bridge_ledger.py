@@ -1845,6 +1845,7 @@ class PreviewDecoder:
         lock_dir, last_file = os.path.join(locks, meter), os.path.join(lasts, meter)
         ts = int(now())
         last = int(_digits_or_zero(last_file))
+        full = self._remember_full(meter, raw, ts)
         if ts - last < _env_int("PREVIEW_DECODE_MIN_INTERVAL_SECONDS", 20):
             return
         # A preview that already shows a value is decoded again at most every
@@ -1880,9 +1881,33 @@ class PreviewDecoder:
             shutil.copyfile(cfg, os.path.join(conf_dir, f"meter-preview-{meter}"))
         except OSError:
             pass
-        t = threading.Thread(target=self._decode, args=(meter, raw, tmp, slot, lock_dir), daemon=True)
+        # The remembered full frame goes first; the result is the last telegram.
+        lines = (full + "\n" if full != raw else "") + raw + "\n"
+        t = threading.Thread(target=self._decode, args=(meter, lines, tmp, slot, lock_dir), daemon=True)
         self.running.append((t, tmp, slot, lock_dir))
         t.start()
+
+    def _remember_full(self, meter: str, raw: str, ts: int) -> str:
+        """06-candidates.sh _preview_remember_full: the longest frame of the
+        candidate from the last 24 h in .preview_full/<id>, which is the full
+        one. A one-shot fed it first learns a compact frame's format, as the
+        long-running instance does. Returns the frame kept."""
+        path = os.path.join(self.runtime, ".preview_full", meter)
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                stamp, _, kept = fh.readline().rstrip("\n").partition("\t")
+        except OSError:
+            stamp, kept = "", ""
+        stamp_n = int(stamp) if stamp.isdigit() else 0
+        if len(raw) >= len(kept) or ts - stamp_n > 86400:
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as fh:
+                    fh.write(f"{ts}\t{raw}\n")
+            except OSError:
+                pass
+            return raw
+        return kept
 
     def _acquire_slot(self) -> str:
         """_preview_acquire_slot: one of PREVIEW_DECODE_MAX_PARALLEL slot directories."""
@@ -1898,13 +1923,13 @@ class PreviewDecoder:
                 continue
         return ""
 
-    def _decode(self, meter: str, raw: str, tmp: str, slot: str, lock_dir: str) -> None:
+    def _decode(self, meter: str, lines: str, tmp: str, slot: str, lock_dir: str) -> None:
         json_line = ""
         try:
-            out = subprocess.run([self.binary, f"--useconfig={tmp}"], input=_b(raw + "\n"),
+            out = subprocess.run([self.binary, f"--useconfig={tmp}"], input=_b(lines),
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout
-            json_line = next((ln for ln in _s(out).split("\n")
-                              if re.match(r'\{.*"_":"telegram"', ln)), "")
+            json_line = ([ln for ln in _s(out).split("\n")
+                          if re.match(r'\{.*"_":"telegram"', ln)] or [""])[-1]
         except OSError:
             pass
         self.results.put((meter, json_line, tmp, slot, lock_dir))

@@ -1,3 +1,8 @@
+## 1.6.8
+
+### Fixed
+- preview decodes compact frames after a full one (5bad8ac)
+
 ## 1.6.7
 
 ### Added
