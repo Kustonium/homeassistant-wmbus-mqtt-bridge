@@ -51,6 +51,7 @@ emit_discovery_from_json() {
           and ($k != "name")
           and ($k != "meter")
           and ($k != "driver")
+          and ($k != "driver_deprecated_by")
           and ($k != "media")
           and ($k != "timestamp")
           and ($k != "device_date_time")

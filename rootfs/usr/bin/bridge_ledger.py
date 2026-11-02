@@ -3144,6 +3144,46 @@ class DecodeBook:
         tsv_upsert(self.a.key_problem_file, mid, f"{mid}\t{reason}\t{iso_now()}")
         print(f"[wmbus-bridge][WARN] key problem for meter {mid}: {reason} (wmbusmeters ignores it until "
               f"the next pipeline reload)", file=self.err, flush=True)
+        if reason == "key_invalid" and "mfct: (KPL)" in line:
+            self.kpl_amiplus_rejected(mid)
+
+    def kpl_amiplus_rejected(self, mid: str) -> None:
+        """07-meters.sh _kpl_amiplus_rejected: a Tauron/KPL meter wmbusmeters
+        rejected under amiplus goes into the sanxing list once, and the
+        pipeline reloads to write its meter file with sanxing."""
+        path = self.a.kpl_sanxing_file
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                if any(ln.split("\t", 1)[0].strip().upper() == mid.upper() for ln in fh):
+                    return
+        except OSError:
+            pass
+        amiplus = False
+        for meter_file in sorted(glob.glob(os.path.join(self.a.meter_dir, "meter-*"))):
+            try:
+                with open(meter_file, encoding="utf-8", errors="replace") as fh:
+                    lines = [ln.rstrip("\n") for ln in fh]
+            except OSError:
+                continue
+            if any(ln.lower() == f"id={mid.lower()}" for ln in lines):
+                amiplus = "driver=amiplus" in lines
+                break
+        if not amiplus:
+            return
+        try:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(f"{mid}\t{iso_now()}\n")
+        except OSError:
+            return
+        print(f"[wmbus-bridge][WARN] meter {mid}: Tauron/KPL meter rejected with driver amiplus; this wmbusmeters "
+              f"decodes KPL with sanxing - switching the meter to sanxing and reloading", file=self.err, flush=True)
+        if self.a.reload_flag_file:
+            try:
+                open(self.a.reload_flag_file, "a").close()
+            except OSError:
+                pass
 
     def publish(self, line: str) -> None:
         """publish_decoded_json's DEC hand-over to the publisher."""
@@ -3519,6 +3559,9 @@ def _parser() -> argparse.ArgumentParser:
         dec.add_argument(f"--{name}-file", default="")
     for name in ("meter-dir", "preview-meter-dir", "official-count-default", "search-expected",
                  "preview-attempts-dir", "preview-oneshot-runtime"):
+        dec.add_argument(f"--{name}", default="")
+    # Tauron/KPL amiplus -> sanxing (07-meters.sh _kpl_amiplus_rejected).
+    for name in ("kpl-sanxing-file", "reload-flag-file"):
         dec.add_argument(f"--{name}", default="")
     rx = modes.add_parser("rx", help="wmbus/<board>/rx messages")
     for name in ("reception", "mode", "history", "sequence", "boots", "clock"):

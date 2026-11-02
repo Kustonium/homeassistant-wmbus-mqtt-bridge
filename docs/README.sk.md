@@ -636,17 +636,20 @@ oznámenie o podpore AI. Kópia v repozitári je v [NOTICE.md](../NOTICE.md).
 
 ### Elektromery Tauron / KPL (Poľsko)
 
-Tieto merače vkladajú neštandardný prefix tam, kde štandard wM-Bus očakáva bajty
-potvrdzujúce úspešné dešifrovanie. Upstreamový `wmbusmeters` to číta ako zlý kľúč a celý
-telegram zahodí s hláškou *"did you use the correct decryption key?"*, hoci kľúč je
-správny. Tento doplnok nesie lokálnu opravu, ktorá sa použije len pri meračoch s výrobcom
-`KPL`.
+Tieto merače (výrobca `KPL`, napr. Sanxing S34U28) vkladajú neštandardnú predponu
+tam, kde norma wM-Bus očakáva bajty potvrdzujúce úspešné dešifrovanie. Od verzie
+3.1 to wmbusmeters rieši sám ovládačom **`sanxing`**, ktorý vyberie aj automatická
+detekcia.
 
-Takýto merač nastavte s ovládačom **`amiplus`** — automatická detekcia ho nenájde, pretože
-žiadny upstreamový ovládač si tohto výrobcu nenárokuje.
+Takýto merač nastavte s ovládačom **`sanxing`** alebo **`auto`**.
 
-**U nás neoverené.** Nikto na tejto strane taký merač nemá; oprava stojí na hlásení
-používateľa. Ak ho máte, založte prosím issue so surovým telegramom.
+Nastavený ako **`amiplus`** (tak to uvádzala táto príručka do verzie doplnku 1.6.8,
+keď lokálna úprava umožnila tomuto ovládaču prijímať tieto merače): keď wmbusmeters
+merač prvýkrát odmietne, doplnok ho odvtedy zapisuje s ovládačom `sanxing` a znovu
+načíta dekodér - v logu o tom bude riadok. Vaša konfigurácia sa nemení. Polia a
+hodnoty sú rovnaké (overené na záznamoch skutočného merača), `sanxing` pridáva
+`absolute_max_power_consumption_kw` a `fabrication_no`; entity aj ich história
+zostávajú, pretože sú viazané na číslo merača a názov poľa.
 
 ## 9. Jazyk rozhrania
 

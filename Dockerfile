@@ -22,11 +22,18 @@ WORKDIR /src
 # (wmbusmeters/wmbusmeters#1940, util.h missing <ctime>, 2026-06-11) — long fixed
 # — but the pin stays for reproducibility, not just that incident.
 #
-# Bumped ad20d83a (2.0.0-541) -> ac4f2953 (tag 3.0.0, 2026-06-17). This is a
-# MAJOR upstream release, so it was verified locally before pinning: builds
-# clean, passes all 13 golden decode fixtures (tests/fixtures/golden.tsv) with no
-# field/value regression, and `--listdrivers` still lists the built-in izar
-# driver (123 drivers) consumed by the WebUI catalog below.
+# Bumped ad20d83a (2.0.0-541) -> ac4f2953 (tag 3.0.0, 2026-06-17), then
+# -> 80ea8218 (tag 3.1.1). 3.1.0 was skipped: it lost every value of a Qundis
+# qwaterv2 walk-by frame (golden 52632878), fixed upstream in #2145, which 3.1.1
+# carries. Verified locally on 3.1.1 before pinning: builds clean with the
+# local patches (0001 KPL retires itself, upstream's sanxing driver now claims
+# KPL), all 15 golden decode fixtures pass after regenerating them for the
+# intended changes - JSON field "meter" renamed "driver" (the add-on reads
+# both), kamwater max_external_temperature_c -> ..._last_month_c plus new
+# fields, aquastream total_tariff1_m3 -> total_backwards_m3, qheatv2
+# device_error_date null instead of 2128-03-31, izar marked deprecated by
+# izarv2, and KPL decoding only with sanxing/auto, no longer with amiplus.
+# `--listdrivers` still lists the built-in izar driver (131 drivers).
 # NB: 3.0.0 removed `--listmeters`; the drivers.json step already prefers
 # `--listdrivers`, so the legacy fallback there is now historical (harmless).
 # A full clone (not --depth 1) is required: the Makefile derives the version
@@ -34,7 +41,7 @@ WORKDIR /src
 # CI's build + boot-test jobs (local verification above is Ubuntu/WSL).
 # A monthly cron (.github/workflows/wmbusmeters-pin-bump.yml) opens a bump PR
 # whenever upstream publishes a new release tag; merging it re-runs these gates.
-ARG WMBUSMETERS_COMMIT=ac4f295369a48ef51cb835e6920b62cbee743bd6
+ARG WMBUSMETERS_COMMIT=80ea82184569412d53060037ed8e9bd3af1b6b05
 # Add-on-local patches for upstream behaviour we cannot configure around. Each
 # one retires itself: the script skips a patch as soon as upstream grows its own
 # handling, and FAILS the build if a patch no longer applies, so the monthly pin
@@ -43,6 +50,9 @@ COPY patches/ /patches/
 
 RUN git clone https://github.com/wmbusmeters/wmbusmeters.git . \
   && git checkout --detach "${WMBUSMETERS_COMMIT}" \
+  && install -d /out \
+  && git rev-parse HEAD > /out/wmbusmeters-build-commit.txt \
+  && { git describe --tags --always 2>/dev/null || git rev-parse --short HEAD; } > /out/wmbusmeters-build-version.txt \
   && bash /patches/apply-local-patches.sh . /patches \
   && ./configure \
   && make \
@@ -84,6 +94,10 @@ RUN apk add --no-cache \
   libusb librtlsdr
 
 COPY --from=builder /out/wmbusmeters /usr/bin/wmbusmeters
+# Which upstream commit was built (before the add-on's patches); bridge.sh
+# logs both and the issue report names them. The binary's own --version only
+# says "HEAD_x.y.z with local changes" for a detached, patched checkout.
+COPY --from=builder /out/wmbusmeters-build-commit.txt /out/wmbusmeters-build-version.txt /usr/share/
 # Build-time driver catalog consumed by the WebUI driver <datalist>.
 COPY --from=builder /out/drivers.json /usr/share/wmbus-webui/assets/drivers.json
 ARG ADDON_VERSION=dev

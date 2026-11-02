@@ -409,7 +409,9 @@ def candidate_issue_report(meter_id: str) -> tuple[bool, dict]:
     # little-endian order. That is the same lookup the preview path uses and it
     # is what makes the report available for meters that are already added —
     # asked for by a user who had no way to see the raw frame after adding one.
-    raw, raw_ts = _resolve_raw_for_id(mid)
+    # The longest stored frame, not the latest: a compact frame alone analyses
+    # to "signature unknown" (see _resolve_full_raw_for_id).
+    raw, raw_ts = _resolve_full_raw_for_id(mid)
     if not raw:
         return False, {"ok": False, "error": "no_raw_telegram"}
 
@@ -488,11 +490,34 @@ def candidate_issue_report(meter_id: str) -> tuple[bool, dict]:
         if key
         else "--- wmbusmeters --analyze output ---"
     )
+    # wmbusmeters asks every issue for its version and the setup. bridge.sh
+    # records at start: the binary's --version ("wmbusmeters: HEAD_3.0.0 with
+    # local changes" for the add-on's detached, patched checkout), the build's
+    # git describe and the upstream commit. The describe and commit say more,
+    # so they win; the runtime string only fills in when the image lacks them.
+    wm_version = ""
+    try:
+        wv = STATUS_WMBUSMETERS_VERSION_FILE.read_text(encoding="utf-8").strip("\n").split("\t")
+        wv += [""] * (3 - len(wv))
+        runtime = re.sub(r"^\s*wmbusmeters:\s*", "", wv[0]).strip()
+        wm_version = wv[1].strip() or runtime
+        notes = []
+        if wv[2].strip():
+            notes.append(f"commit {wv[2].strip()[:12]}")
+        if "local changes" in runtime:
+            notes.append("with the add-on's local patches")
+        if notes:
+            wm_version = f"{wm_version} ({', '.join(notes)})".strip()
+    except OSError:
+        pass
     report = "\n".join([
         f"telegram=|{raw}|",
         f"manufacturer: {manufacturer}",
         f"type/medium: {mtype}",
         f"suggested driver: {driver}",
+        f"wmbusmeters: {wm_version or 'unknown'}",
+        f"setup: Home Assistant add-on wMBus MQTT Bridge {ADDON_VERSION} "
+        "(frames from an ESP32 radio over MQTT, fed to wmbusmeters as stdin:hex)",
         "",
         analyze_note,
         "```",
@@ -503,9 +528,45 @@ def candidate_issue_report(meter_id: str) -> tuple[bool, dict]:
         "ok": True,
         "meter_id": mid,
         "report": report,
+        "report_anon": _anonymize_report(report, mid),
         "raw_ts": raw_ts,
         "key_used": bool(key),
     }
+
+
+# The stand-in for the meter number in an anonymised report. 99999999 reads the
+# same in little-endian byte order, so the telegram hex and the analysis text
+# stay consistent with each other.
+ANON_METER_ID = "99999999"
+ANON_FIELD_VALUE = "[redacted]"
+_ANON_REPORT_FIELD_RE = re.compile(
+    r'(?i)(?<![A-Za-z0-9_])'
+    r'(?P<label>["\']?(?:serial_number|prefix|fabrication_no)["\']?)'
+    r'(?P<separator>\s*[:=]\s*["\']?)'
+    r'(?P<value>[^"\'\s,}\]]+)'
+)
+
+
+def _anonymize_report(report: str, mid: str) -> str:
+    """Mask common identifiers in a report intended for public sharing.
+
+    The meter number is replaced by ANON_METER_ID everywhere:
+    as printed (03264950) and as it sits in the frame's A-field, little-endian
+    (50492603), in any letter case. The rest of the frame stays as received;
+    an encrypted payload does not decrypt with the stand-in number (the AES IV
+    holds the A-field), which matters little as the key is never in a report.
+    Decoder output can also expose manufacturer-specific identifiers outside
+    the A-field, so their labelled values are redacted as well. This remains a
+    best-effort aid: the UI tells the user to review the report before sharing."""
+    out = report
+    for form in {mid, _id_le_hex(mid)}:
+        if form:
+            out = re.sub(re.escape(form), ANON_METER_ID, out, flags=re.IGNORECASE)
+    out = _ANON_REPORT_FIELD_RE.sub(
+        lambda match: f"{match.group('label')}{match.group('separator')}{ANON_FIELD_VALUE}",
+        out,
+    )
+    return out
 
 
 def _id_le_hex(mid: str) -> str:
@@ -535,6 +596,38 @@ def _resolve_raw_for_id(mid: str) -> tuple[str, str]:
             if le in raw.lower():
                 match = (raw, str(r.get("ts") or ""))  # keep last (most recent)
     return match
+
+
+def _resolve_full_raw_for_id(mid: str) -> tuple[str, str]:
+    """Return (raw_hex, ts) of the LONGEST stored frame for this id (newest on
+    a tie), or ("",""). A meter sending compact frames (Kamstrup: about 7 of 8)
+    leaves a compact one as its latest frame, and `--analyze` of that alone
+    only says "signature unknown"; the full frame lists every record. Looks at
+    the latest frame, the preview's remembered full frame (.preview_full/<id>,
+    bridge_ledger.PreviewDecoder) and the matching rows of the RAW ring."""
+    found = []
+    raw, ts = _resolve_raw_for_id(mid)
+    if raw:
+        found.append((raw, ts))
+    try:
+        stamp, _, kept = (RUNTIME / ".preview_full" / mid).read_text(
+            encoding="utf-8", errors="replace").split("\n", 1)[0].partition("\t")
+        if kept and re.fullmatch(r"[0-9A-Fa-f]+", kept):
+            when = (datetime.fromtimestamp(int(stamp), timezone.utc).isoformat()
+                    if stamp.isdigit() else "")
+            found.append((kept, when))
+    except OSError:
+        pass
+    le = _id_le_hex(mid)
+    if le:
+        for r in read_tsv(RECENT_RAW_TSV, ["ts", "raw_len", "raw"])[-200:]:
+            ring_raw = str(r.get("raw") or "").strip()
+            if le in ring_raw.lower():
+                found.append((ring_raw, str(r.get("ts") or "")))
+    if not found:
+        return "", ""
+    # max() keeps the first of equal lengths: the latest frame comes first.
+    return max(found, key=lambda f: len(f[0]))
 
 
 def _decode_with_driver(raw: str, driver: str, mid: str, key: str) -> dict | None:

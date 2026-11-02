@@ -652,17 +652,20 @@ AI-assistance disclosure. The repository copy is [NOTICE.md](../NOTICE.md).
 
 ### Tauron / KPL electricity meters (Poland)
 
-These meters put a non-standard prefix where the wM-Bus standard puts the bytes that
-confirm a decryption succeeded. Upstream `wmbusmeters` reads that as a wrong key and
-discards the whole telegram, reporting *"did you use the correct decryption key?"* even
-though the key is correct. This add-on carries a local workaround for it, applied only
-to meters whose manufacturer flag is `KPL`.
+These meters (manufacturer flag `KPL`, e.g. Sanxing S34U28) put a non-standard
+prefix where the wM-Bus standard puts the bytes that confirm a decryption
+succeeded. wmbusmeters handles that itself since 3.1, with its **`sanxing`**
+driver, which automatic detection also picks.
 
-Configure such a meter with the driver **`amiplus`** — automatic detection will not find
-it, because no upstream driver claims this manufacturer.
+Configure such a meter with the driver **`sanxing`** or **`auto`**.
 
-**Not verified here.** Nobody on this side has such a meter; the workaround rests on a
-user report. If you have one, please open an issue with a raw telegram.
+Configured as **`amiplus`** (what this guide said up to add-on 1.6.8, when a local
+workaround made that driver accept these meters): the first time wmbusmeters
+rejects the meter, the add-on writes it with `sanxing` from then on and reloads the
+decoder - a line in the log says so. Your configuration is not changed. The fields
+and values are the same (checked on a real meter's records), `sanxing` adds
+`absolute_max_power_consumption_kw` and `fabrication_no`; the entities and their
+history stay, as they are keyed on the meter id and the field name.
 
 ## 9. Interface language
 

@@ -1,3 +1,62 @@
+## 1.6.9
+
+### Added
+- The issue-report dialog can generate a copy with common identifiers masked
+  and open a pre-filled question to the add-on author for bridge-side problems.
+- Issue reports name the exact bundled wmbusmeters build and the Home Assistant
+  add-on/MQTT setup, so upstream receives reproducible context.
+
+### Changed
+- **The bundled decoder moves from wmbusmeters 3.0.0 to 3.1.1.** Most meters
+  decode exactly as before; the following bullets describe the user-visible
+  exceptions.
+- **Tauron / KPL electricity meters (manufacturer `KPL`, e.g. Sanxing S34U28)
+  move to the `sanxing` driver by themselves.** wmbusmeters now supports these
+  meters with its own `sanxing` driver, and the add-on's KPL patch steps aside.
+  Under `amiplus` (what this add-on's README said so far) wmbusmeters rejects
+  them ("decrypted content failed check"); the first time it does, the add-on
+  writes that meter with `sanxing` from then on and reloads the decoder, with a
+  line in the log. Your configuration is not changed; for new meters use
+  `sanxing` or `auto`. Checked on a telegram with a real S34U28's records
+  (upstream's sanxing test): `sanxing` gives the same fields and values as
+  `amiplus` did, plus `absolute_max_power_consumption_kw` and `fabrication_no`.
+  Entities are keyed on the meter id and field name, so they stay the same,
+  history included.
+- **Qundis qwaterv2 walk-by frames (version 0x1A)** keep all their values. 3.1.0
+  lost them (total, target and yearly values); the fix went upstream from this
+  project and is in 3.1.1.
+- **Renamed fields - the Home Assistant entity changes name, its history stays on
+  the old one:**
+  - Kamstrup water (`kamwater`, flowIQ / Multical 21): `max_external_temperature_c`
+    -> `max_external_temperature_last_month_c`; new fields
+    `max_flow_last_month_m3h`, `accoustic_noise` and the `time_*` alarm durations.
+  - Sensus/Itron `aquastream`: `total_tariff1_m3` -> `total_backwards_m3`.
+- `qheatv2`: `device_error_date` is empty instead of the placeholder date
+  2128-03-31 when the meter reports no error.
+- `amiplus`: new field `absolute_max_power_consumption_kw`.
+- `izar`: wmbusmeters marks the driver as deprecated in favour of `izarv2`
+  ("upgrade before 2026-12-01"). It still works in this version.
+- `qheat` and `qwater`: wmbusmeters marks these drivers as deprecated in favour
+  of `qheatv2` and `qwaterv2` ("upgrade before 2026-12-01"). They still work in
+  this version.
+- wmbusmeters' JSON names the driver in a field `driver` instead of `meter`.
+  MQTT state keeps `meter` as a compatibility alias with the same value, so
+  existing external consumers continue to work (for example Node-RED flows
+  using `value_json.meter`); new integrations should use `value_json.driver`.
+
+### Fixed
+- Candidate medium cells keep the icon above the translated label in every
+  language instead of putting German `Wasser` beside the icon.
+- The report dialog's Cancel button is visually distinct from its sharing actions.
+- Reports analyse the longest stored frame for the meter, name the runtime
+  wmbusmeters version correctly and keep their modal buttons usable on narrow
+  screens. A badge shows when live WebUI updates are held while a dialog is open.
+- `driver_deprecated_by` stays visible as a driver-migration warning in the
+  WebUI but no longer creates a separate Home Assistant text entity.
+- Anonymised issue reports also mask labelled `serial_number`, `prefix` and
+  `fabrication_no` values. The dialog now describes this as best-effort masking
+  and asks the user to review the report before sharing it.
+
 ## 1.6.8
 
 ### Fixed

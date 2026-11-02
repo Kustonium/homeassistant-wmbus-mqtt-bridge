@@ -677,19 +677,21 @@ zeigt den Hinweis zur KI-Unterstützung. Die Repository-Fassung steht in
 
 ### Tauron-/KPL-Stromzähler (Polen)
 
-Diese Zähler setzen ein nicht standardkonformes Präfix an die Stelle, an der der
-wM-Bus-Standard die Bytes zur Bestätigung einer erfolgreichen Entschlüsselung erwartet.
-Das Upstream-`wmbusmeters` liest das als falschen Schlüssel und verwirft das ganze
-Telegramm mit *"did you use the correct decryption key?"*, obwohl der Schlüssel stimmt.
-Dieses Add-on enthält dafür eine lokale Korrektur, die ausschließlich für Zähler mit dem
-Herstellerkürzel `KPL` greift.
+Diese Zähler (Herstellerkennung `KPL`, z. B. Sanxing S34U28) setzen ein
+nicht standardkonformes Präfix dorthin, wo der wM-Bus-Standard die Bytes vorsieht,
+die eine gelungene Entschlüsselung bestätigen. wmbusmeters behandelt das seit 3.1
+selbst, mit seinem Treiber **`sanxing`**, den auch die automatische Erkennung wählt.
 
-Konfiguriere einen solchen Zähler mit dem Treiber **`amiplus`** — die automatische
-Erkennung findet ihn nicht, da kein Upstream-Treiber diesen Hersteller beansprucht.
+Konfiguriere einen solchen Zähler mit dem Treiber **`sanxing`** oder **`auto`**.
 
-**Hier nicht verifiziert.** Auf dieser Seite besitzt niemand einen solchen Zähler; die
-Korrektur beruht auf einer Nutzermeldung. Wenn du einen hast, öffne bitte ein Issue mit
-einem Rohtelegramm.
+Als **`amiplus`** konfiguriert (so stand es in dieser Anleitung bis Add-on 1.6.8,
+als ein lokaler Workaround diesen Treiber die Zähler annehmen ließ): Beim ersten
+Mal, wenn wmbusmeters den Zähler ablehnt, schreibt das Add-on ihn fortan mit
+`sanxing` und lädt den Decoder neu - eine Zeile im Log sagt das. Deine
+Konfiguration bleibt unverändert. Felder und Werte sind dieselben (geprüft an den
+Datensätzen eines echten Zählers), `sanxing` ergänzt
+`absolute_max_power_consumption_kw` und `fabrication_no`; die Entitäten und ihre
+Historie bleiben, da sie an Zählernummer und Feldnamen hängen.
 
 ## 9. Sprache der Oberfläche
 

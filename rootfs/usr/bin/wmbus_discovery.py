@@ -25,8 +25,8 @@ import bridge_ledger as bl
 
 Publish = Tuple[str, bytes, bool]
 
-_SKIP_KEYS = frozenset(("_", "id", "name", "meter", "driver", "media", "timestamp", "device_date_time",
-                        "rssi", "lqi", "status"))
+_SKIP_KEYS = frozenset(("_", "id", "name", "meter", "driver", "driver_deprecated_by",
+                        "media", "timestamp", "device_date_time", "rssi", "lqi", "status"))
 _BASH_SPACE = re.compile(r"[ \t\n\v\f\r]")
 _HEX = re.compile(r"[0-9A-F]+")
 _HEX8 = re.compile(r"[0-9A-Fa-f]{8}")
@@ -426,5 +426,14 @@ class Discovery:
             return out
         line = self.inject_rssi(mid, line)
         self.emit_discovery(line, patterns, out)
+        # wmbusmeters 3.1 renamed the metadata field `meter` to `driver`.
+        # Keep `meter` in the public MQTT state contract for existing Node-RED
+        # flows and other consumers, while exposing the new canonical field too.
+        values = bl.jq_values(line)
+        state = values[0] if values and isinstance(values[0], dict) else None
+        if state is not None and "meter" not in state and state.get("driver") not in (None, ""):
+            state = dict(state)
+            state["meter"] = state["driver"]
+            line = bl.jq_dumps(state)
         out.append((f"{self.cfg.state_prefix}/{mid}/state", line.encode(), self.cfg.state_retain))
         return out
