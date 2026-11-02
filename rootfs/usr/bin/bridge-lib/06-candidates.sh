@@ -41,6 +41,23 @@ _record_preview_no_decode_attempt() {
   fi
 }
 
+# The longest frame of a candidate seen in the last 24 h, in
+# .preview_full/<id> ("<epoch><TAB><hex>"). A one-shot wmbusmeters has never
+# seen the meter, so a compact frame (Kamstrup sends about 7 of 8 so) decodes
+# only when its format is built into the driver; fed the full frame first, it
+# learns the format as the long-running instance does. Longest = full: a
+# compact frame replaces the record headers by a format signature. Called
+# before the throttle, so a full frame arriving between one-shots is kept.
+_preview_remember_full() {
+  local f="${RUNTIME:-${BASE}}/.preview_full/$1" ts=0 hex=""
+  [[ -f "${f}" ]] && { IFS=$'\t' read -r ts hex < "${f}" || true; } 2>/dev/null
+  [[ "${ts}" =~ ^[0-9]+$ ]] || ts=0
+  if (( ${#2} >= ${#hex} || $3 - ts > 86400 )); then
+    mkdir -p "${f%/*}" 2>/dev/null || true
+    printf '%s\t%s\n' "$3" "$2" > "${f}" 2>/dev/null || true
+  fi
+}
+
 _preview_acquire_slot() {
   local max_parallel="${PREVIEW_DECODE_MAX_PARALLEL:-2}" n slot
   [[ "${max_parallel}" =~ ^[0-9]+$ ]] || max_parallel=2
@@ -108,6 +125,7 @@ preview_decode_raw_if_requested() {
   now="$(date +%s 2>/dev/null || echo 0)"
   last="$(cat "${last_file}" 2>/dev/null || echo 0)"
   [[ "${last}" =~ ^[0-9]+$ ]] || last=0
+  _preview_remember_full "${id}" "${raw}" "${now}"
   if (( now - last < min_interval )); then
     return 0
   fi
@@ -131,7 +149,7 @@ preview_decode_raw_if_requested() {
   printf '%s\n' "${now}" > "${last_file}" 2>/dev/null || true
 
   (
-    local tmp_base tmp_meter_dir output json_line
+    local tmp_base tmp_meter_dir output json_line full="" _ts
     # Prevent stale status.json writes from this detached helper process.
     write_status_json() { :; }
     tmp_base="$(mktemp -d "${RUNTIME:-${BASE}}/.preview_decode.${id}.XXXXXX" 2>/dev/null)" || {
@@ -148,8 +166,12 @@ logfile=/dev/stdout
 format=json
 EOFONESHOT
     cp "${cfg}" "${tmp_meter_dir}/meter-preview-${id}" 2>/dev/null || true
-    output="$(printf '%s\n' "${raw}" | /usr/bin/wmbusmeters --useconfig="${tmp_base}" 2>&1 || true)"
-    json_line="$(printf '%s\n' "${output}" | awk '/^\{.*"_":"telegram"/ { print; exit }')"
+    # The remembered full frame goes first (_preview_remember_full); the
+    # result is the last telegram, the current frame's.
+    { IFS=$'\t' read -r _ts full < "${RUNTIME:-${BASE}}/.preview_full/${id}" || true; } 2>/dev/null
+    [[ "${full}" == "${raw}" ]] && full=""
+    output="$(printf '%s\n' ${full:+"${full}"} "${raw}" | /usr/bin/wmbusmeters --useconfig="${tmp_base}" 2>&1 || true)"
+    json_line="$(printf '%s\n' "${output}" | awk '/^\{.*"_":"telegram"/ { l = $0 } END { if (l != "") print l }')"
     if [[ -n "${json_line}" ]]; then
       log_debug "[DIAG] preview one-shot ${id}: decoded JSON"
       status_candidate_seen_from_json "${json_line}"
