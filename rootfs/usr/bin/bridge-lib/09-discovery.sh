@@ -221,7 +221,13 @@ emit_discovery_from_json() {
         + (if ($desc|length)>0
            then {json_attributes_template: "{{ dict(value_json, Description=\"\($desc)\") | tojson }}"}
            else {} end)
-      )'
+      )
+      # A cumulative reading (total, total_increasing) stays valid until the
+      # next one, so it never expires: a meter that is silent evenings and
+      # weekends by its schedule kept going "unavailable" after an hour and the
+      # Energy dashboard read zero (issue #165). Its status entity keeps
+      # expire_after and is what tells HA the meter went quiet.
+      | if ($sc == "total" or $sc == "total_increasing") then del(.expire_after) else . end'
     )"
 
     if mqtt_pub "${cfg_topic}" "${payload}" "${DISCOVERY_RETAIN}"; then

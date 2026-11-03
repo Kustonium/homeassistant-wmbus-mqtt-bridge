@@ -1,3 +1,40 @@
+## 1.6.10
+
+### Added
+- **The wmbusmeters log (LOGS → wmbusmeters) shows each decoded telegram's
+  frame hex and whether it was a full or a compact frame.** wmbusmeters adds the
+  hex (decrypted when the meter has a key); the badge next to the meter name
+  says *full frame*, *compact frame* or *manufacturer format*. A compact frame
+  decodes only after wmbusmeters has seen a full frame of that meter or knows
+  its format, so this shows at a glance whether full frames arrive. The hex is
+  in the expanded JSON, ready for a driver question. It stays in the log: the
+  field is removed before MQTT, Discovery or the recorder see the telegram.
+
+### Fixed
+- **RECEIVED / SEARCH: the media chips of the candidate list no longer hide the
+  configured meters.** Picking a medium that none of the configured meters had
+  (e.g. warm water) made the whole "configured meters on air" section vanish.
+- **Cumulative readings no longer turn "unavailable" when a meter is silent by
+  schedule** (#165). Every entity carried an `expire_after` of one hour (or twice
+  the meter's average interval), so a meter that transmits only on weekdays
+  07-18 went unavailable every evening and weekend and the Energy dashboard read
+  zero. Readings with `state_class` `total` / `total_increasing` (e.g.
+  `total_m3`, `total_energy_consumption_kwh`) now keep their last value until
+  the next telegram, as with the upstream wmbusmeters add-on. The meter's status
+  entity and the instantaneous fields keep `expire_after`, so Home Assistant
+  still shows when a meter has gone quiet - for meters that report a `status`
+  field. A meter without one (some izar, for example) no longer shows silence in
+  Home Assistant at all, only in the add-on's own panel, which judges it from the
+  last telegram as before. Do not build a "meter is dead" automation on
+  `total_m3`. Takes effect when the discovery config is resent (the meter's
+  first telegram after the add-on restarts).
+- **Heat meters reporting energy in GJ or MJ** get `device_class: energy`. Their
+  cumulative fields (`total_energy_consumption_gj` and the like, named
+  total/consumption/production) also get `state_class: total_increasing`, so they
+  are covered by the fix above and can be added to the Energy dashboard; before,
+  they had no class and kept expiring after an hour of silence. Other GJ fields
+  (e.g. `previous_gj`) are treated like their kWh counterparts.
+
 ## 1.6.9
 
 ### Added

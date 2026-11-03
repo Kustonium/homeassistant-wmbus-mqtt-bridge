@@ -309,7 +309,13 @@ krótkie i pełne), encja pokazuje `unavailable` zamiast przestarzałej lub
 fałszywej wartości — i wraca automatycznie przy następnym telegramie
 zawierającym to pole. Niezależnie od tego auto-strojony `expire_after`
 (ok. 2× zaobserwowany interwał nadawania licznika, minimum 1 h) oznacza encje
-jako `unavailable`, gdy licznik zamilknie.
+jako `unavailable`, gdy licznik zamilknie - z wyjątkiem odczytów narastających
+(`total_m3`, kWh, GJ i inne pola `total_increasing`): te trzymają ostatnią
+wartość do następnego telegramu, więc licznik, który z harmonogramu milczy
+wieczorami albo w weekendy, nie wypada z panelu Energia. Ciszę licznika widać
+w jego encji `status` (niżej); licznik bez pola `status` pokazuje ją tylko w
+panelu dodatku (ostatni telegram, liczniki 15/60 min). Nie buduj automatyzacji
+„licznik padł” na `total_m3`.
 
 Poza liczbowymi sensorami pomiarowymi każdy licznik raportujący pole `status`
 dostaje też dwie encje **diagnostyczne** (w sekcji *Diagnostyka* urządzenia):

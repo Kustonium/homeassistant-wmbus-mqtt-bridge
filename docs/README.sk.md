@@ -300,7 +300,13 @@ merača chýba dané pole (niektoré merače striedajú krátke a plné rámce),
 zobrazí `unavailable` namiesto zastaranej alebo falošnej hodnoty — a
 automaticky sa obnoví s ďalším telegramom, ktorý pole obsahuje. Nezávisle od
 toho automaticky ladené `expire_after` (cca 2× pozorovaný interval vysielania
-merača, minimálne 1 h) označí entity ako `unavailable`, keď merač stíchne.
+merača, minimálne 1 h) označí entity ako `unavailable`, keď merač stíchne -
+okrem kumulatívnych odpočtov (`total_m3`, kWh, GJ a ďalšie polia
+`total_increasing`): tie si držia poslednú hodnotu do ďalšieho telegramu, takže
+merač, ktorý podľa rozvrhu večer alebo cez víkend mlčí, nevypadne z panelu
+Energia. Stíchnutie ukáže entita `status` (nižšie); pri merači bez poľa `status`
+len panel doplnku (posledný telegram, počty za 15/60 min). Nestavajte
+automatizáciu „merač nefunguje“ na `total_m3`.
 
 Okrem číselných meracích senzorov každý merač, ktorý hlási pole `status`,
 dostane aj dve **diagnostické** entity (v sekcii *Diagnostika* zariadenia):
