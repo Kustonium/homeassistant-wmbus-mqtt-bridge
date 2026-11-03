@@ -2032,3 +2032,24 @@ th.sortable:hover {
   box-shadow: var(--shadow);
   pointer-events: none;
 }
+
+/* Frame kind in the wmbusmeters log (telegramFrameKind). */
+.log-frame {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.log-frame.full {
+  color: #4df08d;
+  border-color: #1e6b3a;
+}
+
+.log-frame.compact {
+  color: #f3c84b;
+  border-color: #6b4a1e;
+}

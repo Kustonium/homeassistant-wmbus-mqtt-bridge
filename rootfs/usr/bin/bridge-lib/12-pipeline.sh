@@ -133,17 +133,31 @@ _raw_source() {
 # 500 lines. Without a RAM WEBUI_LOG_DIR the stage only passes the stream on
 # (dd, for the reason in _raw_source). No fork per line: read, printf and the
 # append are builtins; tail and mv run once per 500 lines.
+#
+# With a RAM log, wmbusmeters runs with addtelegramhex (bridge.sh): the log
+# copy keeps the "hex" field, the line passed on loses it - a bash regex, no
+# fork - so it reaches no entity, MQTT payload or recorder. If the log cannot
+# be written the field is still removed. LC_ALL=C: the image runs C.UTF-8, where
+# "." does not match an invalid UTF-8 byte - one such byte anywhere in the line
+# made both patterns miss and the decrypted frame went on to MQTT.
 _wmbusmeters_log_stage() {
+  local LC_ALL=C
   local file="${WEBUI_LOG_DIR:+${WEBUI_LOG_DIR}/wmbusmeters.log}" line n=0
+  local hex_re='^(.*)"hex":"[0-9A-Fa-f]*",(.*)$' hex_last_re='^(.*),"hex":"[0-9A-Fa-f]*"(\}.*)$'
   [[ -n "${file}" ]] || exec dd bs=65536 status=none
-  : >> "${file}" 2>/dev/null || exec dd bs=65536 status=none
+  : >> "${file}" 2>/dev/null || file=""
   while IFS= read -r line; do
-    printf '%s\n' "${line}"
-    printf '%(%Y-%m-%d %H:%M:%S)T %s\n' -1 "${line:0:4000}" >> "${file}" 2>/dev/null
-    if (( ++n >= 500 )); then
-      n=0
-      tail -n 500 "${file}" > "${file}.tmp" 2>/dev/null && mv -f "${file}.tmp" "${file}" 2>/dev/null
+    if [[ -n "${file}" ]]; then
+      printf '%(%Y-%m-%d %H:%M:%S)T %s\n' -1 "${line:0:4000}" >> "${file}" 2>/dev/null
+      if (( ++n >= 500 )); then
+        n=0
+        tail -n 500 "${file}" > "${file}.tmp" 2>/dev/null && mv -f "${file}.tmp" "${file}" 2>/dev/null
+      fi
     fi
+    if [[ "${line}" =~ ${hex_re} || "${line}" =~ ${hex_last_re} ]]; then
+      line="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+    fi
+    printf '%s\n' "${line}"
   done
 }
 

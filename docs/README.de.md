@@ -314,7 +314,13 @@ kurze und vollständige Rahmen), zeigt die Entität `unavailable` statt eines
 veralteten oder falschen Werts — und erholt sich automatisch mit dem nächsten
 Telegramm, das das Feld enthält. Unabhängig davon markiert ein automatisch
 abgestimmtes `expire_after` (ca. 2× das beobachtete Sendeintervall des Zählers,
-mindestens 1 h) Entitäten als `unavailable`, wenn der Zähler verstummt.
+mindestens 1 h) Entitäten als `unavailable`, wenn der Zähler verstummt - außer
+den Zählerständen (`total_m3`, kWh, GJ und andere `total_increasing`-Felder):
+Sie behalten ihren letzten Wert bis zum nächsten Telegramm, damit ein Zähler,
+der laut Zeitplan abends oder am Wochenende schweigt, nicht aus dem
+Energie-Dashboard fällt. Das Verstummen zeigt die `status`-Entität (unten); bei
+einem Zähler ohne `status`-Feld nur das Panel des Add-ons (letztes Telegramm,
+15/60-min-Zähler). Baue keine „Zähler ausgefallen“-Automation auf `total_m3`.
 
 Über die numerischen Mess-Sensoren hinaus erhält jeder Zähler, der ein Feld
 `status` meldet, zwei **Diagnose**-Entitäten (im Abschnitt *Diagnose* des

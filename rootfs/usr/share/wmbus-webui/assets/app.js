@@ -2741,8 +2741,10 @@
     const data = state.data || {};
     const allCandidates = asArray(data.candidates);
     const filteredCandidates = applyMediaFilter(allCandidates, "type");
+    // The media chips sit in the candidates section and filter only that list.
+    // Applied to the configured meters too, a chip that matched none of them
+    // made the whole "configured meters on air" section vanish.
     const allMeters = asArray(data.meters);
-    const filteredMeters = applyMediaFilter(allMeters, "media");
     const pending = pendingMeters();
     const rxDownloadEnabled = Boolean(data.options?.esp_rx_api_enabled);
     const candidateCountLabel = `${filteredCandidates.length}${filteredCandidates.length !== allCandidates.length ? `/${allCandidates.length}` : ""} ${t("webui_visible", "visible")}`;
@@ -2750,8 +2752,8 @@
     // this page for when exporting, and the candidate list below runs long.
     return `
       ${rxDownloadEnabled ? `<div class="page-actions"><a class="btn" href="api/esp-rx?limit=100000&amp;download=1" download>${escapeHtml(t("download_rx_history", "Download RX history"))}</a></div>` : ""}
-      ${discoverValueFilterBar(filteredMeters.length + filteredCandidates.length)}
-      ${discoverConfiguredPanel(filteredMeters)}
+      ${discoverValueFilterBar(allMeters.length + filteredCandidates.length)}
+      ${discoverConfiguredPanel(allMeters)}
       ${pending.length ? pendingMetersSection(pending, data.analysis || {}) : ""}
       <section class="section">
         <div class="section-head">
@@ -3003,6 +3005,26 @@
   // One line of the wmbusmeters log. A decoded telegram (a JSON line) is one
   // row "name · id · driver" with the start of the JSON; a click shows the
   // whole JSON formatted. Other lines (warnings, key errors, start-up) as is.
+  // Full or compact frame, from the "hex" wmbusmeters adds (addtelegramhex,
+  // decrypted). The TPL CI byte follows the 10-byte DLL header, or an ELL
+  // header (CI 8C-8F, 2/8/10/16 bytes) first: 72/78/7A carry the record
+  // headers (full), 73/79/7B only a format signature (compact - decodable
+  // once wmbusmeters has seen a full frame of that meter or knows the format).
+  function telegramFrameKind(hex) {
+    const h = String(hex || "");
+    if (!/^[0-9A-Fa-f]+$/.test(h) || h.length < 24) return "";
+    const byte = (i) => parseInt(h.slice(i * 2, i * 2 + 2), 16);
+    let pos = 10;
+    const ell = {0x8C: 2, 0x8D: 8, 0x8E: 10, 0x8F: 16}[byte(pos)];
+    if (ell !== undefined) pos += 1 + ell;
+    if (pos * 2 + 2 > h.length) return "";
+    const ci = byte(pos);
+    if ([0x72, 0x78, 0x7A].includes(ci)) return "full";
+    if ([0x73, 0x79, 0x7B].includes(ci)) return "compact";
+    if (ci >= 0xA0 && ci <= 0xB7) return "mfr";
+    return "";
+  }
+
   function wmbusmetersLogRow(row) {
     const time = `<span class="live-log-time">${escapeHtml(row.time.slice(11))}</span>`;
     if (!row.text.startsWith("{")) {
@@ -3015,11 +3037,20 @@
     const head = parsed
       ? [parsed.name, parsed.id, parsed.meter || parsed.driver].filter(Boolean).join(" · ")
       : t("live_log_json_cut", "JSON (cut)");
+    const kind = parsed ? telegramFrameKind(parsed.hex) : "";
+    const kindLabel = {
+      full: t("log_frame_full", "full frame"),
+      compact: t("log_frame_compact", "compact frame"),
+      mfr: t("log_frame_mfr", "manufacturer format"),
+    }[kind];
+    const kindBadge = kindLabel
+      ? ` <span class="log-frame ${kind}" title="${escapeHtml(t("log_frame_hint", "From the telegram's CI byte. A compact frame decodes only after wmbusmeters has seen a full frame of the meter, or knows its format."))}">${escapeHtml(kindLabel)}</span>`
+      : "";
     return `
       <div class="live-log-row json" data-action="log-line-toggle" data-key="${escapeHtml(key)}" style="cursor:pointer;">
         ${time}
         <span class="live-log-msg">
-          <span class="live-log-head">${open ? "▾" : "▸"} ${escapeHtml(head)}</span>
+          <span class="live-log-head">${open ? "▾" : "▸"} ${escapeHtml(head)}${kindBadge}</span>
           ${open
             ? `<pre class="live-log-json">${escapeHtml(parsed ? JSON.stringify(parsed, null, 2) : row.text)}</pre>`
             : `<span class="live-log-preview">${escapeHtml(row.text)}</span>`}

@@ -301,7 +301,13 @@ telegramu měřiče chybí dané pole (některé měřiče střídají krátké 
 entita zobrazí `unavailable` místo zastaralé nebo falešné hodnoty — a
 automaticky se obnoví s dalším telegramem, který pole obsahuje. Nezávisle na
 tom automaticky laděné `expire_after` (cca 2× pozorovaný interval vysílání
-měřiče, minimálně 1 h) označí entity jako `unavailable`, když měřič ztichne.
+měřiče, minimálně 1 h) označí entity jako `unavailable`, když měřič ztichne -
+kromě kumulativních odečtů (`total_m3`, kWh, GJ a další pole `total_increasing`):
+ty si drží poslední hodnotu do dalšího telegramu, takže měřič, který podle
+rozvrhu večer nebo o víkendu mlčí, nevypadne z panelu Energie. Ztichnutí ukáže
+entita `status` (níže); u měřiče bez pole `status` jen panel doplňku (poslední
+telegram, počty za 15/60 min). Nestavte automatizaci „měřič nefunguje“ na
+`total_m3`.
 
 Kromě číselných měřicích senzorů každý měřič, který hlásí pole `status`, získá
 také dvě **diagnostické** entity (v sekci *Diagnostika* zařízení): `sensor` se

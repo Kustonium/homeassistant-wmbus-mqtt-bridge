@@ -122,7 +122,8 @@ def guess_unit(key: str) -> str:
 
 def guess_device_class(key_lc: str, unit: str, media: str) -> str:
     simple = {"°C": "temperature", "%": "humidity", "W": "power", "kW": "power",
-              "Wh": "energy", "kWh": "energy", "V": "voltage", "A": "current",
+              "Wh": "energy", "kWh": "energy", "MJ": "energy", "GJ": "energy",  # heat meters (#165)
+              "V": "voltage", "A": "current",
               "Hz": "frequency", "dBm": "signal_strength"}
     if unit in simple:
         return simple[unit]
@@ -354,6 +355,10 @@ class Discovery:
             if ecat:
                 payload["entity_category"] = ecat
                 payload["enabled_by_default"] = False
+            # A cumulative reading stays valid until the next one: no expiry
+            # (issue #165, see 09-discovery.sh). The status entity keeps it.
+            if sclass in ("total", "total_increasing"):
+                del payload["expire_after"]
             if desc:
                 payload["json_attributes_template"] = (
                     '{{ dict(value_json, Description="%s") | tojson }}' % desc)

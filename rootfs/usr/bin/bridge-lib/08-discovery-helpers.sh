@@ -63,7 +63,9 @@ guess_device_class() {
     "°C") echo "temperature";;
     "%") echo "humidity";;
     "W"|"kW") echo "power";;
-    "Wh"|"kWh") echo "energy";;
+    # GJ and MJ: heat meters (kamheat and others) report energy in them; without a
+    # class the total got no state_class and kept expiring like a sensor (#165).
+    "Wh"|"kWh"|"MJ"|"GJ") echo "energy";;
     "V") echo "voltage";;
     "A") echo "current";;
     "Hz") echo "frequency";;

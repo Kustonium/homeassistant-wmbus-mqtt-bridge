@@ -860,6 +860,9 @@ Discovery behavior is designed around partial telegrams:
 - each field's availability template checks whether that key exists in the
   latest state JSON;
 - `expire_after` follows the observed transmit interval, with a one-hour floor;
+  cumulative readings (`state_class` total / total_increasing) carry none, so a
+  meter silent by schedule keeps its last reading (issue #165) - silence then
+  shows on the `status` entity, or only in the panel for meters without one;
 - retained configs are removed when a meter is deleted or factory reset;
 - the in-memory Discovery cache is reset by a pipeline restart, so the next
   telegram republishes configuration.

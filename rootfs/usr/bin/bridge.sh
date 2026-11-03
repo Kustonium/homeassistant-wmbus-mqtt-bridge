@@ -549,6 +549,14 @@ device=stdin:hex
 logfile=/dev/stdout
 format=json
 EOFCONF
+# Each decoded telegram carries "hex": the frame as wmbusmeters read it,
+# decrypted. Only the WebUI's wmbusmeters log shows it (full or compact frame,
+# the hex for a driver issue); _wmbusmeters_log_stage removes it before
+# anything else sees the line, so it never reaches MQTT, Discovery or the
+# recorder. Without the RAM log there is nothing to show it in, so it is off.
+if [[ -n "${WEBUI_LOG_DIR}" ]]; then
+  echo "addtelegramhex=true" >> "${CONF_FILE}"
+fi
 
 # ------------------------------------------------------------
 # Listen-only wmbusmeters config: SECONDARY instance for candidate

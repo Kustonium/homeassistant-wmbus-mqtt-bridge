@@ -309,7 +309,13 @@ and full frames), the entity shows `unavailable` instead of a stale or false
 value, and recovers automatically with the next telegram that contains the
 field. Independently, an auto-tuned `expire_after` (about 2× the meter's
 observed transmit interval, minimum 1 h) marks entities `unavailable` when the
-meter goes silent.
+meter goes silent - except the cumulative readings (`total_m3`, kWh, GJ and
+other `total_increasing` fields): they keep their last value until the next
+telegram, so a meter that is silent evenings or weekends by its schedule does
+not drop out of the Energy dashboard. A silent meter shows on its `status`
+entity (below); a meter without a `status` field shows it only in the add-on's
+own panel (last telegram, 15/60 min counts). Do not build a "meter is dead"
+automation on `total_m3`.
 
 Beyond the numeric measurement sensors, each meter that reports a `status`
 field also gets two **diagnostic** entities (in the device's *Diagnostics*
