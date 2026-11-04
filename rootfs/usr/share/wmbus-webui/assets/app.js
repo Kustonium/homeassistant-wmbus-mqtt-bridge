@@ -216,14 +216,33 @@
   // re-render is held; it fires when the pointer leaves the table (the
   // mouseover listener below) or on the next live tick after that. Renders
   // triggered directly by user actions (render() calls) are not gated.
+  //
+  // Selection guard: a patch of the log rows drops a text selection, so a line
+  // could not be copied while frames kept arriving. The hold lasts as long as
+  // something in a log stays selected (the selectionchange listener below).
+  function logSelectionActive() {
+    const selection = window.getSelection ? window.getSelection() : null;
+    if (!selection || selection.isCollapsed || !selection.anchorNode) return false;
+    const node = selection.anchorNode;
+    const element = node.nodeType === 1 ? node : node.parentElement;
+    return !!(element && element.closest(".live-log"));
+  }
+
+  function liveRenderHold() {
+    if (logSelectionActive()) return "selection";
+    if (document.querySelector(".table-wrap:hover, .table-scroll-top:hover")
+        && !state.modal && !state.reportModal && !state.editModal) return "hover";
+    return "";
+  }
+
   function scheduleRender() {
     if (liveRenderTimer) return;
     liveRenderTimer = window.setTimeout(() => {
       liveRenderTimer = null;
-      if (document.querySelector(".table-wrap:hover, .table-scroll-top:hover")
-          && !state.modal && !state.reportModal && !state.editModal) {
+      const hold = liveRenderHold();
+      if (hold) {
         liveRenderDeferred = true;
-        showLivePaused(true);
+        showLivePaused(hold);
         return;
       }
       liveRenderDeferred = false;
@@ -234,9 +253,9 @@
   // The held render is invisible otherwise: an expanded panel under the
   // pointer (a meter's Fields) simply stops updating, which a user reported
   // as a bug. A small badge outside #app (morphdom never touches it) says so.
-  function showLivePaused(on) {
+  function showLivePaused(reason) {
     let el = document.getElementById("live-paused");
-    if (!on) {
+    if (!reason) {
       if (el) el.hidden = true;
       return;
     }
@@ -246,17 +265,21 @@
       el.className = "live-paused";
       document.body.appendChild(el);
     }
-    el.textContent = `⏸ ${t("live_paused_hover", "Live updates paused while the pointer is over a table")}`;
+    el.textContent = reason === "selection"
+      ? `⏸ ${t("live_paused_selection", "Live updates paused while log text is selected")}`
+      : `⏸ ${t("live_paused_hover", "Live updates paused while the pointer is over a table")}`;
     el.hidden = false;
   }
 
-  document.addEventListener("mouseover", () => {
-    if (liveRenderDeferred && !document.querySelector(".table-wrap:hover, .table-scroll-top:hover")) {
+  function resumeHeldRender() {
+    if (liveRenderDeferred && !liveRenderHold()) {
       liveRenderDeferred = false;
       showLivePaused(false);
       scheduleRender();
     }
-  });
+  }
+  document.addEventListener("mouseover", resumeHeldRender);
+  document.addEventListener("selectionchange", resumeHeldRender);
 
   function currentRoute() {
     const hash = window.location.hash.replace(/^#\/?/, "");
@@ -5084,6 +5107,9 @@
       return;
     }
     if (action === "log-line-toggle") {
+      // Releasing the mouse after selecting text is a click too. The opened JSON
+      // is there to be read and copied, so only the rest of the row toggles.
+      if (logSelectionActive() || event.target.closest(".live-log-json")) return;
       const key = target.dataset.key || "";
       if (state.expandedLogLines.has(key)) state.expandedLogLines.delete(key);
       else state.expandedLogLines.add(key);

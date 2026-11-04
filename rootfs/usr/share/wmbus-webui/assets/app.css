@@ -1894,6 +1894,7 @@ tr:last-child td {
   white-space: pre-wrap;
   color: var(--muted);
   font-size: 12px;
+  cursor: text;
 }
 
 .live-log-row.json .live-log-msg:has(.live-log-json) {
