@@ -108,9 +108,18 @@ _esp_rssi_subscriber() {
   done
 }
 
+# With esp_rx_history_hours the limit in lines does not apply: the book trims by
+# time, from its first trim on.
+_trim_esp_rf_rx_history_at_start() {
+  # A copy a killed trim left behind can be as large as the history.
+  rm -f "${ESP_RF_RX_HISTORY_FILE}".tmp.*
+  [[ "${ESP_RX_HISTORY_HOURS:-0}" -gt 0 ]] && return 0
+  _trim_esp_rx_history "${ESP_RF_RX_HISTORY_FILE}" 100000 90000 || true
+}
+
 # The wmbus/+/rx subscriber loop (see start_esp_subscribers).
 _esp_rx_subscriber() {
-  _trim_esp_rx_history "${ESP_RF_RX_HISTORY_FILE}" 100000 90000 || true
+  _trim_esp_rf_rx_history_at_start
   while true; do
     _sub_t0="$(epoch_now)"
     # Same arrangement as the rssi subscriber: python3 reads through a
@@ -123,7 +132,7 @@ _esp_rx_subscriber() {
     python3 -u "${BRIDGE_LEDGER}" rx \
       --reception-file "${STATUS_ESP_RX_RECEPTION_FILE}" \
       --mode-file "${STATUS_ESP_RX_MODE_FILE}" \
-      --history-file "${ESP_RF_RX_HISTORY_FILE}" \
+      --history-file "${ESP_RF_RX_HISTORY_FILE}" --history-hours "${ESP_RX_HISTORY_HOURS:-0}" \
       --sequence-file "${STATUS_ESP_RX_SEQUENCE_FILE}" \
       --boots-file "${STATUS_ESP_RX_BOOTS_FILE}" \
       --clock-file "${STATUS_ESP_RX_CLOCK_FILE}" <&"${_rx_fd}" || true
@@ -439,7 +448,7 @@ if [[ "${MQTT_PUB_BOOKS:-false}" == "true" ]]; then
   # The publisher books both; the history files are trimmed here at start,
   # as the loops do before their first connection.
   _trim_esp_rx_history "${ESP_RX_HISTORY_FILE}" 100000 90000 || true
-  _trim_esp_rx_history "${ESP_RF_RX_HISTORY_FILE}" 100000 90000 || true
+  _trim_esp_rf_rx_history_at_start
 else
   _esp_tracker_subscriber &
   ESP_SUBSCRIBER_PIDS="${ESP_SUBSCRIBER_PIDS} $!"

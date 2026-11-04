@@ -1,12 +1,16 @@
 name: "wMBus MQTT Bridge"
 description: "wM-Bus over MQTT (RAW HEX) + optional wired M-Bus -> wmbusmeters -> Home Assistant Discovery"
-version: "1.6.10"
+version: "1.6.11"
 slug: "wmbus_mqtt_bridge"
 stage: experimental
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
 arch:
   - amd64
   - aarch64
+
+# Evidence of reception, rebuilt as frames arrive; it can reach 1 GB.
+backup_exclude:
+  - "esp_rf_rx_history.jsonl*"
 
 init: false
 # /tmp in RAM: the status files, rewritten every few seconds, live there
@@ -71,6 +75,11 @@ options:
   # telegrams, AES keys or MQTT credentials.
   esp_rx_api_enabled: false
 
+  # How many hours of RX history to keep. 0 keeps the last 90-100 thousand
+  # frames, which on a site with several boards is only hours. A longer history
+  # is refused on an SD card or eMMC, under 2 GB of RAM or under 2 GB of free disk.
+  esp_rx_history_hours: "0"
+
   # Advanced, opt-in capture for investigating the radio path. Keeps up to
   # 10,000 LR1121 FIFO samples and pipeline drops, including raw radio bytes.
   # It is intentionally separate from normal RX evidence and off by default.
@@ -132,6 +141,7 @@ schema:
   external_mqtt_password: str?
   verify_ha_entities: bool
   esp_rx_api_enabled: bool
+  esp_rx_history_hours: list(0|12|24|48|72)
   esp_diag_history_enabled: bool
   qds_walkby_enabled: bool
   mbus_tab_visible: bool
