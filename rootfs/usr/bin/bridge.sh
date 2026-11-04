@@ -302,7 +302,7 @@ touch "${STATUS_CANDIDATE_VALUES_FILE}" 2>/dev/null || true
 printf '%s\n' "$(epoch_now)" > "${STATUS_BRIDGE_START_FILE}" 2>/dev/null || true
 
 # What the data directory is stored on (NVMe, SSD, HDD, eMMC, SD), logged once
-# and shown in the WebUI. Nothing depends on it yet.
+# and shown in the WebUI. rx-history-policy below refuses a long history on an SD card or eMMC.
 log "$(python3 "${BRIDGE_SCRIPT_DIR:-/usr/bin}/bridge_ledger.py" storage --path "${BASE}" \
   --json-file "${STATUS_STORAGE_FILE}" 2>/dev/null \
   || echo "storage: ${BASE} on unknown (detection failed)")"
@@ -346,6 +346,13 @@ RESTART_ON_EXIT="${RESTART_ON_EXIT:-$(json_get_bool '.restart_on_exit' 'true')}"
 # API whether that entity exists. Off by default (read-only HA access is opt-in).
 VERIFY_HA_ENTITIES="${VERIFY_HA_ENTITIES:-$(json_get_bool '.verify_ha_entities' 'false')}"
 ESP_DIAG_HISTORY_ENABLED="${ESP_DIAG_HISTORY_ENABLED:-$(json_get_bool '.esp_diag_history_enabled' 'false')}"
+# What this machine may keep (bridge_ledger.py rx_history_policy), not what was
+# asked for; the WebUI says why from the JSON.
+ESP_RX_HISTORY_HOURS="$(python3 "${BRIDGE_SCRIPT_DIR:-/usr/bin}/bridge_ledger.py" rx-history-policy \
+  --hours "$(json_get '.esp_rx_history_hours' '0')" --path "${BASE}" \
+  --history-file "${ESP_RF_RX_HISTORY_FILE}" --storage-file "${STATUS_STORAGE_FILE}" \
+  --json-file "${RUNTIME}/status_esp_rx_history.json" 2>/dev/null || true)"
+[[ "${ESP_RX_HISTORY_HOURS}" =~ ^[0-9]+$ ]] || ESP_RX_HISTORY_HOURS=0
 # Qundis walk-by block (0DFF5F). Off by default: no effect on installs that
 # never see the block. On (a) rejects walk-by records the decoder cannot
 # validate, so upstream cannot publish ciphertext as a reading, and (b) with
@@ -425,6 +432,7 @@ log "search: mode=${SEARCH_MODE} expected_value_m3=${SEARCH_EXPECTED_VALUE_M3} t
 log "robust: ignore_retained=${IGNORE_RETAINED} require_timestamp=${REQUIRE_TIMESTAMP} restart_on_exit=${RESTART_ON_EXIT}"
 log "verify_ha_entities: ${VERIFY_HA_ENTITIES}"
 log "esp_diag_history_enabled: ${ESP_DIAG_HISTORY_ENABLED}"
+log "esp_rx_history_hours: ${ESP_RX_HISTORY_HOURS}"
 status_add_event "ok" "bridge starting"
 write_status_json
 

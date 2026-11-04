@@ -1,7 +1,13 @@
 configuration:
+  esp_rx_history_hours:
+    name: "Dĺžka histórie RX (hodiny)"
+    description: "Koľko hodín histórie RX uchovávať. 0 = posledných 90-100 tisíc rámcov, teda s niekoľkými doskami len pár hodín. Vyžaduje aspoň 2 GB RAM a 2 GB voľného disku; na SD karte a eMMC je odmietnuté. Orezáva sa, keď sa nazbiera o štvrtinu viac, teda až 1,25-násobok. Platí po reštarte."
   esp_rx_api_enabled:
     name: "ESP RX dôkazové API"
     description: "Sprístupňuje iba na čítanie endpoint WebUI /api/esp-rx so štruktúrovaným zhrnutím RX a obmedzenou históriou. Predvolene vypnuté; nikdy nevracia RAW telegramy, kľúče AES ani prihlasovacie údaje MQTT."
+  esp_diag_history_enabled:
+    name: "História rádiovej diagnostiky ESP (pokročilé)"
+    description: "Ukladá až 10 000 udalostí fifo_sample a pipeline_drop z MQTT vrátane surových bajtov rádia. Iba na analýzu problémov prijímača; zvyšuje využitie disku. Na stiahnutie je potrebné API dôkazov ESP RX."
   qds_walkby_enabled:
     name: "Blok walk-by Qundis (pokročilé)"
     description: >-

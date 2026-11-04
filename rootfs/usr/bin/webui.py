@@ -206,6 +206,7 @@ STATUS_HA_VERIFICATION_FILE = RUNTIME / "status_ha_verification.txt"
 STATUS_WMBUSMETERS_VERSION_FILE = RUNTIME / "status_wmbusmeters_version.txt"
 # Storage medium of the data directory, written once at bridge start.
 STATUS_STORAGE_FILE = RUNTIME / "status_storage.json"
+STATUS_ESP_RX_HISTORY_FILE = RUNTIME / "status_esp_rx_history.json"
 # Liveness heartbeat stamped by bridge.sh every few seconds, independent of
 # telegram flow. A stale heartbeat means the bridge is down or run.sh is still
 # waiting for the broker — the rest of the snapshot is then stale, not live.
@@ -819,6 +820,117 @@ def live_log_payload(source: str, limit: int = 300) -> dict:
     return {"ok": True, "source": source, "available": available, "rows": rows}
 
 
+# Explicit allow-list: additions to the internal history do not silently widen
+# this external contract.
+RX_HISTORY_FIELDS = (
+    "bridge_rx_time", "source", "schema", "boot_id", "seq",
+    "rx_task_wakeup_us", "meter_id", "mode", "rssi_dbm",
+    "frame_crc32", "frame_length",
+)
+
+
+def _rx_history_events(path: Path, since: int, until: int, counts: dict):
+    """The events of a JSONL history inside since/until; counts["invalid"] grows
+    by the lines that are not one. A missing file has none."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                except (TypeError, ValueError):
+                    counts["invalid"] += 1
+                    continue
+                if not isinstance(event, dict):
+                    counts["invalid"] += 1
+                    continue
+                event_time = safe_int(event.get("bridge_rx_time", 0))
+                if since and event_time < since:
+                    continue
+                if until and event_time >= until:
+                    continue
+                yield event
+    except OSError:
+        return
+
+
+def esp_rx_export_chunks(limit: int, since: int, until: int, generated_at: int,
+                         include_diagnostics: bool = False):
+    """The download of /api/esp-rx piece by piece: what esp_rx_api_payload returns,
+    without holding it in memory, which a history of a day would need 0.5 GB for.
+    limit 0 means everything inside since/until."""
+    def dumps(value: object) -> str:
+        return json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+
+    head = dumps({
+        "ok": True, "schema": 1, "generated_at": generated_at,
+        "filters": {"since": since, "until": until, "limit": limit},
+        "reception": read_tsv(
+            STATUS_ESP_RX_RECEPTION_FILE,
+            ["meter_id", "source", "first_seen", "last_seen", "count", "last_topic"]),
+        "sequence": read_tsv(
+            STATUS_ESP_RX_SEQUENCE_FILE,
+            ["source", "boot_id", "last_seq", "missing", "out_of_order", "last_seen"]),
+    })
+    yield (head[:-1] + ',"history":[').encode("ascii")
+
+    skip = 0
+    if limit > 0:
+        total = sum(1 for _ in _rx_history_events(ESP_RF_RX_HISTORY_FILE, since, until, {"invalid": 0}))
+        skip = max(0, total - limit)
+    counts = {"invalid": 0}
+    batch: list[str] = []
+    first = True
+    for event in _rx_history_events(ESP_RF_RX_HISTORY_FILE, since, until, counts):
+        if skip:
+            skip -= 1
+            continue
+        batch.append(("" if first else ",") + "\n" + dumps({key: event.get(key) for key in RX_HISTORY_FIELDS}))
+        first = False
+        if len(batch) >= 500:
+            yield "".join(batch).encode("ascii")
+            batch = []
+    if batch:
+        yield "".join(batch).encode("ascii")
+    yield f'\n],"history_invalid_lines":{counts["invalid"]},"diagnostics_history":['.encode("ascii")
+
+    diag_counts = {"invalid": 0}
+    if include_diagnostics:
+        first = True
+        for event in _rx_history_events(ESP_DIAG_HISTORY_FILE, since, until, diag_counts):
+            if event.get("kind") not in {"fifo_sample", "pipeline_drop"}:
+                diag_counts["invalid"] += 1
+                continue
+            yield (("" if first else ",") + "\n" + dumps(event)).encode("ascii")
+            first = False
+    yield f'\n],"diagnostics_history_invalid_lines":{diag_counts["invalid"]}}}\n'.encode("ascii")
+
+
+def rx_history_info() -> dict:
+    """For the WebUI: what the history covers now and what the start decided
+    (bridge_ledger.rx_history_policy). Reads one line, not the file."""
+    info: dict = {"size_mb": 0, "span_h": None, "requested": 0, "effective": 0, "reason": ""}
+    try:
+        policy = json.loads(STATUS_ESP_RX_HISTORY_FILE.read_text(encoding="utf-8"))
+        if isinstance(policy, dict):
+            info.update({k: policy.get(k, info[k]) for k in ("requested", "effective", "reason")})
+    except (OSError, ValueError):
+        pass
+    try:
+        # In MB, as shown: in bytes it would change the state sent with every frame.
+        info["size_mb"] = round(ESP_RF_RX_HISTORY_FILE.stat().st_size / 1e6)
+        with ESP_RF_RX_HISTORY_FILE.open("r", encoding="utf-8", errors="replace") as stream:
+            for _ in range(16):  # a damaged first line must not hide the rest
+                line = stream.readline()
+                found = re.search(r'"bridge_rx_time":\s*(\d+)', line)
+                if not line or found:
+                    break
+        if line and found:
+            info["span_h"] = round(max(0, time.time() - int(found.group(1))) / 3600, 1)
+    except OSError:
+        pass
+    return info
+
+
 def esp_rx_api_payload(limit: int = 1000, since: int = 0, until: int = 0,
                        max_limit: int = 10000, include_diagnostics: bool = False) -> dict:
     """Return bounded, secret-free structured RX evidence for the opt-in API."""
@@ -837,57 +949,18 @@ def esp_rx_api_payload(limit: int = 1000, since: int = 0, until: int = 0,
     )
     history: deque[dict] = deque(maxlen=limit)
     diagnostics_history: deque[dict] = deque(maxlen=limit)
-    invalid_lines = 0
-    diagnostics_invalid_lines = 0
-    try:
-        with ESP_RF_RX_HISTORY_FILE.open("r", encoding="utf-8", errors="replace") as stream:
-            for line in stream:
-                try:
-                    event = json.loads(line)
-                except (TypeError, ValueError):
-                    invalid_lines += 1
-                    continue
-                if not isinstance(event, dict):
-                    invalid_lines += 1
-                    continue
-                event_time = safe_int(event.get("bridge_rx_time", 0))
-                if since and event_time < since:
-                    continue
-                if until and event_time >= until:
-                    continue
-                # Explicit allow-list: additions to the internal history do not
-                # silently widen this external contract.
-                history.append({key: event.get(key) for key in (
-                    "bridge_rx_time", "source", "schema", "boot_id", "seq",
-                    "rx_task_wakeup_us", "meter_id", "mode", "rssi_dbm",
-                    "frame_crc32", "frame_length",
-                )})
-    except OSError:
-        pass
-    try:
-        if not include_diagnostics:
-            raise OSError
-        with ESP_DIAG_HISTORY_FILE.open("r", encoding="utf-8", errors="replace") as stream:
-            for line in stream:
-                try:
-                    event = json.loads(line)
-                except (TypeError, ValueError):
-                    diagnostics_invalid_lines += 1
-                    continue
-                if not isinstance(event, dict):
-                    diagnostics_invalid_lines += 1
-                    continue
-                event_time = safe_int(event.get("bridge_rx_time", 0))
-                if since and event_time < since:
-                    continue
-                if until and event_time >= until:
-                    continue
-                if event.get("kind") not in {"fifo_sample", "pipeline_drop"}:
-                    diagnostics_invalid_lines += 1
-                    continue
-                diagnostics_history.append(event)
-    except OSError:
-        pass
+    counts = {"invalid": 0}
+    for event in _rx_history_events(ESP_RF_RX_HISTORY_FILE, since, until, counts):
+        history.append({key: event.get(key) for key in RX_HISTORY_FIELDS})
+    invalid_lines = counts["invalid"]
+    diag_counts = {"invalid": 0}
+    if include_diagnostics:
+        for event in _rx_history_events(ESP_DIAG_HISTORY_FILE, since, until, diag_counts):
+            if event.get("kind") not in {"fifo_sample", "pipeline_drop"}:
+                diag_counts["invalid"] += 1
+                continue
+            diagnostics_history.append(event)
+    diagnostics_invalid_lines = diag_counts["invalid"]
     return {
         "ok": True,
         "schema": 1,
@@ -3346,7 +3419,7 @@ def state(include_ignored: bool = False) -> dict:
             normalize_meter_id(c.get("id")) or str(c.get("id") or ""),
         ),
     )
-    return {"status": status, "options": options, "config_options": config_options_spec(), "meters": meters, "pending_meters": pending_meters, "candidates": candidates, "events": events, "ignored": sorted(ignored), "search_candidates": search_candidates, "search_matches": search_matches, "search_status": search_status, "analysis": analysis, "mbus": mbus_runtime}
+    return {"status": status, "options": options, "config_options": config_options_spec(), "meters": meters, "pending_meters": pending_meters, "candidates": candidates, "events": events, "ignored": sorted(ignored), "search_candidates": search_candidates, "search_matches": search_matches, "search_status": search_status, "analysis": analysis, "mbus": mbus_runtime, "rx_history": rx_history_info() if options.get("esp_rx_api_enabled") or str(options.get("esp_rx_history_hours") or "0") != "0" else None}
 
 
 def search_config_model(data: dict) -> dict:
@@ -4302,15 +4375,23 @@ class Handler(BaseHTTPRequestHandler):
     def _send_json(self, status: int, payload: dict) -> None:
         self._send(status, json.dumps(payload, ensure_ascii=True, indent=2).encode("utf-8"), "application/json; charset=utf-8")
 
-    def _send_json_download(self, status: int, payload: dict, filename: str) -> None:
-        body = json.dumps(payload, ensure_ascii=True, indent=2).encode("utf-8")
-        self.send_response(status)
+    def _send_rx_export(self, limit: int, since: int, until: int, include_diagnostics: bool) -> None:
+        """The RX history download. No Content-Length: the size is known only at
+        the end, and the closed connection ends the response."""
+        generated_at = int(time.time())
+        stamp = time.strftime('%Y%m%d-%H%M%S', time.gmtime(generated_at))
+        self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", f'attachment; filename="esp-rx-{stamp}Z.json"')
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
         self.end_headers()
-        self.wfile.write(body)
+        self.close_connection = True
+        try:
+            for chunk in esp_rx_export_chunks(limit, since, until, generated_at, include_diagnostics):
+                self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _send_event_stream(self, lang: str) -> None:
         import time as _time
@@ -4842,23 +4923,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(404, {"ok": False, "message": "ESP RX API is disabled."})
                 return
             try:
-                limit = int((params.get('limit') or ['1000'])[0])
+                download = (params.get('download') or [''])[0].strip().lower() in ('1', 'true', 'yes')
+                # A download holds nothing in memory, so it has no upper limit:
+                # without `limit` it is everything inside the time range.
+                limit = int((params.get('limit') or ['0' if download else '1000'])[0])
                 since = int((params.get('since') or ['0'])[0])
                 until = int((params.get('until') or ['0'])[0])
+                hours = int((params.get('hours') or ['0'])[0])
             except ValueError:
-                self._send_json(400, {"ok": False, "message": "limit, since and until must be integers."})
+                self._send_json(400, {"ok": False, "message": "limit, since, until and hours must be integers."})
                 return
-            download = (params.get('download') or [''])[0].strip().lower() in ('1', 'true', 'yes')
-            payload = esp_rx_api_payload(
-                limit=limit, since=since, until=until,
-                max_limit=100000 if download else 10000,
-                include_diagnostics=bool(options.get("esp_diag_history_enabled", False)),
-            )
+            if hours > 0:
+                since = max(max(0, since), int(time.time()) - hours * 3600)
+            include_diagnostics = bool(options.get("esp_diag_history_enabled", False))
             if download:
-                stamp = time.strftime('%Y%m%d-%H%M%S', time.gmtime(payload['generated_at']))
-                self._send_json_download(200, payload, f'esp-rx-{stamp}Z.json')
-            else:
-                self._send_json(200, payload)
+                self._send_rx_export(max(0, limit), max(0, since), max(0, until), include_diagnostics)
+                return
+            self._send_json(200, esp_rx_api_payload(
+                limit=limit, since=since, until=until,
+                include_diagnostics=include_diagnostics,
+            ))
             return
         if path.endswith('/api/live-log'):
             source = (params.get('source') or ['esp'])[0].strip().lower()

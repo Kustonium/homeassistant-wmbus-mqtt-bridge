@@ -186,6 +186,7 @@ _mqtt_publisher_books() {
     --arg meter_dir "${METER_DIR}" --arg rssi_file "${STATUS_RSSI_FILE}" \
     --arg rx_rec "${STATUS_ESP_RX_RECEPTION_FILE}" --arg rx_mode "${STATUS_ESP_RX_MODE_FILE}" \
     --arg rx_hist "${ESP_RF_RX_HISTORY_FILE}" --arg rx_seq "${STATUS_ESP_RX_SEQUENCE_FILE}" \
+    --argjson rx_hist_hours "${ESP_RX_HISTORY_HOURS:-0}" \
     --arg rx_boots "${STATUS_ESP_RX_BOOTS_FILE}" --arg rx_clock "${STATUS_ESP_RX_CLOCK_FILE}" \
     --arg rx_rssi "${RUNTIME:-${BASE}}/status_esp_rx_rssi.tsv" \
     --arg rx_band_enc "${RUNTIME:-${BASE}}/status_esp_band_security.tsv" \
@@ -228,6 +229,7 @@ _mqtt_publisher_books() {
        raw_feed: {filter: $raw_topic, no_retained: $no_ret},
        rx: {filter: "wmbus/+/rx", no_retained: $no_ret,
             reception_file: $rx_rec, mode_file: $rx_mode, history_file: $rx_hist,
+            history_hours: $rx_hist_hours,
             sequence_file: $rx_seq, boots_file: $rx_boots, clock_file: $rx_clock,
             rssi_file: $rx_rssi, band_enc_file: $rx_band_enc}}
       + (if $dev_pos >= 0 then

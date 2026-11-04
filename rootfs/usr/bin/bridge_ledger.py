@@ -158,6 +158,155 @@ def trim_locked(path: str, max_lines: int, keep_lines: int) -> None:
         _replace_with(path, lines[-keep_lines:] if keep_lines > 0 else [])
 
 
+# ── RX history kept by time ─────────────────────────────────────────────────
+# esp_rx_history_hours: the same hours whatever the number of boards, where a
+# limit in lines shrinks with every board added. The file is never read whole:
+# the first line says whether anything is due, and the cut is found by bisection
+# and copied in blocks. The copy runs in a thread of its own and without the lock:
+# the same process feeds the decoder, and it must not wait for a disk.
+
+# 2 GB as the machine is sold: MemTotal is less than that by what the kernel keeps.
+RX_HISTORY_MIN_RAM = int(1.8 * (1 << 30))
+RX_HISTORY_MIN_DISK = 2 << 30
+RX_HISTORY_MAX_BYTES = 1 << 30
+# What stays however little disk is left: about what the limit in lines keeps.
+RX_HISTORY_MIN_BYTES = 32 << 20
+# What the trim leaves free on the disk, whatever the file's limit.
+RX_HISTORY_DISK_RESERVE = 1 << 30
+_RX_TIME = re.compile(rb'"bridge_rx_time":\s*(\d+)')
+
+
+def _mem_total(meminfo: str = "/proc/meminfo") -> int:
+    """MemTotal in bytes; 0 when it cannot be read."""
+    try:
+        with open(meminfo, "rb") as fh:
+            found = re.search(rb"^MemTotal:\s*(\d+)\s*kB", fh.read(), re.M)
+    except OSError:
+        return 0
+    return int(found.group(1)) * 1024 if found else 0
+
+
+def rx_history_policy(hours: int, path: str, history_file: str = "", kind: str = "",
+                      meminfo: str = "/proc/meminfo") -> Dict[str, Any]:
+    """The hours this machine may keep: `requested`, `effective` (0 = the limit
+    in lines) and `reason` when refused: sd, emmc, ram or disk. The history already
+    on the disk counts as free space, or a full history would refuse itself."""
+    out: Dict[str, Any] = {"requested": max(0, hours), "effective": 0, "reason": ""}
+    if hours <= 0:
+        return out
+    memory = _mem_total(meminfo)
+    try:
+        stat = os.statvfs(path)
+        disk = stat.f_bavail * stat.f_frsize
+        if history_file and os.path.isfile(history_file):
+            disk += os.path.getsize(history_file)
+    except OSError:
+        disk = 0
+    if kind in ("sd", "emmc"):
+        out["reason"] = kind
+    elif memory and memory < RX_HISTORY_MIN_RAM:
+        out["reason"] = "ram"
+    elif disk < RX_HISTORY_MIN_DISK:
+        out["reason"] = "disk"
+    else:
+        out["effective"] = hours
+    return out
+
+
+def _line_time(line: bytes) -> Optional[int]:
+    found = _RX_TIME.search(line)
+    return int(found.group(1)) if found else None
+
+
+def _first_time(fh: Any, lines: int = 16) -> Optional[int]:
+    """The time of the first lines that have one: a damaged first line must not
+    stop the trim."""
+    for _ in range(lines):
+        line = fh.readline()
+        if not line:
+            return None
+        stamp = _line_time(line)
+        if stamp is not None:
+            return stamp
+    return None
+
+
+def _offset_of_time(fh: Any, size: int, since: float) -> int:
+    """Where the first line from `since` on starts; the file is in time order."""
+    low, high = 0, size
+    while high - low > 65536:
+        middle = (low + high) // 2
+        fh.seek(middle)
+        fh.readline()  # the rest of the line the seek landed in
+        stamp = _line_time(fh.readline())
+        if stamp is not None and stamp < since:
+            low = middle
+        else:
+            high = middle
+    fh.seek(low)
+    if low:
+        fh.readline()
+    while True:
+        start = fh.tell()
+        line = fh.readline()
+        if not line:
+            return size
+        stamp = _line_time(line)
+        if stamp is not None and stamp >= since:
+            return start
+
+
+def trim_history_by_time(path: str, hours: int, max_bytes: int = RX_HISTORY_MAX_BYTES,
+                         reserve: int = RX_HISTORY_DISK_RESERVE,
+                         min_bytes: int = RX_HISTORY_MIN_BYTES) -> None:
+    """Keep `hours` of the JSONL history, trimming once a quarter more has
+    gathered (each trim rewrites the file, a smaller margin rewrites it oftener).
+    Above max_bytes, or with the disk running out, the newest part stays, at least
+    min_bytes of it. The lock is held only to look and to finish: what was appended
+    during the copy is added under it, right before the file is replaced."""
+    if not os.path.isfile(path):
+        return
+    tmp = ""
+    try:
+        with open(path, "rb") as fh:
+            with locked(path):
+                size = os.fstat(fh.fileno()).st_size
+                stat = os.statvfs(os.path.dirname(path) or ".")
+                allowed = max(min_bytes, min(max_bytes, size + stat.f_bavail * stat.f_frsize - reserve))
+                oldest = _first_time(fh)
+                keep_s = hours * 3600
+                late = oldest is not None and oldest < now() - keep_s * 1.25
+                if not late and size <= allowed:
+                    return
+                start = _offset_of_time(fh, size, now() - keep_s) if late else 0
+                if size - start > allowed:
+                    fh.seek(max(start, size - allowed * 4 // 5))
+                    fh.readline()
+                    start = fh.tell()
+            directory, base = os.path.split(path)
+            fd, tmp = tempfile.mkstemp(prefix=base + ".tmp.", dir=directory or ".")
+            with os.fdopen(fd, "wb") as out:
+                fh.seek(start)
+                shutil.copyfileobj(fh, out, 1 << 20)
+                with locked(path):
+                    # Replaced meanwhile (the trim of a start): that file stays.
+                    if os.stat(path).st_ino != os.fstat(fh.fileno()).st_ino:
+                        return
+                    shutil.copyfileobj(fh, out, 1 << 20)
+                    out.flush()
+                    os.replace(tmp, path)
+                    tmp = ""
+    except OSError as exc:
+        # A full disk must not stop the book; the next trim tries again.
+        print(f"rx history trim failed: {exc}", file=sys.stderr)
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
 # ── deferred writes ─────────────────────────────────────────────────────────
 # Every message changes a row of a table that holds a row per meter and board,
 # and writing it means writing the whole table again (to a temporary file that
@@ -871,8 +1020,11 @@ class RxBook:
     RSSI_WRITE_EVERY_S = 30
 
     def __init__(self, reception: str, mode: str, history: str, sequence: str,
-                 boots: str, clock: str, rssi_file: str = "", band_enc_file: str = "") -> None:
+                 boots: str, clock: str, rssi_file: str = "", band_enc_file: str = "",
+                 history_hours: int = 0) -> None:
         self.reception, self.mode, self.history = reception, mode, history
+        self.history_hours = history_hours
+        self.trim_thread: Optional[threading.Thread] = None
         self.sequence, self.boots, self.clock = sequence, boots, clock
         self.rssi_file = rssi_file
         # (meter, board) -> [frames, average dBm or None, last ts,
@@ -954,7 +1106,14 @@ class RxBook:
         upsert_rx_clock(self.clock, device, rcv, ts, d)
         self.since_trim += 1
         if self.since_trim >= self.TRIM_EVERY:
-            trim_locked(self.history, 100000, 90000)
+            if self.history_hours > 0:
+                if self.trim_thread is None or not self.trim_thread.is_alive():
+                    self.trim_thread = threading.Thread(
+                        target=trim_history_by_time, args=(self.history, self.history_hours),
+                        name="rx-history-trim", daemon=True)
+                    self.trim_thread.start()
+            else:
+                trim_locked(self.history, 100000, 90000)
             self.since_trim = 0
 
 
@@ -3566,6 +3725,14 @@ def _parser() -> argparse.ArgumentParser:
     rx = modes.add_parser("rx", help="wmbus/<board>/rx messages")
     for name in ("reception", "mode", "history", "sequence", "boots", "clock"):
         rx.add_argument(f"--{name}-file", required=True)
+    rx.add_argument("--history-hours", type=int, default=0)
+    policy = modes.add_parser("rx-history-policy",
+                              help="print the hours of RX history this machine may keep")
+    policy.add_argument("--hours", type=int, default=0)
+    policy.add_argument("--path", required=True)
+    policy.add_argument("--history-file", default="")
+    policy.add_argument("--storage-file", default="", help="the JSON of the storage mode")
+    policy.add_argument("--json-file", default="", help="also write the result as JSON (for the WebUI)")
     rt = modes.add_parser("runtime", help="print the runtime directory for the status files")
     rt.add_argument("--base", required=True)
     for name, text in (("runtime-restore", "fill the runtime directory at start"),
@@ -3602,7 +3769,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                         args.reception_file, args.history_file))
     elif args.mode == "rx":
         run(RxBook(args.reception_file, args.mode_file, args.history_file,
-                   args.sequence_file, args.boots_file, args.clock_file))
+                   args.sequence_file, args.boots_file, args.clock_file,
+                   history_hours=args.history_hours))
     elif args.mode == "runtime":
         print(runtime_dir(args.base))
     elif args.mode == "runtime-restore":
@@ -3614,6 +3782,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.json_file:
             _write_replace(args.json_file, _b(json.dumps(info, sort_keys=True)) + b"\n")
         print(storage_line(info))
+    elif args.mode == "rx-history-policy":
+        kind = ""
+        try:
+            with open(args.storage_file, encoding="utf-8") as fh:
+                kind = str(json.load(fh).get("kind") or "")
+        except (OSError, ValueError, AttributeError):
+            pass
+        result = rx_history_policy(args.hours, args.path, args.history_file, kind)
+        if args.json_file:
+            _write_replace(args.json_file, _b(json.dumps(result, sort_keys=True)) + b"\n")
+        print(result["effective"])
     return 0
 
 

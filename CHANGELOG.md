@@ -1,3 +1,37 @@
+## 1.6.11
+
+### Added
+- **RX history can be kept in hours (`esp_rx_history_hours`: 0, 12, 24, 48 or 72,
+  default 0).** At 0 nothing changes: the last 90-100 thousand frames, which with
+  several boards is only hours. The other values keep that many hours whatever the
+  number of boards, up to a quarter more before each trim; at 14,000 frames an hour,
+  48 hours is about 150-190 MB. The file is limited to 1 GB and 1 GB of disk stays
+  free, though at least 32 MB of the newest frames stay. A longer history is refused
+  at start on an SD card or eMMC, under 2 GB of RAM or under 2 GB of free disk; the
+  add-on then keeps the default and says why in the settings. Turning it on removes
+  what is older than asked, at the first trim.
+- **With `esp_rx_api_enabled`, the RX history can be downloaded for the last 2-48
+  hours or as a whole**, from buttons on RECEIVED / SEARCH that show how far the
+  history reaches. The file is sent piece by piece, so it no longer takes memory: a
+  history of 350,000 frames took 457 MB. The browser cannot show the progress, and a
+  download cut off by an add-on restart can look finished, with the file truncated.
+- The RX options have their own block in the settings.
+
+### Changed
+- `GET /api/esp-rx?download=1` without `limit` returns everything inside the time
+  range (it was 1000 frames), a `limit` above 100,000 is no longer cut down,
+  `limit=0` means everything, and the JSON is compact. `hours=N` is new. Without
+  `download` the API works as before.
+- The RX history (`esp_rf_rx_history.jsonl`) is left out of Home Assistant backups:
+  it can reach 1 GB and is evidence of reception, rebuilt as frames arrive. A restored
+  backup starts it empty.
+
+### Fixed
+- RECEIVED / SEARCH says "No candidates for this filter" when the media chips hide
+  every candidate, instead of an empty space.
+- `qds_walkby_enabled` and `esp_diag_history_enabled` have an explanation in the
+  settings; they showed only their names.
+
 ## 1.6.10
 
 ### Added

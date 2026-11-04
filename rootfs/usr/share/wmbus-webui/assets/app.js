@@ -2737,6 +2737,23 @@
     window.__discoverFilterByValue && window.__discoverFilterByValue();
   };
 
+  // The RX history download: the last hours, shorter than what the history
+  // covers, and all of it. The size is known only after the download.
+  function rxExportActions(info) {
+    const span = Number(info?.span_h);
+    const hasSpan = info?.span_h != null && Number.isFinite(span);
+    const hours = hasSpan ? [2, 4, 6, 8, 12, 24, 48].filter((h) => h < span) : [];
+    const mb = Number(info?.size_mb || 0);
+    const allLabel = hasSpan
+      ? `${t("rx_export_all", "All")} (${span.toFixed(1)} h, ${mb} MB)`
+      : t("rx_export_all", "All");
+    return `<div class="page-actions">
+      <span>${escapeHtml(t("download_rx_history", "Download RX history"))}:</span>
+      ${hours.map((h) => `<a class="btn" href="api/esp-rx?download=1&amp;hours=${h}" download>${h} h</a>`).join("")}
+      <a class="btn" href="api/esp-rx?download=1" download>${escapeHtml(allLabel)}</a>
+    </div>`;
+  }
+
   function discoverPage() {
     const data = state.data || {};
     const allCandidates = asArray(data.candidates);
@@ -2751,7 +2768,7 @@
     // The RX history download sits above everything: it is what one comes to
     // this page for when exporting, and the candidate list below runs long.
     return `
-      ${rxDownloadEnabled ? `<div class="page-actions"><a class="btn" href="api/esp-rx?limit=100000&amp;download=1" download>${escapeHtml(t("download_rx_history", "Download RX history"))}</a></div>` : ""}
+      ${rxDownloadEnabled ? rxExportActions(data.rx_history) : ""}
       ${discoverValueFilterBar(allMeters.length + filteredCandidates.length)}
       ${discoverConfiguredPanel(allMeters)}
       ${pending.length ? pendingMetersSection(pending, data.analysis || {}) : ""}
@@ -2763,7 +2780,9 @@
           </div>
         </div>
         ${filterChips()}
-        ${candidateTable(filteredCandidates, true)}
+        ${allCandidates.length && !filteredCandidates.length
+          ? `<div class="empty">${escapeHtml(t("webui_no_candidates_filter", "No candidates for this filter."))}</div>`
+          : candidateTable(filteredCandidates, true)}
       </section>
       <section class="section">
         <div class="section-head">
@@ -3488,7 +3507,19 @@
     // mixing them into the main list invited the wrong reading — that this is
     // where you configure a radio dongle. The note says what it is not.
     const mbusOpts = opts.filter((s) => s.key.startsWith("mbus_"));
-    const mainOpts = opts.filter((s) => !s.key.startsWith("mbus_"));
+    // RX history and its export: for investigating reception, off by default.
+    const rxKeys = ["esp_rx_api_enabled", "esp_rx_history_hours", "esp_diag_history_enabled"];
+    const rxOpts = opts.filter((s) => rxKeys.includes(s.key));
+    const mainOpts = opts.filter((s) => !s.key.startsWith("mbus_") && !rxKeys.includes(s.key));
+    const rxReason = ((state.data || {}).rx_history || {}).reason || "";
+    const rxBlock = rxOpts.length
+      ? `<div style="margin-top:18px;border:1px solid #2b4256;border-radius:8px;padding:12px 14px;background:#0e1a22;">
+           <h3 style="margin:0 0 4px;font-size:14px;color:#cfe3ee;">📡 ${escapeHtml(t("cfg_rxhist_section", "RX history and export"))}</h3>
+           <p style="font-size:11px;color:#9eafba;margin:0 0 10px;">${escapeHtml(t("cfg_rxhist_section_note", "For investigating reception. Off by default; decoding does not depend on it."))}</p>
+           ${rxReason ? `<p style="font-size:11px;color:#f3c84b;margin:0 0 10px;">⚠️ ${escapeHtml(t("cfg_rxhist_refused_" + rxReason, "A longer history is refused on this machine."))}</p>` : ""}
+           ${rxOpts.map(field).join("")}
+         </div>`
+      : "";
     const mbusBlock = mbusOpts.length
       ? `<div style="margin-top:18px;border:1px solid #2b4256;border-radius:8px;padding:12px 14px;background:#0e1a22;">
            <h3 style="margin:0 0 4px;font-size:14px;color:#cfe3ee;">🔌 ${escapeHtml(t("cfg_mbus_section", "M-Bus (wired) — separate engine"))}</h3>
@@ -3502,6 +3533,7 @@
         <div class="section-head"><h2>⚙️ ${escapeHtml(t("cfg_title", "Configuration"))}</h2></div>
         <p style="font-size:12px;color:#9eafba;margin:0 0 10px;">${escapeHtml(t("cfg_intro", "Edit the add-on options here — the same options as the Home Assistant Configuration tab, with an explanation of each. Core options take effect after an add-on restart."))}</p>
         ${mainOpts.map(field).join("")}
+        ${rxBlock}
         ${mbusBlock}
         <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
           <button class="btn primary" data-action="save-config">${escapeHtml(t("cfg_save", "Save options"))}</button>

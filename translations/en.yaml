@@ -1,7 +1,13 @@
 configuration:
+  esp_rx_history_hours:
+    name: "RX history length (hours)"
+    description: "How many hours of RX history to keep. 0 = the last 90-100 thousand frames, which with several boards is only hours. Needs at least 2 GB of RAM and 2 GB of free disk, and is refused on an SD card or eMMC. Trimmed once a quarter more has gathered, so up to 1.25 times this. Applied after a restart."
   esp_rx_api_enabled:
     name: "ESP RX evidence API"
     description: "Expose the read-only WebUI endpoint /api/esp-rx for structured RX summaries and bounded history. Off by default; never returns RAW telegrams, AES keys or MQTT credentials."
+  esp_diag_history_enabled:
+    name: "ESP radio diagnostics history (advanced)"
+    description: "Stores up to 10,000 fifo_sample and pipeline_drop events from MQTT, including raw radio bytes. Only for analysing receiver problems; uses more disk. Needs the ESP RX evidence API to download them."
   qds_walkby_enabled:
     name: "Qundis walk-by block (advanced)"
     description: >-

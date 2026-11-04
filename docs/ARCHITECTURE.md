@@ -1036,11 +1036,25 @@ allow-list and never returns RAW telegrams, AES keys, or MQTT credentials;
 when disabled it returns HTTP 404. Collection and the normal GUI are unaffected
 by this switch.
 
-The Received / Search page shows a **Download RX history** button while that
-gate is enabled. It downloads the same allow-listed payload with the complete
-retained buffer (bounded at 100,000 events) and an UTC-stamped filename. The
-interactive API remains capped at 10,000 events. Downloading is read-only: it
+The Received / Search page shows **Download RX history** buttons while that
+gate is enabled: the last 2-48 hours (`hours`) as far as the history reaches, and
+all of it, with an UTC-stamped filename. The download is the same allow-listed
+payload written piece by piece (`esp_rx_export_chunks`, no Content-Length), so
+memory does not grow with it; a day of history built in memory took about 0.5 GB.
+The interactive API remains capped at 10,000 events. Downloading is read-only: it
 does not truncate the history, reset counters, or restart either bridge process.
+
+`esp_rx_history_hours` (default 0) replaces the limit in lines of the RF history
+with a limit in time, which does not shrink as boards are added. The decision is
+made once at start (`bridge_ledger.py rx-history-policy`, written to
+`status_esp_rx_history.json` for the WebUI): refused on an SD card or eMMC, under
+2 GB of RAM or under 2 GB of free disk, counting the history itself as free. The
+book trims when a quarter more than asked has gathered, reading the first line to
+find out and bisecting for the cut, so the file is never read whole; it also holds
+the file to 1 GB and leaves 1 GB of disk free, keeping at least 32 MB. The copy
+runs in a thread without the lock, because the same process feeds the decoder; the
+lock is taken to add what arrived meanwhile and replace the file. The history is
+left out of backups (`backup_exclude`).
 
 The RSSI topic is the one case where a measurement has to travel out of band:
 the RAW topic carries bare hexadecimal, so the decoder never sees a signal
