@@ -1,3 +1,11 @@
+## 1.6.12
+
+### Fixed
+- Text in the logs can be selected and copied. In the wmbusmeters log, releasing the
+  mouse after selecting collapsed the row; the opened JSON no longer reacts to clicks,
+  so collapse a row from its heading. Live updates now wait while log text is selected,
+  and a badge says so.
+
 ## 1.6.11
 
 ### Added
