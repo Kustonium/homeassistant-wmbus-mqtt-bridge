@@ -20,6 +20,8 @@ import os
 import re
 import select
 import subprocess
+import tempfile
+import threading
 import time
 import urllib.request
 from datetime import datetime, timezone, timedelta
@@ -644,12 +646,16 @@ def _decode_with_driver(raw: str, driver: str, mid: str, key: str) -> dict | Non
         return None
     mid_lc = mid.lower()
     key_arg = key if key else "NOKEY"
+    head = [WMBUSMETERS_BIN, "--silent", "--format=json"]
+    if driver.startswith("external_"):
+        # Only an accepted copy: an unchecked file could end this process.
+        if not (EXT_DRIVERS_DIR / f"{driver}.xmq").is_file():
+            return None
+        head.append(f"--driversdir={EXT_DRIVERS_DIR}")
     try:
         proc = subprocess.run(
             [
-                WMBUSMETERS_BIN,
-                "--silent",
-                "--format=json",
+                *head,
                 "stdin:hex",
                 f"compare_{mid_lc}",
                 driver,
@@ -698,6 +704,274 @@ def _analyze_auto_driver(raw: str, key: str) -> str:
     if not driver or driver.lower() == "unknown":
         return ""
     return driver
+
+
+# ---------------------------------------------------------------------------
+# External drivers (.xmq): the "Drivers" tab, shown only with
+# custom_drivers_enabled. A file is uploaded from the browser, never copied by
+# hand: it is checked by custom_drivers.py (each file in a wmbusmeters process
+# of its own), stored in the NDA directory (left out of backups, the default)
+# or the plain one, and the accepted files are copied for the external
+# instance. The pipeline reload that follows starts it with them.
+# ---------------------------------------------------------------------------
+import custom_drivers as _cd  # noqa: E402
+
+CUSTOM_DRIVERS_DIR = Path(os.environ.get("CUSTOM_DRIVERS_DIR", str(BASE / "custom_drivers")))
+CUSTOM_DRIVERS_NDA_DIR = Path(os.environ.get("CUSTOM_DRIVERS_NDA_DIR", str(BASE / "custom_drivers_nda")))
+_cd.DRIVERS_DIR = str(CUSTOM_DRIVERS_DIR)
+_cd.DRIVERS_NDA_DIR = str(CUSTOM_DRIVERS_NDA_DIR)
+EXT_DRIVERS_DIR = BASE / "external" / "etc" / "wmbusmeters.drivers.d"
+STATUS_CUSTOM_DRIVERS_FILE = RUNTIME / "status_custom_drivers.json"
+STATUS_EXTERNAL_INSTANCE_FILE = RUNTIME / "status_external_instance.json"
+_DRIVERS_LOCK = threading.Lock()
+
+
+def custom_drivers_enabled() -> bool:
+    opts = read_options()
+    return bool(isinstance(opts, dict) and opts.get("custom_drivers_enabled"))
+
+
+def _meter_driver(m: dict) -> str:
+    driver = str(m.get("type") or "auto")
+    if driver == "other":
+        driver = str(m.get("type_other") or "")
+    return driver.strip()
+
+
+def _external_meter_uses() -> dict:
+    """{driver name: ["NAME (ID)", ...]} for the meters set to an external_* driver."""
+    uses: dict = {}
+    opts = read_options()
+    for m in (opts.get("meters") or []) if isinstance(opts, dict) else []:
+        if not isinstance(m, dict):
+            continue
+        driver = _meter_driver(m)
+        if driver.startswith(_cd.PREFIX):
+            uses.setdefault(driver, []).append(f"{m.get('id') or 'meter'} ({m.get('meter_id') or '?'})")
+    return uses
+
+
+def drivers_payload() -> dict:
+    status = read_json(STATUS_CUSTOM_DRIVERS_FILE)
+    verdicts = {}
+    for v in (status.get("drivers") or []) if isinstance(status, dict) else []:
+        if isinstance(v, dict):
+            verdicts[(str(v.get("file") or ""), bool(v.get("nda")))] = v
+    uses = _external_meter_uses()
+    files = []
+    for path, nda in _cd.stored_files():
+        fname = os.path.basename(path)
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        v = verdicts.get((fname, nda))
+        name = fname[:-4]
+        files.append({
+            "name": name,
+            "nda": nda,
+            "size": st.st_size,
+            "mtime": int(st.st_mtime),
+            # None: stored after the last check (a restart or an upload checks it).
+            "ok": (bool(v.get("ok")) if v else None),
+            "reason": (str(v.get("reason") or "") if v else ""),
+            "replaces": (list(v.get("replaces") or []) if v else []),
+            "conflicts": (list(v.get("conflicts") or []) if v else []),
+            "meters": uses.get(name, []),
+        })
+    known = {f["name"] for f in files}
+    return {
+        "ok": True,
+        "enabled": custom_drivers_enabled(),
+        "checked_at": (status.get("checked_at") if isinstance(status, dict) else None),
+        "files": files,
+        "missing": {d: m for d, m in uses.items() if d not in known},
+        "instance": read_json(STATUS_EXTERNAL_INSTANCE_FILE),
+        "max_bytes": _cd.MAX_BYTES,
+        "prefix": _cd.PREFIX,
+    }
+
+
+def accepted_external_drivers() -> list:
+    if not custom_drivers_enabled():
+        return []
+    status = read_json(STATUS_CUSTOM_DRIVERS_FILE)
+    return sorted({str(v.get("name")) for v in (status.get("drivers") or [])
+                   if isinstance(v, dict) and v.get("ok") and v.get("name")})
+
+
+def _store_atomic(directory: Path, name: str, data: bytes) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=str(directory))
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, directory / f"{name}.xmq")
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _reinstall_drivers() -> dict:
+    return _cd.install(str(EXT_DRIVERS_DIR), str(STATUS_CUSTOM_DRIVERS_FILE), True)
+
+
+def drivers_upload(content: str, nda: bool) -> tuple[bool, dict]:
+    """Check an uploaded driver and store it. Never touches a running instance:
+    the reload the WebUI asks for afterwards starts it with the new set."""
+    if not custom_drivers_enabled():
+        return False, {"ok": False, "reason": "disabled"}
+    data = (content or "").encode("utf-8")
+    name, reason = _cd.static_check(data)
+    if reason:
+        return False, {"ok": False, "reason": reason, "name": name}
+    with _DRIVERS_LOCK, tempfile.TemporaryDirectory(prefix="xdrv-up-") as tmp:
+        candidate = os.path.join(tmp, f"{name}.xmq")
+        with open(candidate, "wb") as fh:
+            fh.write(data)
+        # Checked together with the files already stored, as the next start
+        # will: one external file may not remove another.
+        others = [p for p, _ in _cd.stored_files() if os.path.basename(p) != f"{name}.xmq"]
+        verdict = _cd.check_files(others + [candidate])[-1]
+        if not verdict.get("ok"):
+            return False, {"ok": False, **verdict}
+        target = CUSTOM_DRIVERS_NDA_DIR if nda else CUSTOM_DRIVERS_DIR
+        for d in (CUSTOM_DRIVERS_DIR, CUSTOM_DRIVERS_NDA_DIR):
+            if d != target:
+                try:
+                    (d / f"{name}.xmq").unlink()
+                except OSError:
+                    pass
+        _store_atomic(target, name, data)
+        _reinstall_drivers()
+    webui_add_event("ok", f"External driver {name} uploaded ({'NDA' if nda else 'not NDA'}).")
+    return True, {"ok": True, **verdict, "nda": nda}
+
+
+def drivers_delete(name: str) -> tuple[bool, dict]:
+    name = (name or "").strip()
+    if not _cd._VALID_NAME.match(name):
+        return False, {"ok": False, "reason": "bad_name"}
+    removed = False
+    with _DRIVERS_LOCK:
+        for d in (CUSTOM_DRIVERS_DIR, CUSTOM_DRIVERS_NDA_DIR):
+            try:
+                (d / f"{name}.xmq").unlink()
+                removed = True
+            except OSError:
+                pass
+        if removed:
+            _reinstall_drivers()
+    if not removed:
+        return False, {"ok": False, "reason": "not_found"}
+    webui_add_event("ok", f"External driver {name} removed.")
+    return True, {"ok": True, "name": name}
+
+
+# Which meters on air an uploaded driver is for: the mvt lines of its detect
+# block against the header of each meter's latest frame, then (decode=True) a
+# trial decode of that frame with the driver, the way Compare does it - a
+# one-shot process with the checked copy, never a running instance.
+_MVT_RE = re.compile(r"^\s*mvt\s*=\s*([A-Za-z@]{3})\s*,\s*([0-9A-Fa-f]{1,2})\s*,\s*([0-9A-Fa-f]{1,2})\s*$", re.M)
+MATCH_DECODE_LIMIT = 12  # trial decodes per driver and request
+
+
+def driver_mvts(path: Path) -> set:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set()
+    return {(m.upper(), int(v, 16), int(t, 16)) for m, v, t in _MVT_RE.findall(text)}
+
+
+def frame_header(raw: str) -> tuple | None:
+    """(id, mfct, version, type) from a wM-Bus frame: L C M M A A A A V T."""
+    raw = re.sub(r"\s+", "", raw or "")
+    if not re.fullmatch(r"(?:[0-9A-Fa-f]{2}){10,}", raw):
+        return None
+    b = bytes.fromhex(raw[:20])
+    m = b[2] | (b[3] << 8)
+    mfct = "".join(chr(((m >> s) & 0x1F) + 64) for s in (10, 5, 0))
+    return b[4:8][::-1].hex().upper(), mfct, b[8], b[9]
+
+
+def _latest_frames() -> dict:
+    """{id: (raw, ts)}: the latest stored frame of every meter heard - the
+    candidates' own rows, then the RAW ring for configured meters."""
+    latest: dict = {}
+
+    def keep(raw: str, ts: str) -> None:
+        h = frame_header(raw)
+        if h and (h[0] not in latest or ts >= latest[h[0]][1]):
+            latest[h[0]] = (raw.strip(), ts)
+
+    for r in read_tsv(CANDIDATE_RAW_TSV, ["id", "ts", "raw_len", "raw"]):
+        keep(str(r.get("raw") or ""), str(r.get("ts") or ""))
+    for r in read_tsv(RECENT_RAW_TSV, ["ts", "raw_len", "raw"])[-200:]:
+        keep(str(r.get("raw") or ""), str(r.get("ts") or ""))
+    return latest
+
+
+def _preview_values(fields: dict, n: int = 3) -> dict:
+    """A few numeric values of a decode, the meter reading first: total_*,
+    then current_*, then the rest in the driver's order."""
+    out = {}
+    rank = {k: (0 if k.startswith("total_") else 1 if k.startswith("current_") else 2, i)
+            for i, k in enumerate(fields)}
+    for k, v in sorted(fields.items(), key=lambda kv: rank[kv[0]]):
+        if k in ("hex", "rssi_dbm") or v is None or isinstance(v, (dict, list)):
+            continue
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            out[k] = v
+        if len(out) >= n:
+            break
+    return out
+
+
+def external_driver_matches(decode: bool = True) -> dict:
+    if not custom_drivers_enabled():
+        return {"ok": False, "reason": "disabled"}
+    configured = {}
+    opts = read_options()
+    for m in (opts.get("meters") or []) if isinstance(opts, dict) else []:
+        if isinstance(m, dict):
+            mid = normalize_meter_id(m.get("meter_id"))
+            if mid:
+                configured[mid] = {"name": str(m.get("id") or ""), "driver": _meter_driver(m) or "auto",
+                                   "key": str(m.get("key") or "").strip()}
+    frames = _latest_frames()
+    headers = {mid: frame_header(raw) for mid, (raw, _) in frames.items()}
+    drivers = []
+    for name in accepted_external_drivers():
+        mvts = driver_mvts(EXT_DRIVERS_DIR / f"{name}.xmq")
+        meters = []
+        # The user's own meters first (they are what a switch is for), then
+        # the newest frames: the trial decodes go to those.
+        order = sorted(frames.items(), key=lambda kv: kv[1][1], reverse=True)
+        order.sort(key=lambda kv: kv[0] not in configured)
+        for mid, (raw, ts) in order:
+            h = headers[mid]
+            if not h or (h[1], h[2], h[3]) not in mvts:
+                continue
+            cfg = configured.get(mid)
+            entry = {"id": mid, "mvt": f"{h[1]},{h[2]:02x},{h[3]:02x}", "last_seen": ts,
+                     "configured": ({"name": cfg["name"], "driver": cfg["driver"]} if cfg else None),
+                     "state": "not_checked", "values": {}}
+            if decode and len(meters) < MATCH_DECODE_LIMIT:
+                key = cfg["key"] if cfg and re.fullmatch(r"[0-9A-Fa-f]{32}", cfg["key"]) else ""
+                fields = _decode_with_driver(raw, name, mid, key)
+                if fields is None:
+                    entry["state"] = "failed"
+                else:
+                    entry["values"] = _preview_values(fields)
+                    entry["state"] = "decoded" if entry["values"] else "no_values"
+            meters.append(entry)
+        drivers.append({"name": name, "mvts": sorted(f"{m},{v:02x},{t:02x}" for m, v, t in mvts),
+                        "meters": meters})
+    return {"ok": True, "drivers": drivers, "decoded": decode}
 
 
 def compare_meter_drivers(meter_id: str, requested_driver: str, key_override: str | None = None) -> tuple[bool, dict]:
@@ -4342,6 +4616,10 @@ def frontend_payload(lang: str = DEFAULT_LANG, include_i18n: bool = True) -> dic
         # /api/mbus payload, which is loaded lazily when the tab is opened —
         # the tab the user cannot reach while it is hidden.
         "mbus_tab_visible": bool((read_options() or {}).get("mbus_tab_visible")),
+        # The Drivers tab, the same way: shown only with the option on.
+        "custom_drivers_enabled": custom_drivers_enabled(),
+        # Accepted external drivers, offered in the driver picker.
+        "external_drivers": accepted_external_drivers(),
         **data,
     }
     if include_i18n:
@@ -4498,6 +4776,7 @@ class Handler(BaseHTTPRequestHandler):
             '/api/mbus/meter-fields',
             '/api/mbus/console', '/api/mbus/scan', '/api/mbus/poll-one',
             '/api/mbus/detect-driver',
+            '/api/drivers', '/api/drivers/upload', '/api/drivers/delete', '/api/drivers/matches',
         )
         if any(path.endswith(suffix) for suffix in api_suffixes):
             return path
@@ -4514,6 +4793,17 @@ class Handler(BaseHTTPRequestHandler):
         params = self._read_params()
         lang = detect_lang(self.headers, params)
         self._wmbus_lang = lang
+        if path.endswith('/api/drivers/upload'):
+            ok, payload = drivers_upload(
+                (params.get('content') or [''])[0],
+                (params.get('nda') or ['true'])[0].strip().lower() not in ('false', '0', 'no', 'off'),
+            )
+            self._send_json(200 if ok else 400, payload)
+            return
+        if path.endswith('/api/drivers/delete'):
+            ok, payload = drivers_delete((params.get('name') or [''])[0])
+            self._send_json(200 if ok else 400, payload)
+            return
         if path.endswith('/api/mbus/device'):
             ok, msg = mbus_save_device(
                 (params.get('device') or [''])[0].strip(),
@@ -4959,6 +5249,17 @@ class Handler(BaseHTTPRequestHandler):
             meter_id = (params.get('meter_id') or [''])[0].strip()
             ok, payload = candidate_issue_report(meter_id)
             self._send_json(200 if ok else 404, payload)
+            return
+        if path.endswith('/api/drivers/matches'):
+            decode = (params.get('decode') or ['1'])[0].strip().lower() not in ('0', 'false', 'no')
+            payload = external_driver_matches(decode)
+            self._send_json(200 if payload.get("ok") else 404, payload)
+            return
+        if path.endswith('/api/drivers'):
+            if not custom_drivers_enabled():
+                self._send_json(404, {"ok": False, "reason": "disabled"})
+                return
+            self._send_json(200, drivers_payload())
             return
         if path.endswith('/api/mbus/console'):
             try:

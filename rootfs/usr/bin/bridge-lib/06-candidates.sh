@@ -229,7 +229,7 @@ ensure_candidate_autodecode() {
   # Skip preview for officially configured meters — they decode via the primary pipeline.
   # Checked via METER_DIR on disk so the guard works in LISTEN subshell forks where
   # in-memory variables from the parent process are stale after a soft pipeline reload.
-  if grep -ql "^id=${id,,}$" "${METER_DIR}"/meter-* 2>/dev/null; then
+  if grep -ql "^id=${id,,}$" "${METER_DIR}"/meter-* ${EXTERNAL_METER_DIR:+"${EXTERNAL_METER_DIR}"/meter-*} 2>/dev/null; then
     if [[ -f "${file}" ]]; then
       rm -f "${file}" 2>/dev/null || true
       rm -f "${RUNTIME:-${BASE}}/.preview_attempts/${id}" 2>/dev/null || true
@@ -326,7 +326,7 @@ sync_candidate_autodecode_files() {
 prune_official_meter_previews() {
   local mid pf _pruned=0
   [[ -d "${METER_DIR}" ]] || return 0
-  for mf in "${METER_DIR}"/meter-*; do
+  for mf in "${METER_DIR}"/meter-* ${EXTERNAL_METER_DIR:+"${EXTERNAL_METER_DIR}"/meter-*}; do
     [[ -f "${mf}" ]] || continue
     mid="$(grep -m1 '^id=' "${mf}" | cut -d= -f2 | tr '[:lower:]' '[:upper:]')"
     [[ "${mid}" =~ ^[0-9A-Fa-f]{8}$ ]] || continue

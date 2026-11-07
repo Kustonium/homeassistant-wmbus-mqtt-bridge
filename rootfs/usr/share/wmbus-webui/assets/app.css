@@ -2054,3 +2054,23 @@ th.sortable:hover {
   color: #f3c84b;
   border-color: #6b4a1e;
 }
+
+/* Drivers tab: the browser's own "choose file" button was light grey on the
+   dark theme, barely readable. Styled like .btn. */
+.xdrv-page input[type="file"] {
+  color: var(--text);
+}
+.xdrv-page input[type="file"]::file-selector-button {
+  min-height: 34px;
+  margin-right: 10px;
+  padding: 7px 11px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--text);
+  font-weight: 680;
+  cursor: pointer;
+}
+.xdrv-page input[type="file"]::file-selector-button:hover {
+  border-color: var(--accent);
+}

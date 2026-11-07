@@ -1,3 +1,37 @@
+## 1.6.13
+
+### Added
+- show the meters on air an uploaded driver is for (7fef48b)
+- SAVE + RESTART ADDON in the top bar while settings are unsaved (a38970f)
+- Drivers tab - upload, check and remove external .xmq drivers (b5cf87b)
+- **External wmbusmeters drivers (.xmq), off by default (`custom_drivers_enabled`).**
+  With the option on, a DRIVERS tab appears. A driver file is uploaded from the
+  browser, never copied by hand. Every file is checked in a wmbusmeters process of
+  its own before anything uses it, and a file with an error is refused with the
+  reason. The driver name must start with `external_`. By default a file is treated
+  as confidential (NDA) and left out of Home Assistant backups; a tick says it may
+  go into them.
+- **Meters set to an external driver are decoded by a separate wmbusmeters
+  instance.** A faulty driver cannot stop the other meters: wmbusmeters ends on a
+  bad driver file, and a driver whose detect data matches a built-in one takes that
+  driver's place in the process that loads it. The main instance never loads an
+  external file. The separate instance stops after five quick crashes in a row
+  until the next reload; the DRIVERS tab shows its state. The decoded telegrams are
+  published exactly like the others.
+- A meter set to an external driver that is not uploaded or not accepted is skipped,
+  and the log says why. Accepted drivers appear in the driver list under
+  "External", and Compare can decode with them.
+
+### Changed
+- The README states the measured size of the RX history: with six boards, 48 hours
+  take about 180 MB, up to about 220 MB just before a trim (the 1.6.11 estimate,
+  150-190 MB, assumed 14,000 frames an hour).
+
+### Fixed
+- the Drivers tab is fetched again on every visit and every 30 s (b0e218f)
+- matching meters list the user's own first, the reading first (1b80c7d)
+- readable file button on the Drivers tab (b5776ee)
+
 ## 1.6.12
 
 ### Fixed

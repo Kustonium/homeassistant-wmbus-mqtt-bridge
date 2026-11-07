@@ -8,6 +8,9 @@ configuration:
   esp_diag_history_enabled:
     name: "ESP radio diagnostics history (advanced)"
     description: "Stores up to 10,000 fifo_sample and pipeline_drop events from MQTT, including raw radio bytes. Only for analysing receiver problems; uses more disk. Needs the ESP RX evidence API to download them."
+  custom_drivers_enabled:
+    name: "External drivers (advanced)"
+    description: "Lets you upload your own wmbusmeters driver files (.xmq) on a separate screen and use them for meters set to an external_ driver. They run in a separate wmbusmeters instance, so a faulty file cannot stop the other meters. Off by default; turn on only if you know what the file does."
   qds_walkby_enabled:
     name: "Qundis walk-by block (advanced)"
     description: >-

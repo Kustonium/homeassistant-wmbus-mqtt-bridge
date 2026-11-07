@@ -502,7 +502,8 @@ dat ani na běžném rozhraní. Zapnutí udělá dvě věci:
 Při 0 je to posledních 90-100 tisíc rámců, tedy s několika deskami jen pár hodin;
 ostatní hodnoty drží tolik hodin bez ohledu na počet desek, až o čtvrtinu více před
 každým ořezem (soubor má limit 1 GB a 1 GB disku zůstává volný, ale alespoň 32 MB
-nejnovějších rámců zůstane). Delší historie je odmítnuta na SD kartě a eMMC, pod
+nejnovějších rámců zůstane). Se šesti deskami zabere 48 hodin asi 180 MB,
+těsně před ořezem až asi 220 MB (změřeno). Delší historie je odmítnuta na SD kartě a eMMC, pod
 2 GB RAM a pod 2 GB volného disku; doplněk pak zůstane u výchozího limitu a důvod
 uvede v nastavení. Historie se nezahrnuje do záloh Home Assistantu.
 

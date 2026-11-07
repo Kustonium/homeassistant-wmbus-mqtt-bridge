@@ -517,7 +517,8 @@ collection or the normal GUI. Turning it on does two things:
 history lasts. At 0 it is the last 90-100 thousand frames, which with several
 boards is only hours; other values keep that many hours whatever the number of
 boards, up to a quarter more before each trim (the file is limited to 1 GB, and
-1 GB of disk stays free, but at least 32 MB of the newest frames stay). The longer
+1 GB of disk stays free, but at least 32 MB of the newest frames stay). With six boards, 48 hours take about 180 MB,
+up to about 220 MB just before a trim (measured). The longer
 history is refused on an SD card or eMMC, under 2 GB of RAM or under 2 GB of free
 disk; the add-on then keeps the default and says why in the settings. The history
 is left out of Home Assistant backups.

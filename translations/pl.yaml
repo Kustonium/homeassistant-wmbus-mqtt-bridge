@@ -8,6 +8,9 @@ configuration:
   esp_diag_history_enabled:
     name: "Historia diagnostyki radiowej ESP (zaawansowane)"
     description: "Zapisuje do 10 000 zdarzeń fifo_sample i pipeline_drop z MQTT, włącznie z surowymi bajtami radia. Służy wyłącznie do analizy problemów odbiornika, zwiększa użycie dysku i domyślnie jest wyłączone. Wymaga także API danych dowodowych ESP RX, aby pobrać historię."
+  custom_drivers_enabled:
+    name: "Sterowniki zewnętrzne (zaawansowane)"
+    description: "Pozwala wgrać własne pliki sterowników wmbusmeters (.xmq) na osobnym ekranie i używać ich dla liczników ustawionych na sterownik external_. Działają w osobnej instancji wmbusmeters, więc wadliwy plik nie zatrzyma pozostałych liczników. Domyślnie wyłączone; włączaj tylko, jeśli wiesz, co robi plik."
   qds_walkby_enabled:
     name: "Blok walk-by Qundis (zaawansowane)"
     description: >-

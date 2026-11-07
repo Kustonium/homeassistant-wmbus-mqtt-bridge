@@ -496,6 +496,8 @@ _soft_reload_kill_children() {
     [[ -n "${HEARTBEAT_PID:-}" && "${child}" == "${HEARTBEAT_PID}" ]] && continue
     [[ -n "${ESP_SUBSCRIBER_PIDS:-}" && " ${ESP_SUBSCRIBER_PIDS} " == *" ${child} "* ]] && continue
     [[ -n "${MBUS_PID:-}" && "${child}" == "${MBUS_PID}" ]] && continue
+    # Stopped and started by the restart loop (stop_external_instance).
+    [[ -n "${EXTERNAL_PID:-}" && "${child}" == "${EXTERNAL_PID}" ]] && continue
     kill -TERM "${child}" 2>/dev/null
   done
 }

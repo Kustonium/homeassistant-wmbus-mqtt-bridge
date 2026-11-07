@@ -1,6 +1,6 @@
 name: "wMBus MQTT Bridge"
 description: "wM-Bus over MQTT (RAW HEX) + optional wired M-Bus -> wmbusmeters -> Home Assistant Discovery"
-version: "1.6.12"
+version: "1.6.13"
 slug: "wmbus_mqtt_bridge"
 stage: experimental
 image: "ghcr.io/kustonium/{arch}-addon-wmbus_mqtt_bridge"
@@ -11,6 +11,10 @@ arch:
 # Evidence of reception, rebuilt as frames arrive; it can reach 1 GB.
 backup_exclude:
   - "esp_rf_rx_history.jsonl*"
+  # External drivers under NDA (the default) stay out of backups; see
+  # rootfs/usr/bin/custom_drivers.py.
+  - "custom_drivers_nda"
+  - "custom_drivers_nda/*"
 
 init: false
 # /tmp in RAM: the status files, rewritten every few seconds, live there
@@ -93,6 +97,9 @@ options:
   # (b) decrypts the 2026-generation encrypted block when the meter's ordinary
   # AES key is configured. See docs/ARCHITECTURE.md.
   qds_walkby_enabled: false
+  # External .xmq drivers uploaded in the WebUI, decoded in a separate
+  # wmbusmeters instance (custom_drivers.py). Off by default.
+  custom_drivers_enabled: false
 
   # ── Wired M-Bus (separate engine, off by default) ──────────
   # Two independent gates: mbus_tab_visible only shows the tab, mbus_enabled
@@ -144,6 +151,7 @@ schema:
   esp_rx_history_hours: list(0|12|24|48|72)
   esp_diag_history_enabled: bool
   qds_walkby_enabled: bool
+  custom_drivers_enabled: bool
   mbus_tab_visible: bool
   mbus_enabled: bool
   mbus_device: str?

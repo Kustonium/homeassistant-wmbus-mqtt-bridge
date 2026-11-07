@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import glob
+import json
 import os
 import re
 import sys
@@ -47,6 +48,28 @@ from wmbus_mbus import field_spec_lines
 
 SEP = "\x1f"
 NEWLINE = "\x1e"
+EXTERNAL_PREFIX = "external_"
+
+
+def accepted_external_drivers(status_file: str) -> tuple:
+    """(enabled, {name: reason}) from custom_drivers.py's status file.
+
+    reason is "" for a driver the external instance loads. No file, or one
+    that does not parse, reads as "off": an external meter is then skipped,
+    never handed to a wmbusmeters that would end on its unknown driver.
+    """
+    try:
+        with open(status_file, encoding="utf-8") as fh:
+            status = json.load(fh)
+    except (OSError, ValueError):
+        return False, {}
+    if not isinstance(status, dict) or status.get("enabled") is not True:
+        return False, {}
+    names: Dict[str, str] = {}
+    for v in status.get("drivers") or []:
+        if isinstance(v, dict) and isinstance(v.get("name"), str):
+            names.setdefault(v["name"], "" if v.get("ok") is True else str(v.get("reason") or "rejected"))
+    return True, names
 
 
 _JQ_TYPE = ((bool, "boolean"), (str, "string"), (list, "array"))
@@ -125,11 +148,14 @@ class MeterFiles(Tool):
 
     def run(self) -> int:
         a = self.a
-        for path in glob.glob(os.path.join(a.meter_dir, "meter-*")):
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+        dirs = [a.meter_dir] + ([a.external_meter_dir] if a.external_meter_dir else [])
+        for d in dirs:
+            for path in glob.glob(os.path.join(d, "meter-*")):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+        self.external_count = 0
         opts = self.options() if os.path.isfile(a.options) else None
         meters = opts.get("meters") if isinstance(opts, dict) else None
         configured = 0
@@ -168,6 +194,7 @@ class MeterFiles(Tool):
                           "meter file -> LISTEN MODE.")
                 self.emit("search", "listen", "configured_meters_invalid")
         self.emit("set", "OFFICIAL_METERS_COUNT", str(count))
+        self.emit("set", "EXTERNAL_METERS_COUNT", str(self.external_count))
         self.emit("rc", "0")
         return 0
 
@@ -194,6 +221,10 @@ class MeterFiles(Tool):
     def configured_meters(self, entries: List[Any]) -> int:
         excludes: Dict[str, str] = {}
         loaded = 0
+        external = 0
+        ext_enabled, ext_names = (False, {})
+        if self.a.external_drivers_status:
+            ext_enabled, ext_names = accepted_external_drivers(self.a.external_drivers_status)
         # Tauron/KPL ids wmbusmeters rejected under amiplus (07-meters.sh
         # _kpl_amiplus_rejected): their meter file says sanxing.
         kpl_sanxing = set()
@@ -232,6 +263,21 @@ class MeterFiles(Tool):
                 self.log("info", f"meter: {name} id={mid}: Tauron/KPL meter, driver amiplus -> sanxing "
                                  f"(see _kpl_amiplus_rejected)")
                 driver = "sanxing"
+            # An external_* driver is loaded only by the external instance:
+            # the main wmbusmeters would end on a driver it does not know,
+            # taking every other meter with it.
+            is_external = driver.startswith(EXTERNAL_PREFIX)
+            if is_external:
+                skip = ""
+                if not self.a.external_meter_dir or not ext_enabled:
+                    skip = "custom drivers are off (custom_drivers_enabled)"
+                elif driver not in ext_names:
+                    skip = "no such driver was uploaded"
+                elif ext_names[driver]:
+                    skip = f"the driver did not pass the check ({ext_names[driver]})"
+                if skip:
+                    self.warn(f"meter '{name}' id={mid} uses external driver {driver}, but {skip} -> skipping")
+                    continue
             low = mid.lower()
             if excl and excl != "null":
                 excludes[low] = excl
@@ -247,12 +293,18 @@ class MeterFiles(Tool):
             if driver != "auto":
                 body.append(f"driver={driver}")
             body += stat_lines + calc_lines
-            self.write(os.path.join(self.a.meter_dir, "meter-%04d" % loaded),
-                       "".join(ln + "\n" for ln in body))
+            if is_external:
+                external += 1
+                os.makedirs(self.a.external_meter_dir, exist_ok=True)
+                target = os.path.join(self.a.external_meter_dir, "meter-%04d" % external)
+            else:
+                target = os.path.join(self.a.meter_dir, "meter-%04d" % (loaded - external))
+            self.write(target, "".join(ln + "\n" for ln in body))
             if excludes.get(low):
                 self.log("info", f"meter: {name} id={mid} driver={driver} exclude_fields={excludes[low]}")
             else:
                 self.log("info", f"meter: {name} id={mid} driver={driver}")
+        self.external_count = external
         return loaded
 
     @staticmethod
@@ -288,7 +340,7 @@ class Previews(Tool):
         a = self.a
         if not os.path.isdir(a.meter_dir):
             return
-        for mf in sorted(glob.glob(os.path.join(a.meter_dir, "meter-*"))):
+        for mf in sorted(bl.meter_files(a.meter_dir)):
             if not os.path.isfile(mf):
                 continue
             first = next((ln for ln in bl._read_lines(mf) if ln.startswith(b"id=")), None)
@@ -403,7 +455,8 @@ def main(argv=None) -> int:
     r = sub.add_parser("refresh", help="refresh_meter_files")
     for name in ("options", "meter-dir", "search-candidates-file"):
         r.add_argument(f"--{name}", required=True)
-    for name in ("search-mode", "search-expected", "search-tolerance", "loglevel", "kpl-sanxing-file"):
+    for name in ("search-mode", "search-expected", "search-tolerance", "loglevel", "kpl-sanxing-file",
+                 "external-meter-dir", "external-drivers-status"):
         r.add_argument(f"--{name}", default="")
     p = sub.add_parser("previews", help="sync_candidate_autodecode_files + prune_official_meter_previews")
     for name in ("candidates-file", "recent-raw-file", "preview-state-file", "meter-dir", "preview-meter-dir",
