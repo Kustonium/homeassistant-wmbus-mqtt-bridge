@@ -1,9 +1,6 @@
 ## 1.6.13
 
 ### Added
-- show the meters on air an uploaded driver is for (7fef48b)
-- SAVE + RESTART ADDON in the top bar while settings are unsaved (a38970f)
-- Drivers tab - upload, check and remove external .xmq drivers (b5cf87b)
 - **External wmbusmeters drivers (.xmq), off by default (`custom_drivers_enabled`).**
   With the option on, a DRIVERS tab appears. A driver file is uploaded from the
   browser, never copied by hand. Every file is checked in a wmbusmeters process of
@@ -21,6 +18,14 @@
 - A meter set to an external driver that is not uploaded or not accepted is skipped,
   and the log says why. Accepted drivers appear in the driver list under
   "External", and Compare can decode with them.
+- **The DRIVERS tab lists the meters on air each uploaded driver is for**: those
+  whose latest frame has a manufacturer, version and type from the driver's detect
+  block, each decoded on trial with a few values shown, your own meters first. A
+  button adds a new meter with the driver or switches a configured one to it. On
+  RECEIVED / SEARCH such a meter gets a "matches: <driver>" pill.
+- **SAVE + RESTART ADDON:** on SETTINGS, once an option is changed, the top-bar
+  restart button saves the options and restarts, so there is no need to scroll
+  down to "Save options" first. A failed save restarts nothing.
 
 ### Changed
 - The README states the measured size of the RX history: with six boards, 48 hours
@@ -28,9 +33,10 @@
   150-190 MB, assumed 14,000 frames an hour).
 
 ### Fixed
-- the Drivers tab is fetched again on every visit and every 30 s (b0e218f)
-- matching meters list the user's own first, the reading first (1b80c7d)
-- readable file button on the Drivers tab (b5776ee)
+- The DRIVERS tab is fetched again on every visit and every 30 s: after a meter was
+  switched to an external driver, it still showed the state from before.
+- The trial decode shows the meter reading (total_*, then current_*) first.
+- The "choose file" button on the DRIVERS tab is readable on the dark theme.
 
 ## 1.6.12
 
