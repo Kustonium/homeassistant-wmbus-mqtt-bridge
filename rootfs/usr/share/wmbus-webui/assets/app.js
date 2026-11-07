@@ -33,11 +33,20 @@
     return Boolean(state.data?.mbus_tab_visible);
   }
 
+  // External drivers (.xmq): the tab exists only with custom_drivers_enabled,
+  // and the route is gated the same way as #mbus.
+  function driversTabVisible() {
+    return Boolean(state.data?.custom_drivers_enabled);
+  }
+
   function visibleNavItems() {
-    if (!mbusTabVisible()) return navItems;
+    const mbus = mbusTabVisible();
+    const drivers = driversTabVisible();
+    if (!mbus && !drivers) return navItems;
     const out = [];
     for (const item of navItems) {
-      if (item[0] === "logs") out.push(["mbus", "nav_mbus", "MB"]);
+      if (mbus && item[0] === "logs") out.push(["mbus", "nav_mbus", "MB"]);
+      if (drivers && item[0] === "settings") out.push(["drivers", "nav_drivers", "XD"]);
       out.push(item);
     }
     return out;
@@ -122,6 +131,17 @@
     // null = not fetched yet; fetched lazily when the tab is opened.
     mbus: null,
     mbusLoading: false,
+    // Drivers tab (api/drivers): null = not fetched yet. xdrvBusy while an
+    // upload or a removal runs.
+    xdrv: null,
+    xdrvLoading: false,
+    xdrvBusy: false,
+    xdrvNotNda: false,
+    // api/drivers/matches: with trial decodes for the Drivers tab, and the
+    // id -> driver names map (refreshed once a minute) for the RX pills.
+    xdrvMatches: null,
+    xdrvMatchesLoading: false,
+    xdrvMatchIds: null,
     // Result of the last 0xFE bus probe: {state, reply_hex}.
     mbusProbe: null,
     // Driver catalog (assets/drivers.json, baked at image build time from the
@@ -1277,7 +1297,7 @@
               ${bridgeStale
                 ? `<span class="pill bad"><span class="dot"></span>${escapeHtml(t("webui_stale", "STALE"))}</span>`
                 : `<span class="pill ${state.liveConnected ? "ok" : "muted"}"><span class="dot"></span>${state.liveConnected ? "LIVE" : "POLL"}</span>`}
-              <button class="btn danger" data-action="restart">${escapeHtml(t("webui_restart", "Restart"))}</button>
+              ${topRestartButton()}
             </div>
           </header>
           <div class="content">
@@ -2437,7 +2457,7 @@
                 return groupDivider(_arr[_i - 1], row) + `
                   <tr data-value="${escapeHtml(previewVal)}" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(driver)}" data-media="${escapeHtml(mc)}" data-manufacturer="${escapeHtml(mfrRaw)}">
                     <td><strong>${escapeHtml(id)}</strong></td>
-                    <td>${escapeHtml(driver)}</td>
+                    <td>${escapeHtml(driver)}${xdrvMatchPill(id)}</td>
                     <td style="color:#9eafba;font-size:12px;">${escapeHtml(row.type || "-")}</td>
                     <td><span class="candidate-medium">${mediaIconHtml(row.type || "", driver)}<span>${escapeHtml(mediaLabel)}</span></span></td>
                     <td>${mfrCell}</td>
@@ -3745,7 +3765,10 @@
   // the wild: options.json kept type=auto after choosing istawater). With
   // the choice in state, every rebuild renders the user's current pick.
   function driverPickerHtml(prefill, hiddenId, hiddenName) {
-    const drivers = state.drivers || [];
+    // Accepted external drivers join the catalog in a group of their own.
+    const extGroup = t("xdrv_picker_group", "External (uploaded)");
+    const drivers = (state.drivers || []).concat(
+      asArray(state.data?.external_drivers).map(n => ({driver: n, type: extGroup})));
     const known = new Set(drivers.map(d => d.driver));
     // prefill === "" means "custom mode, empty text" (mid-typing across a
     // re-render); other empty-ish/unknown prefills fall back to "auto".
@@ -3811,7 +3834,45 @@
   window.__cfgSet = function (key, value) {
     if (!state.configEdits) state.configEdits = {};
     state.configEdits[key] = value;
+    // Only the top-bar button follows at once (no full render: focus).
+    const b = document.getElementById("top-restart");
+    if (b) b.outerHTML = topRestartButton();
   };
+
+  // Unsaved settings: an edit that differs from the saved value (a secret
+  // counts once something is typed).
+  function configDirty() {
+    const edits = state.configEdits || {};
+    for (const s of ((state.data || {}).config_options) || []) {
+      if (!(s.key in edits)) continue;
+      if (s.secret ? String(edits[s.key]) !== "" : String(edits[s.key]) !== String(s.value)) return true;
+    }
+    return false;
+  }
+
+  // On SETTINGS with unsaved changes the top-bar button saves and restarts,
+  // so a change is applied without scrolling down to "Save options".
+  function topRestartButton() {
+    if (state.route === "settings" && configDirty()) {
+      return `<button class="btn danger" id="top-restart" data-action="save-restart">${escapeHtml(t("save_restart_addon", "SAVE + RESTART ADDON"))}</button>`;
+    }
+    return `<button class="btn danger" id="top-restart" data-action="restart">${escapeHtml(t("webui_restart", "Restart"))}</button>`;
+  }
+
+  function configPayload() {
+    const edits = state.configEdits || {};
+    const payload = {};
+    for (const s of ((state.data || {}).config_options) || []) {
+      const k = s.key;
+      if (s.secret) {
+        // Blank/untouched secret = keep current — only send a typed value.
+        if (k in edits && String(edits[k]) !== "") payload[k] = edits[k];
+      } else {
+        payload[k] = (k in edits) ? edits[k] : s.value;
+      }
+    }
+    return payload;
+  }
   window.__editModalKeySet = function (value) {
     if (state.editModal) {
       state.editModal.key = String(value == null ? "" : value);
@@ -4335,6 +4396,215 @@
         render();
       })
       .catch(() => { state.drivers = []; });
+  }
+
+  async function loadDrivers(force = false) {
+    if (state.xdrvLoading) return;
+    if (state.xdrv && !force) return;
+    state.xdrvLoading = true;
+    try {
+      const response = await fetch("api/drivers", {cache: "no-store"});
+      state.xdrv = response.ok ? await response.json() : {error: true};
+    } catch (_) {
+      state.xdrv = {error: true};
+    } finally {
+      state.xdrvLoading = false;
+      render();
+    }
+  }
+
+  // Why a file was refused, in the user's words; the code itself as a fallback.
+  function xdrvReason(code) {
+    const c = String(code || "");
+    if (!c) return "";
+    return t(`xdrv_reason_${c}`, c);
+  }
+
+  function driversPage() {
+    const x = state.xdrv || {};
+    if (x.error) {
+      return `<div class="card"><p>${escapeHtml(t("xdrv_load_failed", "Could not load the external drivers."))}</p></div>`;
+    }
+    const files = asArray(x.files);
+    const inst = x.instance || {};
+    const instState = String(inst.state || "");
+    const instPill = {
+      running: ["ok", t("xdrv_inst_running", "Running")],
+      exited: ["warn", t("xdrv_inst_exited", "Restarting")],
+      crash_loop: ["bad", t("xdrv_inst_crash_loop", "Stopped after repeated crashes")],
+      no_meters: ["muted", t("xdrv_inst_no_meters", "Not started: no meter uses an external driver")],
+      disabled: ["muted", t("xdrv_inst_disabled", "Off")],
+    }[instState] || ["muted", t("xdrv_inst_unknown", "Not started yet")];
+    const missing = Object.entries(x.missing || {});
+    const rows = files.map(f => {
+      const status = f.ok === null || f.ok === undefined
+        ? `<span class="pill muted">${escapeHtml(t("xdrv_status_pending", "Checked at the next reload"))}</span>`
+        : f.ok
+          ? `<span class="pill ok">${escapeHtml(t("xdrv_status_ok", "Accepted"))}</span>`
+          : `<span class="pill bad">${escapeHtml(t("xdrv_status_rejected", "Rejected"))}</span><div class="hint">${escapeHtml(xdrvReason(f.reason))}</div>`;
+      const replaces = asArray(f.replaces).length
+        ? `<div class="hint">${escapeHtml(t("xdrv_replaces", "Takes over telegrams of the built-in driver: {drivers}", {drivers: f.replaces.join(", ")}))}</div>`
+        : "";
+      const meters = asArray(f.meters).length
+        ? f.meters.map(m => escapeHtml(m)).join("<br>")
+        : `<span class="hint">${escapeHtml(t("xdrv_no_meters", "none"))}</span>`;
+      return `<tr>
+        <td><code>${escapeHtml(f.name)}</code>${replaces}</td>
+        <td>${f.nda
+          ? `<span class="pill warn">${escapeHtml(t("xdrv_nda", "NDA - not in backups"))}</span>`
+          : `<span class="pill muted">${escapeHtml(t("xdrv_not_nda", "In backups"))}</span>`}</td>
+        <td>${status}</td>
+        <td>${meters}</td>
+        <td><button class="btn" data-action="xdrv-delete" data-name="${escapeHtml(f.name)}"${state.xdrvBusy ? " disabled" : ""}>${escapeHtml(t("xdrv_delete", "Remove"))}</button></td>
+      </tr>`;
+    }).join("");
+    return `<div class="xdrv-page">
+      <div class="card banner-untested">
+        <h2>${escapeHtml(t("xdrv_title", "External drivers (.xmq)"))}</h2>
+        <p><strong>${escapeHtml(t("xdrv_responsibility", "The add-on's support ends at this tab. An external driver is your own file: you know what it does and you take responsibility for it. Problems with decoding through it are not add-on bugs."))}</strong></p>
+        <p class="hint">${escapeHtml(t("xdrv_how", "Every file is checked in a separate wmbusmeters process before anything uses it. Meters set to an external driver are decoded by a separate wmbusmeters instance, so a failing driver cannot stop the other meters. The driver name must start with {prefix}.", {prefix: x.prefix || "external_"}))}</p>
+      </div>
+      <div class="card">
+        <h3>${escapeHtml(t("xdrv_upload_title", "Upload a driver"))}</h3>
+        <input type="file" id="xdrv_file" accept=".xmq,text/plain">
+        <label style="display:block;margin-top:8px;"><input type="checkbox" id="xdrv_not_nda"${state.xdrvNotNda ? " checked" : ""} onchange="window.__xdrvNotNda(this.checked)">
+          ${escapeHtml(t("xdrv_not_nda_label", "This driver is NOT covered by an NDA (it may go into Home Assistant backups)"))}</label>
+        <p class="hint">${escapeHtml(t("xdrv_nda_default", "Unchecked, the file is treated as confidential: it stays in the add-on and is left out of backups."))}</p>
+        <div class="row-actions">
+          <button class="btn primary" data-action="xdrv-upload"${state.xdrvBusy ? " disabled" : ""}>${escapeHtml(state.xdrvBusy ? t("xdrv_checking", "Checking...") : t("xdrv_upload", "Check and upload"))}</button>
+        </div>
+        <p class="hint">${escapeHtml(t("xdrv_use_hint", "Then set the meter's driver to the uploaded name (in the driver list under \"External\"). Changes apply after the pipeline reload that follows."))}</p>
+      </div>
+      <div class="card">
+        <h3>${escapeHtml(t("xdrv_list_title", "Uploaded drivers"))}</h3>
+        <p>${escapeHtml(t("xdrv_instance", "External instance"))}: <span class="pill ${instPill[0]}">${escapeHtml(instPill[1])}</span>
+          ${inst.last_rc !== undefined && inst.last_rc !== 0 ? `<span class="hint">rc=${escapeHtml(String(inst.last_rc))}</span>` : ""}</p>
+        ${missing.length ? `<p class="banner warn" style="margin:8px 0;">⚠ ${escapeHtml(t("xdrv_missing", "Meters set to a driver that is not uploaded (skipped): {list}", {list: missing.map(([d, m]) => `${d}: ${m.join(", ")}`).join("; ")}))}</p>` : ""}
+        ${files.length ? `<div class="table-wrap"><table>
+          <thead><tr>
+            <th>${escapeHtml(t("xdrv_col_name", "Driver"))}</th>
+            <th>${escapeHtml(t("xdrv_col_nda", "Storage"))}</th>
+            <th>${escapeHtml(t("xdrv_col_status", "Check"))}</th>
+            <th>${escapeHtml(t("xdrv_col_meters", "Meters"))}</th>
+            <th></th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>` : `<p class="hint">${escapeHtml(t("xdrv_empty", "No driver uploaded yet."))}</p>`}
+      </div>
+      ${files.some(f => f.ok) ? driverMatchesCard() : ""}
+    </div>`;
+  }
+
+  // Meters on air an uploaded driver is for (api/drivers/matches): the mvt of
+  // its detect block against each meter's latest frame. decode=1 adds a trial
+  // decode (Drivers tab); decode=0 is the cheap form for the RX pills.
+  async function loadDriverMatches(decode) {
+    if (state.xdrvMatchesLoading) return;
+    state.xdrvMatchesLoading = true;
+    try {
+      const response = await fetch(`api/drivers/matches?decode=${decode ? 1 : 0}`, {cache: "no-store"});
+      const data = response.ok ? await response.json() : {error: true};
+      if (decode) state.xdrvMatches = data;
+      const ids = {};
+      for (const d of asArray(data.drivers)) {
+        for (const m of asArray(d.meters)) (ids[m.id] = ids[m.id] || []).push(d.name);
+      }
+      state.xdrvMatchIds = {at: Date.now(), ids};
+    } catch (_) {
+      if (decode) state.xdrvMatches = {error: true};
+    } finally {
+      state.xdrvMatchesLoading = false;
+      render();
+    }
+  }
+
+  // RX / SEARCH: refreshed at most once a minute while the tab is open.
+  function ensureDriverMatchIds() {
+    if (!driversTabVisible() || state.xdrvMatchesLoading) return;
+    const at = state.xdrvMatchIds?.at || 0;
+    if (Date.now() - at > 60000) loadDriverMatches(false);
+  }
+
+  function xdrvMatchPill(id) {
+    if (!driversTabVisible()) return "";
+    const names = state.xdrvMatchIds?.ids?.[id];
+    if (!names || !names.length) return "";
+    return `<div style="margin-top:4px;"><a class="pill warn" href="#drivers" style="text-decoration:none;" title="${escapeHtml(t("xdrv_match_pill_hint", "An uploaded external driver is for this meter - see DRIVERS"))}">${escapeHtml(t("xdrv_match_pill", "matches: {driver}", {driver: names.join(", ")}))}</a></div>`;
+  }
+
+  function driverMatchesCard() {
+    const mt = state.xdrvMatches;
+    const head = `<h3>${escapeHtml(t("xdrv_matches_title", "Matching meters on air"))}
+      <button class="btn" style="margin-left:8px;" data-action="xdrv-matches-refresh"${state.xdrvMatchesLoading ? " disabled" : ""}>${escapeHtml(t("xdrv_matches_refresh", "Check again"))}</button></h3>
+      <p class="hint">${escapeHtml(t("xdrv_matches_hint", "Meters whose latest frame has the manufacturer, version and type from the driver's detect block, each decoded on trial with the driver. Nothing running is touched."))}</p>`;
+    if (!mt) {
+      if (!state.xdrvMatchesLoading) loadDriverMatches(true);
+      return `<div class="card">${head}<p>${escapeHtml(t("xdrv_matches_checking", "Checking the meters on air..."))}</p></div>`;
+    }
+    if (mt.error) {
+      return `<div class="card">${head}<p>${escapeHtml(t("xdrv_load_failed", "Could not load the external drivers."))}</p></div>`;
+    }
+    const stateText = (m) => {
+      if (m.state === "decoded") {
+        return Object.entries(m.values || {}).map(([k, v]) =>
+          `<div class="mono" style="font-size:12px;"><span style="color:var(--muted);">${escapeHtml(k)}</span> ${escapeHtml(String(v))}</div>`).join("");
+      }
+      const key = {
+        no_values: ["xdrv_match_no_values", "No values: an encrypted frame without the key, or the driver does not fit its content."],
+        failed: ["xdrv_match_failed", "The trial decode failed."],
+        not_checked: ["xdrv_match_not_checked", "Not checked (only the first meters are decoded)."],
+      }[m.state] || ["xdrv_match_not_checked", "Not checked (only the first meters are decoded)."];
+      return `<span class="hint">${escapeHtml(t(key[0], key[1]))}</span>`;
+    };
+    const sections = asArray(mt.drivers).map(d => {
+      const meters = asArray(d.meters);
+      const rows = meters.map(m => {
+        const cfg = m.configured;
+        let action;
+        if (!cfg) {
+          action = `<button class="btn primary" data-action="open-add" data-id="${escapeHtml(m.id)}" data-driver="${escapeHtml(d.name)}">${escapeHtml(t("xdrv_match_add", "Add with this driver"))}</button>`;
+        } else if (cfg.driver === d.name) {
+          action = `<span class="pill ok">${escapeHtml(t("xdrv_match_in_use", "Uses it"))}</span>`;
+        } else {
+          action = `<button class="btn" data-action="open-edit-driver" data-id="${escapeHtml(m.id)}" data-driver="${escapeHtml(d.name)}">${escapeHtml(t("xdrv_match_switch", "Switch to {driver}", {driver: d.name}))}</button>`;
+        }
+        return `<tr>
+          <td><strong>${escapeHtml(m.id)}</strong>${cfg ? `<div class="hint">${escapeHtml(cfg.name)} · ${escapeHtml(cfg.driver)}</div>` : `<div class="hint">${escapeHtml(t("xdrv_match_new", "not configured"))}</div>`}</td>
+          <td class="mono" style="font-size:12px;">${escapeHtml(m.mvt)}</td>
+          <td>${fmtTime(m.last_seen)}</td>
+          <td>${stateText(m)}</td>
+          <td>${action}</td>
+        </tr>`;
+      }).join("");
+      return `<h4 style="margin:14px 0 6px;"><code>${escapeHtml(d.name)}</code></h4>
+        ${meters.length ? `<div class="table-wrap"><table>
+          <thead><tr>
+            <th>ID</th>
+            <th>${escapeHtml(t("xdrv_match_col_mvt", "Manufacturer, version, type"))}</th>
+            <th>${escapeHtml(t("xdrv_match_col_seen", "Latest frame"))}</th>
+            <th>${escapeHtml(t("xdrv_match_col_values", "Trial decode"))}</th>
+            <th></th>
+          </tr></thead><tbody>${rows}</tbody></table></div>`
+          : `<p class="hint">${escapeHtml(t("xdrv_match_none", "No meter with this data is heard now ({mvts}). Some meters fall silent at night and at weekends.", {mvts: asArray(d.mvts).join("; ")}))}</p>`}`;
+    }).join("");
+    return `<div class="card">${head}${sections || `<p class="hint">${escapeHtml(t("xdrv_empty", "No driver uploaded yet."))}</p>`}</div>`;
+  }
+
+  // The checkbox lives in state: a live render rebuilds the page from it, and
+  // morphdom would otherwise put an unfocused checkbox back to unchecked.
+  window.__xdrvNotNda = (checked) => { state.xdrvNotNda = Boolean(checked); };
+
+  async function postDrivers(endpoint, payload) {
+    const response = await fetch(`api/drivers/${endpoint}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload || {}),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.ok === false) {
+      throw new Error(xdrvReason(result.reason) || `HTTP ${response.status}`);
+    }
+    return result;
   }
 
   async function loadMbus(force = false) {
@@ -4924,6 +5194,7 @@
       case "meters":
         return shell(metersPage());
       case "discover":
+        ensureDriverMatchIds();
         return shell(discoverPage());
       case "search":
         return shell(searchPage());
@@ -4942,6 +5213,13 @@
           loadMbusConsole();
         }
         return shell(mbusPage());
+      case "drivers":
+        if (!driversTabVisible()) return shell(dashboard());
+        if (!state.xdrv) {
+          loadDrivers();
+          return shell(`<div class="card"><p>${escapeHtml(t("webui_loading", "Loading..."))}</p></div>`);
+        }
+        return shell(driversPage());
       case "logs":
         return shell(logsPage());
       case "esp-logs":
@@ -5028,6 +5306,9 @@
           // page updated. Restrict the skip to editable controls.
           if (from === document.activeElement &&
               /^(INPUT|TEXTAREA|SELECT)$/.test(from.tagName)) return false;
+          // A file input's chosen file lives only in the node: a patch sets its
+          // value to "" and the choice is gone (Drivers tab, live updates).
+          if (from.tagName === "INPUT" && from.type === "file") return false;
           // The top scrollbar is sized and scrolled by syncTopScrollbars; a patch
           // would clear its width and snap it back to the left edge.
           if (from.classList && from.classList.contains("table-scroll-top")) return false;
@@ -5317,6 +5598,67 @@
       return;
     }
 
+    if (action === "xdrv-matches-refresh") {
+      state.xdrvMatches = null;
+      await loadDriverMatches(true);
+      return;
+    }
+
+    if (action === "xdrv-upload") {
+      const input = document.getElementById("xdrv_file");
+      const file = input && input.files && input.files[0];
+      if (!file) {
+        toast(t("xdrv_pick_file", "Choose a .xmq file first."), true);
+        return;
+      }
+      const maxBytes = Number(state.xdrv?.max_bytes || 65536);
+      if (file.size > maxBytes) {
+        toast(xdrvReason("too_large"), true);
+        return;
+      }
+      const notNda = Boolean(state.xdrvNotNda);
+      state.xdrvBusy = true;
+      render();
+      try {
+        const content = await file.text();
+        const result = await postDrivers("upload", {content, nda: notNda ? "false" : "true"});
+        toast(t("xdrv_uploaded", "Driver {name} accepted.", {name: result.name || ""}));
+        if (input) input.value = "";
+        state.xdrvNotNda = false;
+        state.xdrvMatches = null;
+        state.xdrvMatchIds = null;
+        await loadDrivers(true);
+        triggerSoftReload(t("xdrv_reloading", "Starting the external instance with the new drivers..."));
+      } catch (error) {
+        toast(error.message, true);
+      } finally {
+        state.xdrvBusy = false;
+        render();
+      }
+      return;
+    }
+
+    if (action === "xdrv-delete") {
+      const name = target.dataset.name || "";
+      if (!name || !window.confirm(t("xdrv_delete_confirm", "Remove driver {name}? Meters set to it will be skipped.", {name}))) return;
+      state.xdrvBusy = true;
+      render();
+      try {
+        await postDrivers("delete", {name});
+        toast(t("xdrv_deleted", "Driver {name} removed.", {name}));
+        state.xdrvMatches = null;
+        state.xdrvMatchIds = null;
+        await loadDrivers(true);
+        triggerSoftReload();
+      } catch (error) {
+        toast(error.message, true);
+      } finally {
+        state.xdrvBusy = false;
+        render();
+      }
+      return;
+    }
+
     if (action === "mbus-save-engine") {
       try {
         const result = await postApi("mbus/device", {
@@ -5555,20 +5897,8 @@
     }
 
     if (action === "save-config") {
-      const opts = ((state.data || {}).config_options) || [];
-      const edits = state.configEdits || {};
-      const payload = {};
-      for (const s of opts) {
-        const k = s.key;
-        if (s.secret) {
-          // Blank/untouched secret = keep current — only send a typed value.
-          if (k in edits && String(edits[k]) !== "") payload[k] = edits[k];
-        } else {
-          payload[k] = (k in edits) ? edits[k] : s.value;
-        }
-      }
       try {
-        const res = await postApi("save-config", payload);
+        const res = await postApi("save-config", configPayload());
         state.configEdits = {};
         await fetchData(currentLang());
         toast(res.message || t("cfg_saved", "Options saved. Restart to apply."));
@@ -5817,8 +6147,21 @@
       return;
     }
 
-    if (action === "restart") {
-      if (!window.confirm(t("webui_restart_confirm", "Restart the Home Assistant add-on?"))) return;
+    if (action === "restart" || action === "save-restart") {
+      if (action === "save-restart") {
+        if (!window.confirm(t("save_restart_confirm", "Save the changed options and restart the add-on?"))) return;
+        try {
+          await postApi("save-config", configPayload());
+          state.configEdits = {};
+        } catch (error) {
+          // Nothing restarts when the options were not saved.
+          toast(error.message, true);
+          render();
+          return;
+        }
+      } else if (!window.confirm(t("webui_restart_confirm", "Restart the Home Assistant add-on?"))) {
+        return;
+      }
       // Docker standalone: /api/restart-bridge SIGTERMs PID 1 (the entrypoint
       // traps it and exits), so the same restarting overlay + recovery poll
       // applies — the container comes back under a restart policy. Without
@@ -5899,8 +6242,27 @@
       await loadMbus(true);
       return;
     }
+    // The Drivers tab shows state that changes elsewhere (a meter switched in
+    // the add or edit dialog, the external instance started by the reload):
+    // fetched again on every visit, not kept from the first one.
+    if (state.route === "drivers") {
+      state.xdrvMatches = null;
+      if (state.xdrv) {
+        await loadDrivers(true);
+        return;
+      }
+    }
     render();
   });
+
+  // While the Drivers tab is open: its list and the instance state every 30 s
+  // (the instance starts a few seconds after a reload). The trial decodes are
+  // not repeated here; "Check again" does that.
+  window.setInterval(() => {
+    if (!document.hidden && state.route === "drivers" && state.xdrv && !state.xdrvBusy) {
+      loadDrivers(true);
+    }
+  }, 30000);
 
   fetchData();
   window.setInterval(() => {

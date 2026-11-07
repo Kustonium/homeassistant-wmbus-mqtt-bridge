@@ -8,6 +8,9 @@ configuration:
   esp_diag_history_enabled:
     name: "Historie der ESP-Funkdiagnose (fortgeschritten)"
     description: "Speichert bis zu 10.000 fifo_sample- und pipeline_drop-Ereignisse aus MQTT, einschließlich roher Funkbytes. Nur zur Analyse von Empfängerproblemen; belegt mehr Speicherplatz. Zum Herunterladen ist die ESP-RX-Nachweis-API nötig."
+  custom_drivers_enabled:
+    name: "Externe Treiber (fortgeschritten)"
+    description: "Erlaubt, eigene wmbusmeters-Treiberdateien (.xmq) auf einer eigenen Seite hochzuladen und für Zähler mit einem external_-Treiber zu verwenden. Sie laufen in einer eigenen wmbusmeters-Instanz, sodass eine fehlerhafte Datei die übrigen Zähler nicht anhält. Standardmäßig aus; nur einschalten, wenn Sie wissen, was die Datei tut."
   qds_walkby_enabled:
     name: "Qundis-Walk-by-Block (fortgeschritten)"
     description: >-

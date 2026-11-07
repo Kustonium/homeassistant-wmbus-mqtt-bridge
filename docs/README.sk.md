@@ -502,7 +502,8 @@ na bežnom rozhraní. Zapnutie urobí dve veci:
 histórie. Pri 0 je to posledných 90-100 tisíc rámcov, teda s niekoľkými doskami
 len pár hodín; ostatné hodnoty držia toľko hodín bez ohľadu na počet dosiek, až
 o štvrtinu viac pred každým orezaním (súbor má limit 1 GB a 1 GB disku zostáva
-voľný, ale aspoň 32 MB najnovších rámcov zostane). Dlhšia história je odmietnutá na
+voľný, ale aspoň 32 MB najnovších rámcov zostane). So šiestimi doskami zaberie 48 hodín asi
+180 MB, tesne pred orezaním až asi 220 MB (namerané). Dlhšia história je odmietnutá na
 SD karte a eMMC, pod 2 GB RAM a pod 2 GB voľného disku; doplnok potom zostane pri
 predvolenom limite a dôvod uvedie v nastaveniach. História sa nezahŕňa do záloh
 Home Assistanta.

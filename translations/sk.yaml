@@ -8,6 +8,9 @@ configuration:
   esp_diag_history_enabled:
     name: "História rádiovej diagnostiky ESP (pokročilé)"
     description: "Ukladá až 10 000 udalostí fifo_sample a pipeline_drop z MQTT vrátane surových bajtov rádia. Iba na analýzu problémov prijímača; zvyšuje využitie disku. Na stiahnutie je potrebné API dôkazov ESP RX."
+  custom_drivers_enabled:
+    name: "Externé ovládače (pokročilé)"
+    description: "Umožňuje nahrať vlastné súbory ovládačov wmbusmeters (.xmq) na samostatnej obrazovke a používať ich pre merače nastavené na ovládač external_. Bežia v samostatnej inštancii wmbusmeters, takže chybný súbor nezastaví ostatné merače. Predvolene vypnuté; zapínajte len vtedy, keď viete, čo súbor robí."
   qds_walkby_enabled:
     name: "Blok walk-by Qundis (pokročilé)"
     description: >-

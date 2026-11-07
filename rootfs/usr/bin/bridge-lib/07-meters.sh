@@ -283,16 +283,19 @@ refresh_meter_files() {
       --search-candidates-file="${SEARCH_CANDIDATES_FILE:-}" --search-mode="${SEARCH_MODE:-false}" \
       --search-expected="${SEARCH_EXPECTED_VALUE_M3:-0}" --search-tolerance="${SEARCH_TOLERANCE_M3:-}" \
       --kpl-sanxing-file="${METER_KPL_SANXING_FILE:-}" \
+      --external-meter-dir="${EXTERNAL_METER_DIR:-}" \
+      --external-drivers-status="${STATUS_CUSTOM_DRIVERS_FILE:-}" \
       --loglevel="${LOGLEVEL:-}")"
     METER_EXCLUDE_FIELDS=()
     OFFICIAL_METERS_COUNT=0
+    EXTERNAL_METERS_COUNT=0
     SEARCH_USING_TEMP_METERS="false"
     while IFS=$'\x1f' read -r _k _a _b; do
       _b="${_b//$'\x1e'/$'\n'}"
       case "${_k}" in
         set)
           case "${_a}" in
-            OFFICIAL_METERS_COUNT|SEARCH_USING_TEMP_METERS|SEARCH_TEMP_METERS_LOADED) printf -v "${_a}" '%s' "${_b}" ;;
+            OFFICIAL_METERS_COUNT|EXTERNAL_METERS_COUNT|SEARCH_USING_TEMP_METERS|SEARCH_TEMP_METERS_LOADED) printf -v "${_a}" '%s' "${_b}" ;;
           esac ;;
         exclude) METER_EXCLUDE_FIELDS["${_a}"]="${_b}" ;;
         search) write_search_status "${_a}" "${_b}" ;;
@@ -311,6 +314,12 @@ refresh_meter_files() {
 # shellcheck disable=SC2034
 _refresh_meter_files_bash() {
   rm -f "${METER_DIR}/meter-"* 2>/dev/null || true
+  # External drivers are routed only by wmbus_meters.py; here their meters
+  # are skipped, never written where the main wmbusmeters would end on them.
+  if [[ -n "${EXTERNAL_METER_DIR:-}" ]]; then
+    rm -f "${EXTERNAL_METER_DIR}/meter-"* 2>/dev/null || true
+  fi
+  EXTERNAL_METERS_COUNT=0
 
   METER_EXCLUDE_FIELDS=()
   OFFICIAL_METERS_COUNT=0
@@ -368,6 +377,11 @@ _refresh_meter_files_bash() {
           continue
         fi
         driver="${driver_other}"
+      fi
+
+      if [[ "${driver}" == external_* ]]; then
+        warn "meter '${friendly_name}' uses external driver ${driver}, but external drivers need the Python meter writer -> skipping"
+        continue
       fi
 
       mid="$(normalize_meter_id "${mid_raw}")"

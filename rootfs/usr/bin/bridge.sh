@@ -37,6 +37,8 @@ source "${BRIDGE_LIB_DIR}/12-pipeline.sh"
 source "${BRIDGE_LIB_DIR}/13-esp.sh"
 # shellcheck source=bridge-lib/14-mbus.sh
 source "${BRIDGE_LIB_DIR}/14-mbus.sh"
+# shellcheck source=bridge-lib/15-external.sh
+source "${BRIDGE_LIB_DIR}/15-external.sh"
 
 # ============================================================
 # wMBus MQTT Bridge (core)
@@ -353,6 +355,29 @@ ESP_RX_HISTORY_HOURS="$(python3 "${BRIDGE_SCRIPT_DIR:-/usr/bin}/bridge_ledger.py
   --history-file "${ESP_RF_RX_HISTORY_FILE}" --storage-file "${STATUS_STORAGE_FILE}" \
   --json-file "${RUNTIME}/status_esp_rx_history.json" 2>/dev/null || true)"
 [[ "${ESP_RX_HISTORY_HOURS}" =~ ^[0-9]+$ ]] || ESP_RX_HISTORY_HOURS=0
+# External .xmq drivers (custom_drivers.py). Checked here, each in a process of
+# its own, and only the accepted ones are copied for the separate instance that
+# decodes the external_* meters; the main instance never sees them. With the
+# option off the instance directory is emptied, so nothing is loaded.
+CUSTOM_DRIVERS_ENABLED="$(json_get_bool '.custom_drivers_enabled' 'false')"
+EXT_BASE="${BASE}/external"
+EXT_DRIVERS_DIR="${EXT_BASE}/etc/wmbusmeters.drivers.d"
+STATUS_CUSTOM_DRIVERS_FILE="${RUNTIME}/status_custom_drivers.json"
+# Meters on an external_* driver (wmbus_meters.py refresh) are written here,
+# for the external instance only. Exported for bridge_ledger.meter_files: they
+# still count as configured meters (no preview for them, their RSSI is wanted).
+EXTERNAL_METER_DIR="${EXT_BASE}/etc/wmbusmeters.d"
+export EXTERNAL_METER_DIR
+# shellcheck disable=SC2034  # set by refresh_meter_files (07-meters.sh)
+EXTERNAL_METERS_COUNT=0
+# The external instance's decoded lines reach the main pipeline through this
+# FIFO (15-external.sh); its state is shown in the WebUI.
+# shellcheck disable=SC2034  # read by 15-external.sh
+EXTERNAL_FIFO="${RUNTIME}/external.fifo"
+# shellcheck disable=SC2034
+STATUS_EXTERNAL_INSTANCE_FILE="${RUNTIME}/status_external_instance.json"
+mkdir -p "${EXT_DRIVERS_DIR}" "${EXTERNAL_METER_DIR}" 2>/dev/null || true
+CUSTOM_DRIVERS_RESULT="$(python3 "${BRIDGE_SCRIPT_DIR:-/usr/bin}/custom_drivers.py" install --dest "${EXT_DRIVERS_DIR}" --status "${STATUS_CUSTOM_DRIVERS_FILE}" --enabled "${CUSTOM_DRIVERS_ENABLED}" 2>&1 || true)"
 # Qundis walk-by block (0DFF5F). Off by default: no effect on installs that
 # never see the block. On (a) rejects walk-by records the decoder cannot
 # validate, so upstream cannot publish ciphertext as a reading, and (b) with
@@ -433,6 +458,7 @@ log "robust: ignore_retained=${IGNORE_RETAINED} require_timestamp=${REQUIRE_TIME
 log "verify_ha_entities: ${VERIFY_HA_ENTITIES}"
 log "esp_diag_history_enabled: ${ESP_DIAG_HISTORY_ENABLED}"
 log "esp_rx_history_hours: ${ESP_RX_HISTORY_HOURS}"
+log "custom_drivers_enabled: ${CUSTOM_DRIVERS_ENABLED}${CUSTOM_DRIVERS_RESULT:+ (${CUSTOM_DRIVERS_RESULT})}"
 status_add_event "ok" "bridge starting"
 write_status_json
 
@@ -460,6 +486,7 @@ fi
 # line-buffer output if stdbuf exists
 STDBUF_BIN=""
 if command -v stdbuf >/dev/null 2>&1; then
+  # shellcheck disable=SC2034  # used by the bridge-lib pipelines
   STDBUF_BIN="stdbuf -oL -eL"
 fi
 
@@ -755,14 +782,14 @@ run_once() {
       ' \
     | tee >(_raw_counter_stage) \
     | "${QDS_STAGE[@]}" \
-    | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
+    | _main_wmbusmeters_stage \
     | _wmbusmeters_log_stage \
     | _decode_stage true
 else
   _raw_source \
     | tee >(_raw_counter_stage) \
     | "${QDS_STAGE[@]}" \
-    | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${BASE}" 2>&1 \
+    | _main_wmbusmeters_stage \
     | _wmbusmeters_log_stage \
     | _decode_stage false
 fi
@@ -785,7 +812,7 @@ _STOPPED=0
 _stop_extra_instances() {
   (( _STOPPED )) && return 0
   _STOPPED=1
-  stop_listen_instance; stop_mbus_instance; sleep 1; runtime_snapshot || true
+  stop_listen_instance; stop_mbus_instance; stop_external_instance; sleep 1; runtime_snapshot || true
 }
 # SIGTERM/SIGINT end the script: a handler that only returned let the restart
 # loop below start the pipeline again, until s6 gave up waiting and killed it.
@@ -838,6 +865,12 @@ while true; do
   # meters added through the WebUI, exactly like the primary instance.
   stop_mbus_instance
   start_mbus_instance
+
+  # External drivers: the meters on an external_* driver, in a wmbusmeters of
+  # their own (15-external.sh). Off by default; restarted with the pipeline
+  # so a soft reload picks up meters added or removed through the WebUI.
+  stop_external_instance
+  start_external_instance
 
   # Republish the canary entity used by the opt-in HA verification (no-op when
   # the option is off). Cheap and idempotent — retained Discovery payload.

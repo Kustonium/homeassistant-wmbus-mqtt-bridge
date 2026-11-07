@@ -493,6 +493,17 @@ def bash_int(text: str) -> Optional[int]:
         return None
 
 
+def meter_files(meter_dir: str) -> List[str]:
+    """meter-* of the decode pipeline and, when EXTERNAL_METER_DIR is set, of the
+    external instance: a meter on an external_* driver is a configured meter too
+    (no preview for it, its RSSI is wanted), only another wmbusmeters decodes it."""
+    paths = glob.glob(os.path.join(meter_dir, "meter-*"))
+    ext = os.environ.get("EXTERNAL_METER_DIR", "")
+    if ext and os.path.abspath(ext) != os.path.abspath(meter_dir):
+        paths += glob.glob(os.path.join(ext, "meter-*"))
+    return paths
+
+
 def meter_ids_in(meter_dir: str) -> Set[str]:
     """Configured meter ids: the id= lines of METER_DIR/meter-* (_rssi_load_wanted).
 
@@ -500,7 +511,7 @@ def meter_ids_in(meter_dir: str) -> Set[str]:
     without a newline is not read at all.
     """
     wanted: Set[str] = set()
-    for path in glob.glob(os.path.join(meter_dir, "meter-*")):
+    for path in meter_files(meter_dir):
         if not os.path.isfile(path):
             continue
         try:
@@ -1633,7 +1644,7 @@ def official_meter(meter_dir: str, meter: str) -> bool:
     """`grep -ql "^id=<id>$" meter-*`: the candidate is a configured meter."""
     line = _b(f"id={meter.lower()}")
     return any(os.path.isfile(p) and line in _read_lines(p)
-               for p in glob.glob(os.path.join(meter_dir, "meter-*")))
+               for p in meter_files(meter_dir))
 
 
 def autodecode_unchanged(files: CandidateFiles, meter: str, driver: str, type_line: str) -> bool:

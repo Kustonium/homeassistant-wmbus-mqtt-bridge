@@ -531,7 +531,8 @@ Historie fest. Bei 0 sind es die letzten 90-100 Tausend Frames, mit mehreren
 Platinen also nur wenige Stunden; die anderen Werte behalten so viele Stunden
 unabhängig von der Zahl der Platinen, bis zu einem Viertel mehr vor jedem Kürzen
 (die Datei ist auf 1 GB begrenzt, 1 GB Speicherplatz bleibt frei, mindestens 32 MB
-der neuesten Frames bleiben aber erhalten). Die längere Historie wird auf einer
+der neuesten Frames bleiben aber erhalten). Mit sechs Platinen belegen
+48 Stunden etwa 180 MB, kurz vor dem Kürzen bis etwa 220 MB (gemessen). Die längere Historie wird auf einer
 SD-Karte oder eMMC, unter 2 GB RAM und unter 2 GB freiem Speicherplatz abgelehnt; das
 Add-on bleibt dann beim Standard und nennt den Grund in den Einstellungen. Die
 Historie wird nicht in Home-Assistant-Backups aufgenommen.
