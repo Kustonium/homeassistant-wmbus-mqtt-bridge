@@ -150,6 +150,7 @@ Dostępny w **5 językach** (EN/PL/DE/CS/SK) — przełącznik w prawym górnym 
 | **LICZNIKI** | Twoje skonfigurowane liczniki: wartość, ostatni telegram, **ODBIÓR**. |
 | **ODBIERANE / SZUKAJ** | Wykryci kandydaci + skonfigurowane w eterze; tu dodajesz/usuwasz liczniki i filtrujesz pokazane wartości. |
 | **LOGI / LOGI ESP** | Zdarzenia runtime i diagnostyka odbiorników ESP. |
+| **ETER** | Jak gęsty jest eter wokół płytek wobec tej samej godziny we wcześniejsze dni tego samego typu. |
 | **USTAWIENIA / O PROJEKCIE** | Aktywna konfiguracja, info. |
 
 ### Kolumna ODBIÓR (co oznaczają znaczki)
@@ -466,6 +467,31 @@ urządzenie odbiorcze, którego dekoder nie ma, gdy telegramy podaje mu się jak
 HEX.
 
 ---
+
+### Zakładka Środowisko radiowe (ETER)
+
+Jak gęsty jest eter wokół Twoich płytek w porównaniu z tą samą godziną we
+wcześniejsze dni tego samego typu: roboczy albo weekend, wybierany
+automatycznie. Na stanowisku autora noc robocza to około 600 ramek na godzinę
+na jednej płytce, a noc weekendowa około 3000, więc samo „ile ramek teraz”
+bez takiego porównania niewiele mówi.
+
+- **Werdykt:** zwykły ruch, ciszej albo gęściej niż zwykle, prawdopodobne
+  kolizje (więcej ramek i więcej błędnych symboli 3z6), prawdopodobne
+  zakłócenia (więcej błędnych symboli bez wzrostu ramek) albo „odbiega tylko
+  <płytka>”. Zmiana na jednej płytce wskazuje na płytkę (antena, miejsce,
+  konfiguracja), na wszystkich naraz na eter.
+- **Mapa gęstości** tygodnia po godzinach, **tabela płytek** i **godziny, w
+  których słychać dalekie liczniki** (ramki -90 dBm i słabsze).
+
+Wartości typowe potrzebują trzech wcześniejszych dni tego samego typu; do tego
+czasu zakładka mówi, że zbiera dane. Odsetek błędnych symboli i werdykty kolizje/zakłócenia
+wymagają `diagnostic_mode: normal` na ESP (podsumowanie co 60 s); przykładowe
+konfiguracje mają go włączonego. Bez niego reszta zakładki działa na
+odebranych ramkach, a tabela płytek pokazuje `diagnostic_mode` każdej płytki z
+podpowiedzią przy tych, gdzie jest wyłączony. Liczby są trzymane per płytka
+i godzina przez 15 dni w `/data/radio_env_hours.json` (kilka KB). Tylko
+wyświetlanie: niczego nie zmienia w odbiorze.
 
 ### Zakładka Diagnostyka
 

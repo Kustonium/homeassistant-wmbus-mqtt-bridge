@@ -1,3 +1,8 @@
+## 1.6.16
+
+### Fixed
+- name the board behind the Radio environment headline (1ea9851)
+
 ## 1.6.15
 
 ### Added

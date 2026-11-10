@@ -455,6 +455,22 @@ dekodér nemá, když mu telegramy předáváte jako HEX.
 
 ---
 
+### Záložka Rádiové prostředí (ÉTER)
+
+Jak hustý je éter kolem tvých desek ve srovnání se stejnou hodinou v dřívějších
+dnech stejného typu: pracovní den nebo víkend, vybráno automaticky.
+
+- **Verdikt:** běžný provoz, klidněji nebo hustěji než obvykle, pravděpodobně
+  kolize (více rámců a více chybných symbolů 3z6), pravděpodobně rušení (více
+  chybných symbolů bez více rámců) nebo „odlišuje se jen <deska>“.
+- **Mapa hustoty** týdne po hodinách, **tabulka desek** a **hodiny, kdy jsou
+  slyšet vzdálené měřiče** (rámce -90 dBm a slabší).
+
+Typické hodnoty potřebují tři dřívější dny stejného typu. Podíl chybných symbolů a verdikty kolize/rušení
+vyžadují `diagnostic_mode: normal` na ESP; ukázkové konfigurace ho mají zapnutý.
+Bez něj zbytek záložky funguje a tabulka ukazuje `diagnostic_mode` každé desky. Počty se drží 15 dní v
+`/data/radio_env_hours.json` (několik KB). Jen zobrazení.
+
 ### Záložka Diagnostika
 
 Tabulka po deskách: rámce, měřidla, chybějící události, restarty za posledních

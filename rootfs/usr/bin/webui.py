@@ -1001,6 +1001,7 @@ RE_MIN_SAMPLES = 3          # earlier days of the same kind before "typical" mea
 RE_MIN_SYMBOLS = 200        # fewer 3-of-6 symbols give no error rate
 RE_FEWER, RE_MORE = 0.7, 1.4
 RE_SILENT_S = 2 * 3600
+RE_GONE_S = 24 * 3600       # silent this long: unplugged, not shown at all
 
 
 def _re_day_type(ts: int) -> str:
@@ -1020,6 +1021,16 @@ def _re_quantile(values: list, q: float) -> float:
     return v[min(len(v) - 1, max(0, int(round(q * (len(v) - 1)))))]
 
 
+def _re_diag_mode(lines: list) -> str:
+    """diagnostic_mode from a board's diag/config lines ("diagnostic_mode:
+    normal (CHANGED, default: off)"), "" when the line is not there."""
+    for line in lines or []:
+        m = re.match(r"\s*diagnostic_mode:\s*([A-Za-z_]+)", str(line))
+        if m:
+            return m.group(1)
+    return ""
+
+
 def _re_pct(invalid: int, total: int):
     return round(100.0 * invalid / total, 1) if total >= RE_MIN_SYMBOLS else None
 
@@ -1034,11 +1045,14 @@ def radio_env_payload(now: int | None = None) -> dict:
     lt_now = time.localtime(now)
     hod, dtype = lt_now.tm_hour, _re_day_type(now)
     first = min(r[0] for rows in boards.values() for r in rows)
+    configs = _esp_diag_config()
     out = []
     for name, rows in sorted(boards.items()):
         by = {r[0]: r for r in rows}
         cur, prev = by.get(cur_hour), by.get(cur_hour - 3600)
         last = max((r[0] for r in rows), default=0)
+        if now - last > RE_GONE_S:
+            continue
         # Counting may have started mid-hour (add-on start): the rate is
         # taken over the time actually counted, never the whole hour.
         counted = max(1, now - (cur[6] if cur is not None and len(cur) > 6 else cur_hour))
@@ -1060,7 +1074,11 @@ def radio_env_payload(now: int | None = None) -> dict:
         meters = prev[3] if prev is not None else (cur[3] if cur else None)
         b = {"name": name, "frames_h": None if f_now is None else round(f_now), "meters": meters,
              "sym_pct": sym_now, "sym_typ_pct": sym_typ, "typ": None, "typ_lo": None, "typ_hi": None,
-             "samples": len(typ), "ratio": None, "_sym_t": sym_tot, "_sym_i": sym_inv}
+             "samples": len(typ), "ratio": None, "_sym_t": sym_tot, "_sym_i": sym_inv,
+             # The board's own setting when it published one; otherwise only
+             # whether 60 s summaries reached us in the last two hours.
+             "diag_mode": _re_diag_mode((configs.get(name) or {}).get("lines")),
+             "summaries": sym_tot > 0}
         if now - last > RE_SILENT_S:
             b["state"] = "silent"
         elif len(typ) < RE_MIN_SAMPLES or f_now is None:
@@ -1081,9 +1099,15 @@ def radio_env_payload(now: int | None = None) -> dict:
                 b["state"] = "normal"
         out.append(b)
 
-    known = [b for b in out if b["state"] not in ("learning", "silent")]
+    # A silent board is a finding too: one dead board among working ones is
+    # "only <board> differs", all of them silent is its own verdict.
+    known = [b for b in out if b["state"] != "learning"]
     odd = [b for b in known if b["state"] != "normal"]
-    if not known:
+    if not out:
+        return {"ok": True, "empty": True}
+    if known and all(b["state"] == "silent" for b in known):
+        verdict, odd_board = "silent", ""
+    elif not known:
         verdict, odd_board = "learning", ""
     elif len(known) >= 2 and len(odd) == 1:
         verdict, odd_board = "one_board", odd[0]["name"]

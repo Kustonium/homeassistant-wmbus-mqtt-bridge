@@ -148,6 +148,7 @@ Available in **5 languages** (EN/PL/DE/CS/SK) — switcher in the top-right corn
 | **METERS** | Your configured meters: value, last telegram, **RECEPTION**. |
 | **RECEIVING / SEARCH** | Detected candidates + configured-on-air; add/remove meters and filter displayed values here. |
 | **LOGS / ESP LOGS** | Runtime events and ESP receiver diagnostics. |
+| **RADIO** | How busy the air around your boards is against the same hour on earlier days of the same kind. |
 | **SETTINGS / ABOUT** | Active configuration, info. |
 
 ### The RECEPTION column (what the badges mean)
@@ -468,6 +469,31 @@ output formats, and the last two are filled in by a receiving radio device,
 which the decoder does not have when telegrams are fed to it as hex.
 
 ---
+
+### Radio environment tab (RADIO)
+
+How busy the air around your boards is, compared with the same hour on earlier
+days of the same kind: working day or weekend, picked automatically. On the
+author's bench a working-day night carries about 600 frames per hour on one
+board and a weekend night about 3000, so "frames now" means little without
+that comparison.
+
+- **Verdict:** normal traffic, quieter or busier than usual, collisions likely
+  (more frames and more invalid 3-of-6 symbols), interference likely (more
+  invalid symbols without more frames), or "only <board> differs". A change on
+  one board points at that board (antenna, placement, configuration); on all
+  boards at once, at the air.
+- **Density map** of the week by hour, a **table per board**, and the **hours
+  when far meters are heard** (frames at -90 dBm or weaker).
+
+Typical values need three earlier days of the same kind; until then the tab
+says it is collecting data. The invalid-symbol rate and the collisions and
+interference verdicts need `diagnostic_mode: normal` on the ESP (the 60 s
+summary); the example configs have it on. Without it the rest of the tab works
+from the received frames, and the board table shows each board's
+`diagnostic_mode` with a hint for the boards where it is off. The counts are kept per board and hour for 15 days
+in `/data/radio_env_hours.json` (a few kilobytes). Display only: nothing in
+reception changes.
 
 ### Diagnostics tab
 
