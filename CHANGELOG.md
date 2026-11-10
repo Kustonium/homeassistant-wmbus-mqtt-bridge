@@ -1,3 +1,8 @@
+## 1.6.17
+
+### Fixed
+- Radio environment names the best far-meter hours only with data (ce60ddb)
+
 ## 1.6.16
 
 ### Fixed

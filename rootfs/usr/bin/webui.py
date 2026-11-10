@@ -1002,6 +1002,7 @@ RE_MIN_SYMBOLS = 200        # fewer 3-of-6 symbols give no error rate
 RE_FEWER, RE_MORE = 0.7, 1.4
 RE_SILENT_S = 2 * 3600
 RE_GONE_S = 24 * 3600       # silent this long: unplugged, not shown at all
+RE_FAR_MIN_HOURS = 20       # hours of the day with enough samples before "best hours"
 
 
 def _re_day_type(ts: int) -> str:
@@ -1154,8 +1155,14 @@ def radio_env_payload(now: int | None = None) -> dict:
                 continue
             weak.setdefault(time.localtime(r[0]).tm_hour, []).append(r[2])
     far = [round(sum(weak[h]) / len(weak[h]), 1) if h in weak else None for h in range(24)]
+    # "Best hours" only once most of the day has been seen on a few days:
+    # from the first hours alone it would just name the hours that exist.
+    # weak[h] holds one value per board and day, so samples are days.
+    days_per_hour = {h: len(vals) / max(1, len(boards)) for h, vals in weak.items()}
+    covered = sum(1 for h in range(24) if days_per_hour.get(h, 0) >= RE_MIN_SAMPLES)
     peak = max((v for v in far if v is not None), default=0)
-    best = [h for h, v in enumerate(far) if v is not None and peak > 0 and v >= 0.7 * peak]
+    best = [h for h, v in enumerate(far) if v is not None and peak > 0 and v >= 0.7 * peak] \
+        if covered >= RE_FAR_MIN_HOURS else []
 
     return {"ok": True, "empty": False, "now": now, "hour": hod, "day_type": dtype,
             "days": round((now - first) / 86400, 1), "verdict": verdict, "odd_board": odd_board,
