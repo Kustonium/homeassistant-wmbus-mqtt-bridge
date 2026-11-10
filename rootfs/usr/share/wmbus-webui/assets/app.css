@@ -2074,3 +2074,13 @@ th.sortable:hover {
 .xdrv-page input[type="file"]::file-selector-button:hover {
   border-color: var(--accent);
 }
+
+/* Radio environment tab: cards one under another with the usual spacing. */
+.re-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.re-page .card {
+  margin: 0;
+}

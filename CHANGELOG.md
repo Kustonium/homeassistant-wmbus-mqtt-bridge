@@ -1,3 +1,11 @@
+## 1.6.15
+
+### Added
+- Radio environment tab (38b5ac3)
+
+### Fixed
+- Radio environment rate from the time actually counted (ed20ba0)
+
 ## 1.6.14
 
 ### Added
