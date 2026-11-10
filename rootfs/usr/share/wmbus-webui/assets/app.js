@@ -4474,6 +4474,7 @@
       interference: ["bad", t("re_v_interference", "Interference likely")],
       one_board: ["warn", t("re_v_one_board", "Only {board} differs", {board: x.odd_board || ""})],
       learning: ["muted", t("re_v_learning", "Collecting data")],
+      silent: ["bad", t("re_v_silent", "No frames from the boards")],
     }[x.verdict] || ["muted", t("re_v_learning", "Collecting data")];
     const verdictHint = x.verdict === "one_board"
       ? t("re_v_hint_board", "The board, not the air: antenna, placement or configuration.")
@@ -4482,14 +4483,19 @@
         : asArray(x.boards).length > 1 ? t("re_v_hint_all", "All boards agree.") : "";
     const fmt = (v) => (v === null || v === undefined) ? "—" : String(v);
     const typ = (x.head_typ_lo !== null && x.head_typ_lo !== undefined)
-      ? t("re_typical", "typically {range}", {range: `${x.head_typ_lo}–${x.head_typ_hi}`}) : "";
+      ? t("re_typical", "typically {range}", {range: `${x.head_typ_lo}–${x.head_typ_hi}`})
+      : t("re_typical_pending", "typical: collecting data");
+    const hasSym = x.sym_pct !== null && x.sym_pct !== undefined;
     const symTyp = (x.sym_typ_pct !== null && x.sym_typ_pct !== undefined)
-      ? t("re_typical", "typically {range}", {range: `${x.sym_typ_pct}%`}) : t("re_no_sym", "no diagnostic summaries");
+      ? t("re_typical", "typically {range}", {range: `${x.sym_typ_pct}%`})
+      : hasSym ? t("re_typical_pending", "typical: collecting data")
+        : t("re_no_sym", "Turn on diagnostic_mode: normal on the boards to see invalid symbols.");
     const hh = String(x.hour ?? "").padStart(2, "0");
     const top = `<div class="card" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;">
       <div><div class="hint">${escapeHtml(t("re_now", "Now ({time}, {day})", {time: `${hh}:00`, day: dayType}))}</div>
         <div style="font-size:22px;font-weight:600;">${escapeHtml(t("re_frames_h", "{n} frames/h", {n: fmt(x.head_frames_h)}))}</div>
-        <div class="hint">${escapeHtml(typ)}${x.head && asArray(x.boards).length > 1 ? ` · ${escapeHtml(x.head)}` : ""}</div></div>
+        <div class="hint">${escapeHtml(typ)}</div>
+        ${x.head && asArray(x.boards).length > 1 ? `<div class="hint">${escapeHtml(t("re_head_board", "board that hears the most: {board}", {board: x.head}))}</div>` : ""}</div>
       <div><div class="hint">${escapeHtml(t("re_sym", "Invalid 3-of-6 symbols"))}</div>
         <div style="font-size:22px;font-weight:600;">${escapeHtml(x.sym_pct === null || x.sym_pct === undefined ? "—" : `${x.sym_pct}%`)}</div>
         <div class="hint">${escapeHtml(symTyp)}</div></div>
@@ -4524,6 +4530,13 @@
         silent: ["bad", t("re_s_silent", "no frames")],
       }[b.state] || ["muted", b.state];
     };
+    const diagPill = (b) => {
+      const m = String(b.diag_mode || "");
+      if (m === "off") return `<span class="pill warn">off</span>`;
+      if (m) return `<span class="pill ok">${escapeHtml(m)}</span>`;
+      return b.summaries ? `<span class="pill ok">${escapeHtml(t("re_diag_on", "on"))}</span>` : `<span class="hint">—</span>`;
+    };
+    const diagOff = asArray(x.boards).filter(b => b.diag_mode === "off" || (!b.diag_mode && !b.summaries));
     const boardRows = asArray(x.boards).map(b => {
       const p = statePill(b);
       return `<tr>
@@ -4531,6 +4544,7 @@
         <td>${escapeHtml(fmt(b.frames_h))}${b.typ !== null && b.typ !== undefined ? ` <span class="hint">/ ${escapeHtml(String(b.typ))}</span>` : ""}</td>
         <td>${escapeHtml(fmt(b.meters))}</td>
         <td>${escapeHtml(b.sym_pct === null || b.sym_pct === undefined ? "—" : `${b.sym_pct}%`)}</td>
+        <td>${diagPill(b)}</td>
         <td><span class="pill ${p[0]}">${escapeHtml(p[1])}</span></td>
       </tr>`;
     }).join("");
@@ -4539,8 +4553,9 @@
       <div class="table-wrap"><table>
         <thead><tr><th>${escapeHtml(t("re_col_board", "Board"))}</th><th>${escapeHtml(t("re_col_frames", "Frames/h"))}</th>
           <th>${escapeHtml(t("re_col_meters", "Meters"))}</th><th>${escapeHtml(t("re_col_sym", "Invalid symbols"))}</th>
-          <th>${escapeHtml(t("re_col_state", "State"))}</th></tr></thead>
+          <th>diagnostic_mode</th><th>${escapeHtml(t("re_col_state", "State"))}</th></tr></thead>
         <tbody>${boardRows}</tbody></table></div>
+      ${diagOff.length ? `<p class="hint">${escapeHtml(t("re_diag_off_hint", "{boards}: diagnostic_mode is off, so no 60 s summaries: no invalid-symbol rate and no collisions or interference verdict. Frames, meters, the map and far meters still work. To get it, set diagnostic_mode: normal in the board's YAML.", {boards: diagOff.map(b => b.name).join(", ")}))}</p>` : ""}
       ${asArray(x.boards).length > 1 ? `<p class="hint">${escapeHtml(t("re_boards_hint", "A change on one board points at that board (antenna, placement, configuration). On all boards at once, at the air."))}</p>` : ""}
     </div>`;
 
@@ -4552,7 +4567,8 @@
       <div style="display:flex;align-items:flex-end;gap:2px;height:60px;">${far.map((v, h) =>
         `<div title="${escapeHtml(`${String(h).padStart(2, "0")}:00 · ${v === null ? "—" : v}/h`)}" style="flex:1;border-radius:2px 2px 0 0;background:${typeof v === "number" ? "#1D9E75" : "transparent"};height:${typeof v === "number" ? Math.max(2, Math.round(56 * v / farPeak)) : 0}px;"></div>`).join("")}</div>
       <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:4px;"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
-      ${best ? `<p>${escapeHtml(t("re_far_best", "Best: {day} {range}. Looking for a far meter? Leave the search running then.", {day: dayType, range: best}))}</p>` : ""}
+      ${best ? `<p>${escapeHtml(t("re_far_best", "Best: {day} {range}. Looking for a far meter? Leave the search running then.", {day: dayType, range: best}))}</p>`
+        : `<p class="hint">${escapeHtml(t("re_far_pending", "No full hours stored yet. The chart fills in hour by hour."))}</p>`}
     </div>`;
 
     return `<div class="re-page">

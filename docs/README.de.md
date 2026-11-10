@@ -481,6 +481,26 @@ Hex übergeben werden.
 
 ---
 
+### Tab Funkumgebung (FUNK)
+
+Wie belegt der Funk um deine Platinen ist, verglichen mit derselben Stunde an
+früheren Tagen derselben Art: Werktag oder Wochenende, automatisch gewählt.
+Am Prüfstand des Autors trägt eine Werktagsnacht etwa 600 Frames pro Stunde auf
+einer Platine, eine Wochenendnacht etwa 3000.
+
+- **Bewertung:** normaler Betrieb, ruhiger oder belebter als üblich,
+  wahrscheinlich Kollisionen (mehr Frames und mehr ungültige 3-aus-6-Symbole),
+  wahrscheinlich Störungen (mehr ungültige Symbole ohne mehr Frames) oder „nur
+  <Platine> weicht ab“.
+- **Dichtekarte** der Woche nach Stunden, **Tabelle pro Platine** und die
+  **Stunden, in denen ferne Zähler zu hören sind** (Frames -90 dBm und schwächer).
+
+Typische Werte brauchen drei frühere Tage derselben Art. Die Symbolfehlerrate und die Bewertungen
+Kollisionen/Störungen brauchen `diagnostic_mode: normal` am ESP; die
+Beispielkonfigurationen haben es an. Ohne es funktioniert der Rest des Tabs, und
+die Tabelle zeigt den `diagnostic_mode` jeder Platine. Die Zählungen liegen 15 Tage lang in
+`/data/radio_env_hours.json` (einige KB). Nur Anzeige.
+
 ### Diagnose-Tab
 
 Eine Tabelle je Platine: Frames, Zähler, fehlende Ereignisse, Neustarts der
