@@ -466,11 +466,23 @@ def candidate_issue_report(meter_id: str) -> tuple[bool, dict]:
         if isinstance(last_json, dict):
             mtype = str(last_json.get("media") or "").strip() or "unknown"
 
-    analyze_arg = f"--analyze={key}" if key else "--analyze"
+    # A meter on an external_* driver is analysed with that driver: the
+    # built-in one it takes over would list the fields the user replaced.
+    # --driversdir before --analyze, because wmbusmeters loads the directory
+    # while it reads the arguments and checks the driver name in --analyze
+    # right there. Only an accepted copy, as for the decoder.
+    head = [WMBUSMETERS_BIN]
+    forced = ""
+    if driver.startswith("external_") and re.fullmatch(r"[A-Za-z0-9_]+", driver) \
+            and (EXT_DRIVERS_DIR / f"{driver}.xmq").is_file():
+        head.append(f"--driversdir={EXT_DRIVERS_DIR}")
+        forced = driver
+    analyze_spec = ":".join(p for p in (forced, key) if p)
+    analyze_arg = f"--analyze={analyze_spec}" if analyze_spec else "--analyze"
     analyze_output = ""
     try:
         proc = subprocess.run(
-            [WMBUSMETERS_BIN, analyze_arg, raw],
+            [*head, analyze_arg, raw],
             capture_output=True, text=True, timeout=20,
         )
         analyze_output = (proc.stdout or "") + (proc.stderr or "")
@@ -493,6 +505,8 @@ def candidate_issue_report(meter_id: str) -> tuple[bool, dict]:
         if key
         else "--- wmbusmeters --analyze output ---"
     )
+    if forced:
+        analyze_note = analyze_note[:-4] + f" (custom driver {forced}) ---"
     # wmbusmeters asks every issue for its version and the setup. bridge.sh
     # records at start: the binary's --version ("wmbusmeters: HEAD_3.0.0 with
     # local changes" for the add-on's detached, patched checkout), the build's
@@ -1894,7 +1908,8 @@ def update_meter_in_options(meter_id: str, driver: str, key: str | None = None,
                             exclude_fields: str | None = None,
                             calculated_fields: str | None = None,
                             static_fields: str | None = None,
-                            meter_name: str | None = None) -> tuple[bool, str]:
+                            meter_name: str | None = None,
+                            value_field: str | None = None) -> tuple[bool, str]:
     """Change the driver (and optionally the AES key) of an existing meter.
 
     Same Supervisor-first persistence as add/remove_meter_from_options. The
@@ -1985,6 +2000,12 @@ def update_meter_in_options(meter_id: str, driver: str, key: str | None = None,
             entry["static_fields"] = static_fields
         else:
             entry.pop("static_fields", None)
+    # The field shown as the meter's value; empty = the automatic choice.
+    if value_field is not None:
+        if value_field:
+            entry["value_field"] = value_field
+        else:
+            entry.pop("value_field", None)
     options["meters"] = meters
 
     token = os.environ.get("SUPERVISOR_TOKEN", "")
@@ -2094,6 +2115,11 @@ def factory_reset() -> tuple[bool, str]:
     return True, msg
 
 
+# LR1121 developer capture: no use to anyone else (other boards never send
+# those events), so the settings form offers it only while it is on.
+HIDDEN_UNLESS_ON = {"esp_diag_history_enabled"}
+
+
 def config_options_spec() -> list[dict]:
     """Parse the scalar add-on options from config.yaml (schema + defaults) and
     merge the current values from options.json. Drives the editable Settings
@@ -2134,6 +2160,10 @@ def config_options_spec() -> list[dict]:
         if not m:
             continue
         key, raw_type = m.group(1), m.group(2).strip()
+        # Developer-only options: shown only while they are on, so they can
+        # be turned off here but are not offered to everyone.
+        if key in HIDDEN_UNLESS_ON and cur.get(key) is not True:
+            continue
         optional = raw_type.endswith("?")
         t = raw_type[:-1] if optional else raw_type
         spec: dict = {"key": key, "optional": optional, "secret": "password" in key}
@@ -4973,9 +5003,17 @@ class Handler(BaseHTTPRequestHandler):
                     return
             else:
                 meter_name = None
+            # Absent = leave it; present but empty = back to the automatic choice.
+            if 'value_field' in params:
+                value_field = (params.get('value_field') or [''])[0].strip()
+                if value_field and not re.fullmatch(r"[A-Za-z0-9_]{1,64}", value_field):
+                    self._send_json(400, {"ok": False, "message": "Invalid value_field."})
+                    return
+            else:
+                value_field = None
             ok, msg = update_meter_in_options(meter_id, driver, key or None, exclude_fields,
                                               calculated_fields, static_fields,
-                                              meter_name=meter_name)
+                                              meter_name=meter_name, value_field=value_field)
             self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
             return
         if path.endswith('/api/factory-reset'):

@@ -82,6 +82,7 @@ flowchart LR
    ```
    https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge
    ```
+   Or in one click: [![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FKustonium%2Fhomeassistant-wmbus-mqtt-bridge)
 2. **Install** "wMBus MQTT Bridge", click **Start** (with the default `meters: []`
    the add-on enters **LISTEN mode** and only listens).
 3. **Open the WebUI** (Info → OPEN WEB UI).
@@ -431,6 +432,7 @@ created.
 | `type_other` | str? | when `type=other` | Custom driver name |
 | `key` | str? | when encrypted | 32-char AES key (HEX) |
 | `exclude_fields` | str? | no | Glob patterns, comma- or space-separated, for decoded fields that should get **no** Home Assistant entity — e.g. `consumption_at_history_*, history_*_date`. Empty publishes every field. |
+| `value_field` | str? | no | The decoded field shown as the meter's value on the Meters tab (e.g. `total_m3`), picked in the Fields panel. Empty, or a field the telegram does not carry as a number, uses the automatic choice. Display only: entities and MQTT do not change. |
 | `calculated_fields` | str? | no | Extra fields **wmbusmeters** computes from the telegram, semicolon separated, each `name=formula` — e.g. `difftemp_c=flow_temperature_c - return_temperature_c`. The decoder does the arithmetic; the result is a normal field and becomes an entity like any other. |
 | `static_fields` | str? | no | Constant values attached to this meter, semicolon separated, each `name=value` — e.g. `location=kitchen; apartment=12`. The decoder copies them into the telegram **as text** (`apartment=12` arrives as `"12"`), so they show up in the entity attributes and as diagnostic entities: a label, not a measurement. |
 

@@ -6,8 +6,8 @@ configuration:
     name: "ESP-RX-Beweis-API"
     description: "Stellt den nur-lesend zugänglichen WebUI-Endpunkt /api/esp-rx mit strukturierter RX-Zusammenfassung und begrenzter Historie bereit. Standardmäßig aus; liefert nie RAW-Telegramme, AES-Schlüssel oder MQTT-Zugangsdaten."
   esp_diag_history_enabled:
-    name: "Historie der ESP-Funkdiagnose (fortgeschritten)"
-    description: "Speichert bis zu 10.000 fifo_sample- und pipeline_drop-Ereignisse aus MQTT, einschließlich roher Funkbytes. Nur zur Analyse von Empfängerproblemen; belegt mehr Speicherplatz. Zum Herunterladen ist die ESP-RX-Nachweis-API nötig."
+    name: "LR1121-Entwicklerdiagnose-Historie (nur Entwicklung)"
+    description: "Nur für die LR1121-Diagnose im Entwicklermodus: speichert bis zu 10.000 fifo_sample- und pipeline_drop-Ereignisse (rohe Funkbytes), die ausschließlich eine LR1121-Platine sendet, und nur mit diagnostic_mode: dev. Andere Platinen senden sie nie, für sie bleibt die Historie leer. Belegt mehr Speicherplatz; zum Herunterladen ist die ESP-RX-Nachweis-API nötig."
   custom_drivers_enabled:
     name: "Externe Treiber (fortgeschritten)"
     description: "Erlaubt, eigene wmbusmeters-Treiberdateien (.xmq) auf einer eigenen Seite hochzuladen und für Zähler mit einem external_-Treiber zu verwenden. Sie laufen in einer eigenen wmbusmeters-Instanz, sodass eine fehlerhafte Datei die übrigen Zähler nicht anhält. Standardmäßig aus; nur einschalten, wenn Sie wissen, was die Datei tut."

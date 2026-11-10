@@ -1,3 +1,13 @@
+## 1.6.14
+
+### Added
+- pick the field a meter shows as its value (ea3f6e0)
+
+### Fixed
+- a meter's shown value skips the fields the user unticked (0bed515)
+- the Report button analyses a meter with its external driver (f9719a7)
+- hide esp_diag_history_enabled, an LR1121 developer capture (9d37db1)
+
 ## 1.6.13
 
 ### Added

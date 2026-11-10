@@ -49,6 +49,8 @@ from wmbus_mbus import field_spec_lines
 SEP = "\x1f"
 NEWLINE = "\x1e"
 EXTERNAL_PREFIX = "external_"
+# value_field: a decoded field name, as wmbusmeters writes them.
+VALUE_FIELD_RE = re.compile(r"[A-Za-z0-9_]+")
 
 
 def accepted_external_drivers(status_file: str) -> tuple:
@@ -241,6 +243,7 @@ class MeterFiles(Tool):
             mid_raw = jq_r_alt(m, "meter_id", "", self.err)
             key = jq_r_alt(m, "key", "", self.err)
             excl = jq_r_alt(m, "exclude_fields", "", self.err).replace(",", " ")
+            vfield = jq_r_alt(m, "value_field", "", self.err).strip()
             calc = jq_r_alt(m, "calculated_fields", "", self.err)
             stat = jq_r_alt(m, "static_fields", "", self.err)
             if not key or key == "null":
@@ -282,6 +285,8 @@ class MeterFiles(Tool):
             if excl and excl != "null":
                 excludes[low] = excl
                 self.emit("exclude", low, excl)
+            if vfield and vfield != "null" and VALUE_FIELD_RE.fullmatch(vfield):
+                self.emit("value", low, vfield)
             calc_lines = field_spec_lines(calc, mid, "calculate_", "calculated_fields", self.warn) \
                 if calc and calc != "null" else []
             stat_lines = field_spec_lines(stat, mid, "field_", "static_fields", self.warn) \

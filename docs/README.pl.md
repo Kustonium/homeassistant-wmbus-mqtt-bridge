@@ -84,6 +84,7 @@ flowchart LR
    ```
    https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge
    ```
+   Albo jednym kliknięciem: [![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FKustonium%2Fhomeassistant-wmbus-mqtt-bridge)
 2. **Zainstaluj** „wMBus MQTT Bridge", kliknij **Start** (domyślnie `meters: []`
    → add-on wchodzi w **tryb LISTEN** i tylko nasłuchuje).
 3. **Otwórz WebUI** (Info → OPEN WEB UI).
@@ -429,6 +430,7 @@ encja nie powstaje.
 | `type_other` | str? | gdy `type=other` | Niestandardowa nazwa sterownika |
 | `key` | str? | gdy szyfrowany | 32-znakowy klucz AES (HEX) |
 | `exclude_fields` | str? | nie | Wzorce (globy) pól, które mają **nie** dostać encji w Home Assistant — np. `consumption_at_history_*, history_*_date`. Oddzielane przecinkami lub spacjami; puste publikuje wszystkie pola. |
+| `value_field` | str? | nie | Pole pokazywane jako wartość licznika na zakładce Liczniki (np. `total_m3`), wybierane w panelu Pola. Puste albo pole, którego telegram nie niesie jako liczby, oznacza wybór automatyczny. Tylko wyświetlanie: encje i MQTT się nie zmieniają. |
 | `calculated_fields` | str? | nie | Dodatkowe pola liczone przez **wmbusmeters** z telegramu, rozdzielone średnikami, każde jako `nazwa=formuła` — np. `difftemp_c=flow_temperature_c - return_temperature_c`. Liczy dekoder; wynik jest zwykłym polem i dostaje encję jak każde inne. |
 | `static_fields` | str? | nie | Stałe wartości doczepione do licznika, rozdzielone średnikami, każda jako `nazwa=wartość` — np. `location=kuchnia; apartment=12`. Dekoder wstawia je do telegramu **jako tekst** (`apartment=12` przyjdzie jako `"12"`), więc widać je w atrybutach encji i jako encje diagnostyczne: to etykieta, nie pomiar. |
 

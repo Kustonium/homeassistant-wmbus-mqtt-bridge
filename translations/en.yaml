@@ -6,8 +6,8 @@ configuration:
     name: "ESP RX evidence API"
     description: "Expose the read-only WebUI endpoint /api/esp-rx for structured RX summaries and bounded history. Off by default; never returns RAW telegrams, AES keys or MQTT credentials."
   esp_diag_history_enabled:
-    name: "ESP radio diagnostics history (advanced)"
-    description: "Stores up to 10,000 fifo_sample and pipeline_drop events from MQTT, including raw radio bytes. Only for analysing receiver problems; uses more disk. Needs the ESP RX evidence API to download them."
+    name: "LR1121 developer diagnostics history (dev only)"
+    description: "LR1121 developer diagnostics only: stores up to 10,000 fifo_sample and pipeline_drop events (raw radio bytes) that only an LR1121 board sends, and only with diagnostic_mode: dev. Other boards never send them, so for them this stays empty. Uses more disk; needs the ESP RX evidence API to download."
   custom_drivers_enabled:
     name: "External drivers (advanced)"
     description: "Lets you upload your own wmbusmeters driver files (.xmq) on a separate screen and use them for meters set to an external_ driver. They run in a separate wmbusmeters instance, so a faulty file cannot stop the other meters. Off by default; turn on only if you know what the file does."
