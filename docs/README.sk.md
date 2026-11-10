@@ -82,6 +82,7 @@ flowchart LR
    ```
    https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge
    ```
+   Alebo jedným kliknutím: [![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FKustonium%2Fhomeassistant-wmbus-mqtt-bridge)
 2. **Nainštaluj** „wMBus MQTT Bridge", klikni **Start** (s predvoleným `meters: []`
    add-on prejde do **režimu LISTEN** a iba počúva).
 3. **Otvor WebUI** (Info → OPEN WEB UI).
@@ -418,6 +419,7 @@ entita.
 | `type_other` | str? | pri `type=other` | Vlastný názov ovládača |
 | `key` | str? | pri šifrovaní | 32-znakový AES kľúč (HEX) |
 | `exclude_fields` | str? | nie | Vzory (globy) polí, ktoré **nemajú** dostať entitu v Home Assistante — napr. `consumption_at_history_*, history_*_date`. Oddelené čiarkami alebo medzerami; prázdne publikuje všetky polia. |
+| `value_field` | str? | nie | Pole zobrazené ako hodnota merača na karte Merače (napr. `total_m3`), vybrané v paneli Polia. Prázdne alebo pole, ktoré telegram nenesie ako číslo, použije automatickú voľbu. Len zobrazenie: entity a MQTT sa nemenia. |
 | `calculated_fields` | str? | nie | Ďalšie polia, ktoré **wmbusmeters** počíta z telegramu, oddelené bodkočiarkami, každé ako `názov=vzorec` — napr. `difftemp_c=flow_temperature_c - return_temperature_c`. Počíta dekodér; výsledok je bežné pole a stane sa entitou ako každé iné. |
 | `static_fields` | str? | nie | Pevné hodnoty pripojené k meraču, oddelené bodkočiarkami, každá ako `názov=hodnota` — napr. `location=kuchyna; apartment=12`. Dekodér ich vkladá do telegramu **ako text** (`apartment=12` príde ako `"12"`), takže ich vidno v atribútoch entít a ako diagnostické entity: štítok, nie meranie. |
 

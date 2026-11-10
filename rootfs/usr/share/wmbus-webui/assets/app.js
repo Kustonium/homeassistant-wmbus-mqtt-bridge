@@ -2208,6 +2208,9 @@
       : ((state.data && state.data.options && state.data.options.meters) || [])
           .find(m => m && normalizeMeterId(m.meter_id) === meterId);
     const excludeText = (savedMeter && savedMeter.exclude_fields) || "";
+    // value_field lives in options.meters, so wired meters have no choice.
+    const canPickValue = row.source !== "mbus" && !!savedMeter;
+    const valueField = String((savedMeter && savedMeter.value_field) || "");
     let inner;
     if (!fields || typeof fields !== "object") {
       inner = `<span style="color:var(--muted);">${escapeHtml(t("published_fields_none", "No decoded telegram this session yet."))}</span>`;
@@ -2219,6 +2222,7 @@
         <table style="width:auto;min-width:50%;">
           <thead><tr>
             <th>${escapeHtml(t("published_fields_publish", "Publish"))}</th>
+            ${canPickValue ? `<th title="${escapeHtml(t("fields_shown_hint", "The field shown as the meter's value on the Meters tab. Display only: entities and MQTT do not change."))}">${escapeHtml(t("fields_shown_col", "Shown"))}</th>` : ""}
             <th>${escapeHtml(t("published_fields_field", "Field"))}</th>
             <th>${escapeHtml(t("webui_value", "Value"))}</th>
           </tr></thead>
@@ -2240,15 +2244,31 @@
                   data-name="${escapeHtml(k)}" data-driver="${escapeHtml(row.driver || "auto")}"
                   ${byGlob ? `title="${escapeHtml(t("driver_fields_by_pattern", "(excluded by a pattern)"))}"` : ""}>`;
               }
+              // Shown as the value: a number that is published (an unticked
+              // field is never the value). The automatic pick is marked too.
+              let shownCell = "";
+              if (canPickValue) {
+                const pickable = !meta && kind === "" && typeof v === "number";
+                const isAuto = !valueField && k === String(row.value_key || "");
+                shownCell = `<td style="text-align:center;">${pickable
+                  ? `<input type="radio" name="vf-${escapeHtml(meterId)}" ${valueField === k ? "checked" : ""}
+                      data-action="set-meter-value-field" data-id="${escapeHtml(meterId)}"
+                      data-name="${escapeHtml(k)}" data-driver="${escapeHtml(row.driver || "auto")}">${isAuto
+                      ? ` <span style="font-size:10px;color:var(--muted);">${escapeHtml(t("fields_shown_auto", "automatic"))}</span>` : ""}`
+                  : ""}</td>`;
+              }
               return `<tr${byGlob ? ' style="opacity:0.55;"' : ""}>
                 <td style="text-align:center;">${cell}</td>
+                ${shownCell}
                 <td class="mono" style="font-size:11px;">${escapeHtml(k)}</td>
                 <td class="mono" style="font-size:11px;">${escapeHtml(String(v))}${unit ? ` <span style="color:var(--muted);">${escapeHtml(unit)}</span>` : ""}</td>
               </tr>`;
             }).join("")}
           </tbody>
         </table>
-        <div style="font-size:10px;color:var(--muted);margin-top:4px;">${escapeHtml(t("published_fields_toggle_hint", "Unchecking removes the entity and its recorded history. Rows dimmed by a pattern are changed in the meter's Driver… dialog."))}</div>`;
+        <div style="font-size:10px;color:var(--muted);margin-top:4px;">${escapeHtml(t("published_fields_toggle_hint", "Unchecking removes the entity and its recorded history. Rows dimmed by a pattern are changed in the meter's Driver… dialog."))}</div>
+        ${canPickValue && valueField ? `<div style="margin-top:6px;"><button class="btn" data-action="set-meter-value-field"
+            data-id="${escapeHtml(meterId)}" data-name="" data-driver="${escapeHtml(row.driver || "auto")}">${escapeHtml(t("fields_shown_reset", "Back to automatic"))}</button></div>` : ""}`;
     }
     return `
       <tr><td colspan="${colspan}" style="background:#0b141b;border-top:1px solid #1d2f3c;padding:10px 14px;">
@@ -5801,6 +5821,30 @@
             await postApi("update-meter", {meter_id: id, driver: effectiveDriver, exclude_fields: next});
           }
           triggerSoftReload(`${t("fields_saved", "Field selection saved.")} ${t("reloading_pipeline", "Applying meter changes…")}`);
+        } catch (error) {
+          toast(error.message, true);
+          render();
+        }
+      })();
+      return;
+    }
+
+    if (action === "set-meter-value-field") {
+      const id = target.dataset.id || "";
+      const fieldName = target.dataset.name || "";
+      if (!id) return;
+      const saved = ((state.data && state.data.options && state.data.options.meters) || [])
+        .find(m => m && normalizeMeterId(m.meter_id) === normalizeMeterId(id));
+      if (!saved) return;
+      // As for toggle-meter-field: update-meter rewrites the driver, so send
+      // the saved one.
+      const savedDriver = saved.type === "other" && saved.type_other ? saved.type_other : saved.type;
+      const effectiveDriver = savedDriver || target.dataset.driver || "auto";
+      target.disabled = true;
+      (async () => {
+        try {
+          await postApi("update-meter", {meter_id: id, driver: effectiveDriver, value_field: fieldName});
+          triggerSoftReload(t("fields_shown_saved", "Shown value saved. It changes with the meter's next telegram."));
         } catch (error) {
           toast(error.message, true);
           render();

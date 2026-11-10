@@ -178,6 +178,10 @@ field_description() {
 # "value too great for base". Declaring it next to its consumer removes the
 # dependency on library sourcing order.
 declare -A METER_EXCLUDE_FIELDS
+# The field shown as each meter's value (value_field), per lowercase id;
+# declared here for the same reason. Display only (status_meter_seen).
+# shellcheck disable=SC2034  # read by status_meter_seen (07) and _decode_stage (12)
+declare -A METER_VALUE_FIELD=()
 
 # Has this meter's configuration excluded this field from Discovery?
 # METER_EXCLUDE_FIELDS holds whitespace-separated glob patterns per lowercase
