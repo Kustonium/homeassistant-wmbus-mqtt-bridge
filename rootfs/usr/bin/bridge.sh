@@ -256,6 +256,12 @@ STATUS_BRIDGE_START_FILE="${RUNTIME}/status_bridge_start.txt"
 # Filled by an opt-in ESP publication (wmbus/<dev>/rssi/<meter_id>); absent
 # unless the firmware is configured to send it, which is the normal case.
 STATUS_RSSI_FILE="${RUNTIME}/status_rssi.tsv"
+# The Radio environment tab (radio_env.py): closed hours per board on
+# persistent storage, the hour in progress in RAM.
+# shellcheck disable=SC2034  # passed to the MQTT publisher in start_mqtt_publisher (12)
+RADIO_ENV_FILE="${BASE}/radio_env_hours.json"
+# shellcheck disable=SC2034
+RADIO_ENV_NOW_FILE="${RUNTIME}/status_radio_env_now.json"
 # What the data directory is stored on, written once at start (WebUI panel).
 STATUS_STORAGE_FILE="${RUNTIME}/status_storage.json"
 

@@ -1104,6 +1104,19 @@ class RxBook:
         upsert_meter_reception(self.reception, meter, device, ts, topic, d)
         upsert_meter_mode(self.mode, meter, mode, ts, d)
         self._note_rssi(meter, device, first.get("rssi_dbm"), mode, ts)
+        # The Radio environment tab's hourly counts (radio_env.py): every
+        # frame of the message, in the publisher process only. Statistics
+        # must never cost a frame its bookkeeping, so any failure is ignored.
+        if os.environ.get("RADIO_ENV_FILE"):
+            try:
+                import radio_env
+                env = radio_env.instance()
+                if env is not None:
+                    for n in normalized:
+                        mid = n.get("meter_id")
+                        env.frame(device, "" if mid is None else _jq_tostring(mid), n.get("rssi_dbm"), ts)
+            except Exception:  # noqa: BLE001
+                pass
         lines = []
         for n in normalized:
             if self.band_security is not None:

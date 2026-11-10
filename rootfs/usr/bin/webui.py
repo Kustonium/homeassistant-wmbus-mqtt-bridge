@@ -988,6 +988,161 @@ def external_driver_matches(decode: bool = True) -> dict:
     return {"ok": True, "drivers": drivers, "decoded": decode}
 
 
+# ---------------------------------------------------------------------------
+# Radio environment tab: hourly counts per board (radio_env.py, collected in
+# the MQTT publisher) compared with the same hour on earlier days of the same
+# kind (working day / weekend). Display only; nothing here changes reception.
+# ---------------------------------------------------------------------------
+import radio_env as _re  # noqa: E402
+
+RADIO_ENV_FILE = Path(os.environ.get("RADIO_ENV_FILE", str(BASE / "radio_env_hours.json")))
+RADIO_ENV_NOW_FILE = Path(os.environ.get("RADIO_ENV_NOW_FILE", str(RUNTIME / "status_radio_env_now.json")))
+RE_MIN_SAMPLES = 3          # earlier days of the same kind before "typical" means anything
+RE_MIN_SYMBOLS = 200        # fewer 3-of-6 symbols give no error rate
+RE_FEWER, RE_MORE = 0.7, 1.4
+RE_SILENT_S = 2 * 3600
+
+
+def _re_day_type(ts: int) -> str:
+    return "weekend" if time.localtime(ts).tm_wday >= 5 else "workday"
+
+
+def _re_median(values: list) -> float:
+    v = sorted(values)
+    n = len(v)
+    return (v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2) if n else 0
+
+
+def _re_quantile(values: list, q: float) -> float:
+    v = sorted(values)
+    if not v:
+        return 0
+    return v[min(len(v) - 1, max(0, int(round(q * (len(v) - 1)))))]
+
+
+def _re_pct(invalid: int, total: int):
+    return round(100.0 * invalid / total, 1) if total >= RE_MIN_SYMBOLS else None
+
+
+def radio_env_payload(now: int | None = None) -> dict:
+    now = int(now if now is not None else time.time())
+    boards = _re.load(str(RADIO_ENV_FILE), str(RADIO_ENV_NOW_FILE))
+    if not any(boards.values()):
+        return {"ok": True, "empty": True}
+    cur_hour = now - now % 3600
+    elapsed = max(1, now - cur_hour)
+    lt_now = time.localtime(now)
+    hod, dtype = lt_now.tm_hour, _re_day_type(now)
+    first = min(r[0] for rows in boards.values() for r in rows)
+    out = []
+    for name, rows in sorted(boards.items()):
+        by = {r[0]: r for r in rows}
+        cur, prev = by.get(cur_hour), by.get(cur_hour - 3600)
+        last = max((r[0] for r in rows), default=0)
+        # Counting may have started mid-hour (add-on start): the rate is
+        # taken over the time actually counted, never the whole hour.
+        counted = max(1, now - (cur[6] if cur is not None and len(cur) > 6 else cur_hour))
+        # Frames over the last 60 minutes: this hour so far plus the rest
+        # taken from the previous hour, when that one was counted in full.
+        if prev is not None and (cur is None or counted >= elapsed - 60):
+            f_now = (cur[1] if cur else 0) + prev[1] * (3600 - elapsed) / 3600
+        elif cur is not None and counted >= 600:
+            f_now = cur[1] * 3600 / counted
+        else:
+            f_now = None
+        same = [r for r in rows if r[0] < cur_hour - 3600
+                and time.localtime(r[0]).tm_hour == hod and _re_day_type(r[0]) == dtype]
+        typ = [r[1] for r in same]
+        sym_tot = (cur[4] if cur else 0) + (prev[4] if prev else 0)
+        sym_inv = (cur[5] if cur else 0) + (prev[5] if prev else 0)
+        sym_now = _re_pct(sym_inv, sym_tot)
+        sym_typ = _re_pct(sum(r[5] for r in same), sum(r[4] for r in same))
+        meters = prev[3] if prev is not None else (cur[3] if cur else None)
+        b = {"name": name, "frames_h": None if f_now is None else round(f_now), "meters": meters,
+             "sym_pct": sym_now, "sym_typ_pct": sym_typ, "typ": None, "typ_lo": None, "typ_hi": None,
+             "samples": len(typ), "ratio": None, "_sym_t": sym_tot, "_sym_i": sym_inv}
+        if now - last > RE_SILENT_S:
+            b["state"] = "silent"
+        elif len(typ) < RE_MIN_SAMPLES or f_now is None:
+            b["state"] = "learning"
+        else:
+            med = _re_median(typ)
+            b.update(typ=round(med), typ_lo=round(_re_quantile(typ, 0.25)), typ_hi=round(_re_quantile(typ, 0.75)))
+            ratio = f_now / med if med > 0 else None
+            b["ratio"] = None if ratio is None else round(ratio, 2)
+            errors = sym_now is not None and sym_now >= max(5.0, 2 * (sym_typ or 0))
+            if ratio is not None and ratio < RE_FEWER:
+                b["state"] = "fewer"
+            elif ratio is not None and ratio > RE_MORE:
+                b["state"] = "more_errors" if errors else "more"
+            elif errors:
+                b["state"] = "errors"
+            else:
+                b["state"] = "normal"
+        out.append(b)
+
+    known = [b for b in out if b["state"] not in ("learning", "silent")]
+    odd = [b for b in known if b["state"] != "normal"]
+    if not known:
+        verdict, odd_board = "learning", ""
+    elif len(known) >= 2 and len(odd) == 1:
+        verdict, odd_board = "one_board", odd[0]["name"]
+    else:
+        def most(states):
+            return sum(1 for b in known if b["state"] in states) * 2 > len(known)
+        odd_board = ""
+        if most(("more_errors",)):
+            verdict = "collisions"
+        elif most(("more", "more_errors")):
+            verdict = "busy"
+        elif most(("fewer",)):
+            verdict = "quiet"
+        elif most(("errors", "more_errors")):
+            verdict = "interference"
+        else:
+            verdict = "normal"
+    head = max((b for b in out if b["frames_h"] is not None), key=lambda b: b["typ"] or b["frames_h"] or 0,
+               default=None)
+    sym_t = sum(b.pop("_sym_t") for b in out)
+    sym_i = sum(b.pop("_sym_i") for b in out)
+    sym_typ_vals = [b["sym_typ_pct"] for b in out if b["sym_typ_pct"] is not None]
+
+    # Week x hour: the mean frames/h over the boards heard in that hour,
+    # averaged over the stored days.
+    cells: dict = {}
+    for rows in boards.values():
+        for r in rows:
+            if r[0] >= cur_hour:
+                continue
+            lt = time.localtime(r[0])
+            cells.setdefault((lt.tm_wday, lt.tm_hour, r[0]), []).append(r[1])
+    week: dict = {}
+    for (wd, h, _), vals in cells.items():
+        week.setdefault((wd, h), []).append(sum(vals) / len(vals))
+    heat = [[round(sum(week[(wd, h)]) / len(week[(wd, h)])) if (wd, h) in week else None
+             for h in range(24)] for wd in range(7)]
+
+    # Far meters: weak frames per hour of the day, this kind of day.
+    weak: dict = {}
+    for rows in boards.values():
+        for r in rows:
+            if r[0] >= cur_hour or _re_day_type(r[0]) != dtype:
+                continue
+            weak.setdefault(time.localtime(r[0]).tm_hour, []).append(r[2])
+    far = [round(sum(weak[h]) / len(weak[h]), 1) if h in weak else None for h in range(24)]
+    peak = max((v for v in far if v is not None), default=0)
+    best = [h for h, v in enumerate(far) if v is not None and peak > 0 and v >= 0.7 * peak]
+
+    return {"ok": True, "empty": False, "now": now, "hour": hod, "day_type": dtype,
+            "days": round((now - first) / 86400, 1), "verdict": verdict, "odd_board": odd_board,
+            "boards": out, "head": head["name"] if head else "",
+            "head_frames_h": head["frames_h"] if head else None,
+            "head_typ_lo": head["typ_lo"] if head else None, "head_typ_hi": head["typ_hi"] if head else None,
+            "sym_pct": _re_pct(sym_i, sym_t),
+            "sym_typ_pct": round(_re_median(sym_typ_vals), 1) if sym_typ_vals else None,
+            "heat": heat, "far": far, "far_best": best, "min_samples": RE_MIN_SAMPLES}
+
+
 def compare_meter_drivers(meter_id: str, requested_driver: str, key_override: str | None = None) -> tuple[bool, dict]:
     """Decode a meter's last frame with wmbusmeters' auto driver (when useful)
     or the saved driver, and with the requested driver. Pure read + short-lived
@@ -4807,6 +4962,7 @@ class Handler(BaseHTTPRequestHandler):
             '/api/mbus/console', '/api/mbus/scan', '/api/mbus/poll-one',
             '/api/mbus/detect-driver',
             '/api/drivers', '/api/drivers/upload', '/api/drivers/delete', '/api/drivers/matches',
+            '/api/radio-env',
         )
         if any(path.endswith(suffix) for suffix in api_suffixes):
             return path
@@ -5292,6 +5448,9 @@ class Handler(BaseHTTPRequestHandler):
             decode = (params.get('decode') or ['1'])[0].strip().lower() not in ('0', 'false', 'no')
             payload = external_driver_matches(decode)
             self._send_json(200 if payload.get("ok") else 404, payload)
+            return
+        if path.endswith('/api/radio-env'):
+            self._send_json(200, radio_env_payload())
             return
         if path.endswith('/api/drivers'):
             if not custom_drivers_enabled():

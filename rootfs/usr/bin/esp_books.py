@@ -151,6 +151,18 @@ class SummaryBook:
         except _JqError:
             return
         _write_outputs(self.path, outputs)
+        # The Radio environment tab's 3-of-6 symbol counts (radio_env.py);
+        # a failure here never affects the summary file above.
+        if os.environ.get("RADIO_ENV_FILE"):
+            try:
+                import radio_env
+                env = radio_env.instance()
+                parts = bl._s(topic_b).split("/")
+                if env is not None and len(parts) > 2:
+                    for v in outputs:
+                        env.summary(parts[1], v, add["_bridge_rx_epoch"])
+            except Exception:  # noqa: BLE001
+                pass
 
 
 class MeterWindowBook:

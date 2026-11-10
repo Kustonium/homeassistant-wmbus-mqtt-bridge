@@ -67,6 +67,7 @@ start_mqtt_publisher() {
       DISCOVERY_RETAIN="${DISCOVERY_RETAIN:-true}" STATE_PREFIX="${STATE_PREFIX:-wmbusmeters}" \
       STATE_RETAIN="${STATE_RETAIN:-false}" REQUIRE_TIMESTAMP="${REQUIRE_TIMESTAMP:-false}" \
       STATUS_RSSI_FILE="${STATUS_RSSI_FILE:-}" STATUS_SEEN_FILE="${STATUS_SEEN_FILE:-}" \
+      RADIO_ENV_FILE="${RADIO_ENV_FILE:-}" RADIO_ENV_NOW_FILE="${RADIO_ENV_NOW_FILE:-}" \
       RSSI_MAX_AGE_S="${RSSI_MAX_AGE_S:-300}" WMBUSMETERS_BIN="${WMBUSMETERS_BIN:-/usr/bin/wmbusmeters}" \
       MQTT_PUBLISHER_BOOKS="${books}" \
         python3 "${script}" --host "${MQTT_HOST}" --port "${MQTT_PORT}" --port-file "${port_file}"

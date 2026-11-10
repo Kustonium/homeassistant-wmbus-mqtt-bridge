@@ -13,6 +13,7 @@
     // ["search", "nav_search", "SR"],
     ["logs", "nav_logs", "LG"],
     ["esp-logs", "nav_esp_logs", "EL"],
+    ["radio-env", "nav_radio_env", "RE"],
     ["diagnostics", "nav_diagnostics", "DG"],
     ["settings", "nav_settings", "ST"],
     ["about", "nav_about", "AB"],
@@ -4418,6 +4419,149 @@
       .catch(() => { state.drivers = []; });
   }
 
+  // Radio environment: hourly counts per board (radio_env.py) against the
+  // same hour on earlier days of the same kind (working day / weekend),
+  // picked by the backend. Display only.
+  async function loadRadioEnv(force = false) {
+    if (state.reLoading) return;
+    if (state.re && !force) return;
+    state.reLoading = true;
+    try {
+      const response = await fetch("api/radio-env", {cache: "no-store"});
+      state.re = response.ok ? await response.json() : {error: true};
+    } catch (_) {
+      state.re = {error: true};
+    } finally {
+      state.reLoading = false;
+      state.reAt = Date.now();
+      render();
+    }
+  }
+
+  function reHours(list) {
+    const hours = asArray(list).map(Number).filter(h => Number.isFinite(h)).sort((a, b) => a - b);
+    if (!hours.length) return "";
+    const ranges = [];
+    let start = hours[0], prev = hours[0];
+    for (const h of hours.slice(1).concat([null])) {
+      if (h !== null && h === prev + 1) { prev = h; continue; }
+      ranges.push(start === prev ? `${String(start).padStart(2, "0")}` : `${String(start).padStart(2, "0")}–${String(prev + 1).padStart(2, "0")}`);
+      if (h !== null) { start = h; prev = h; }
+    }
+    // A night range wraps midnight: 21–24 and 00–05 read as 21–05.
+    if (ranges.length >= 2 && hours[0] === 0 && hours[hours.length - 1] === 23) {
+      const last = ranges.pop(), firstR = ranges.shift();
+      ranges.unshift(`${last.split("–")[0]}–${firstR.split("–")[1] || firstR}`);
+    }
+    return ranges.join(", ");
+  }
+
+  function radioEnvPage() {
+    const x = state.re || {};
+    if (x.error) {
+      return `<div class="card"><p>${escapeHtml(t("re_load_failed", "Could not load the radio environment."))}</p></div>`;
+    }
+    if (x.empty) {
+      return `<div class="card"><h2>${escapeHtml(t("re_title", "Radio environment"))}</h2>
+        <p class="hint">${escapeHtml(t("re_no_data", "No data yet. Counting starts with the first frame from an ESP board."))}</p></div>`;
+    }
+    const dayType = x.day_type === "weekend" ? t("re_weekend", "weekend") : t("re_workday", "working day");
+    const verdictPill = {
+      normal: ["ok", t("re_v_normal", "Normal traffic")],
+      quiet: ["warn", t("re_v_quiet", "Quieter than usual")],
+      busy: ["warn", t("re_v_busy", "Busier than usual")],
+      collisions: ["bad", t("re_v_collisions", "Collisions likely")],
+      interference: ["bad", t("re_v_interference", "Interference likely")],
+      one_board: ["warn", t("re_v_one_board", "Only {board} differs", {board: x.odd_board || ""})],
+      learning: ["muted", t("re_v_learning", "Collecting data")],
+    }[x.verdict] || ["muted", t("re_v_learning", "Collecting data")];
+    const verdictHint = x.verdict === "one_board"
+      ? t("re_v_hint_board", "The board, not the air: antenna, placement or configuration.")
+      : x.verdict === "learning"
+        ? t("re_learning_note", "Typical values need {n} earlier days of the same kind. Collected so far: {days} days.", {n: x.min_samples || 3, days: x.days})
+        : asArray(x.boards).length > 1 ? t("re_v_hint_all", "All boards agree.") : "";
+    const fmt = (v) => (v === null || v === undefined) ? "—" : String(v);
+    const typ = (x.head_typ_lo !== null && x.head_typ_lo !== undefined)
+      ? t("re_typical", "typically {range}", {range: `${x.head_typ_lo}–${x.head_typ_hi}`}) : "";
+    const symTyp = (x.sym_typ_pct !== null && x.sym_typ_pct !== undefined)
+      ? t("re_typical", "typically {range}", {range: `${x.sym_typ_pct}%`}) : t("re_no_sym", "no diagnostic summaries");
+    const hh = String(x.hour ?? "").padStart(2, "0");
+    const top = `<div class="card" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;">
+      <div><div class="hint">${escapeHtml(t("re_now", "Now ({time}, {day})", {time: `${hh}:00`, day: dayType}))}</div>
+        <div style="font-size:22px;font-weight:600;">${escapeHtml(t("re_frames_h", "{n} frames/h", {n: fmt(x.head_frames_h)}))}</div>
+        <div class="hint">${escapeHtml(typ)}${x.head && asArray(x.boards).length > 1 ? ` · ${escapeHtml(x.head)}` : ""}</div></div>
+      <div><div class="hint">${escapeHtml(t("re_sym", "Invalid 3-of-6 symbols"))}</div>
+        <div style="font-size:22px;font-weight:600;">${escapeHtml(x.sym_pct === null || x.sym_pct === undefined ? "—" : `${x.sym_pct}%`)}</div>
+        <div class="hint">${escapeHtml(symTyp)}</div></div>
+      <div><div class="hint">${escapeHtml(t("re_verdict", "Verdict"))}</div>
+        <div style="margin-top:6px;"><span class="pill ${verdictPill[0]}">${escapeHtml(verdictPill[1])}</span></div>
+        <div class="hint" style="margin-top:6px;">${escapeHtml(verdictHint)}</div></div>
+    </div>`;
+
+    const heat = asArray(x.heat);
+    const peak = Math.max(1, ...heat.flat().filter(v => typeof v === "number"));
+    const days = [0, 1, 2, 3, 4, 5, 6].map(i => t(`re_wd_${i}`, ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i]));
+    const heatRows = heat.map((row, wd) => `<div style="font-size:11px;color:var(--muted);">${escapeHtml(days[wd])}</div>` +
+      asArray(row).map((v, h) => typeof v === "number"
+        ? `<div title="${escapeHtml(`${days[wd]} ${String(h).padStart(2, "0")}:00 · ${v}/h`)}" style="height:14px;border-radius:2px;background:#378ADD;opacity:${(0.12 + 0.88 * v / peak).toFixed(2)};"></div>`
+        : `<div style="height:14px;border-radius:2px;border:1px dashed #2a3a3a;"></div>`).join("")).join("");
+    const heatCard = `<div class="card">
+      <h3>${escapeHtml(t("re_heatmap", "Air density: week × hour"))}</h3>
+      <div style="display:grid;grid-template-columns:30px repeat(24,minmax(0,1fr));gap:2px;align-items:center;">${heatRows}</div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin:4px 0 0 32px;"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
+      <p class="hint">${escapeHtml(t("re_heatmap_hint", "Darker = more frames per hour. Empty cells: no data yet."))}</p>
+    </div>`;
+
+    const statePill = (b) => {
+      const pct = b.ratio ? Math.round(Math.abs(b.ratio - 1) * 100) : 0;
+      return {
+        normal: ["ok", t("re_s_normal", "as usual")],
+        fewer: ["warn", t("re_s_fewer", "{pct}% fewer", {pct})],
+        more: ["warn", t("re_s_more", "{pct}% more", {pct})],
+        more_errors: ["bad", t("re_s_more_errors", "{pct}% more, more errors", {pct})],
+        errors: ["bad", t("re_s_errors", "more errors")],
+        learning: ["muted", t("re_s_learning", "collecting data")],
+        silent: ["bad", t("re_s_silent", "no frames")],
+      }[b.state] || ["muted", b.state];
+    };
+    const boardRows = asArray(x.boards).map(b => {
+      const p = statePill(b);
+      return `<tr>
+        <td>${escapeHtml(b.name)}</td>
+        <td>${escapeHtml(fmt(b.frames_h))}${b.typ !== null && b.typ !== undefined ? ` <span class="hint">/ ${escapeHtml(String(b.typ))}</span>` : ""}</td>
+        <td>${escapeHtml(fmt(b.meters))}</td>
+        <td>${escapeHtml(b.sym_pct === null || b.sym_pct === undefined ? "—" : `${b.sym_pct}%`)}</td>
+        <td><span class="pill ${p[0]}">${escapeHtml(p[1])}</span></td>
+      </tr>`;
+    }).join("");
+    const boardsCard = `<div class="card">
+      <h3>${escapeHtml(t("re_boards", "Boards: now against typical for this time"))}</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>${escapeHtml(t("re_col_board", "Board"))}</th><th>${escapeHtml(t("re_col_frames", "Frames/h"))}</th>
+          <th>${escapeHtml(t("re_col_meters", "Meters"))}</th><th>${escapeHtml(t("re_col_sym", "Invalid symbols"))}</th>
+          <th>${escapeHtml(t("re_col_state", "State"))}</th></tr></thead>
+        <tbody>${boardRows}</tbody></table></div>
+      ${asArray(x.boards).length > 1 ? `<p class="hint">${escapeHtml(t("re_boards_hint", "A change on one board points at that board (antenna, placement, configuration). On all boards at once, at the air."))}</p>` : ""}
+    </div>`;
+
+    const far = asArray(x.far);
+    const farPeak = Math.max(1, ...far.filter(v => typeof v === "number"));
+    const best = reHours(x.far_best);
+    const farCard = `<div class="card">
+      <h3>${escapeHtml(t("re_far", "When far meters are heard (frames at -90 dBm or weaker)"))}</h3>
+      <div style="display:flex;align-items:flex-end;gap:2px;height:60px;">${far.map((v, h) =>
+        `<div title="${escapeHtml(`${String(h).padStart(2, "0")}:00 · ${v === null ? "—" : v}/h`)}" style="flex:1;border-radius:2px 2px 0 0;background:${typeof v === "number" ? "#1D9E75" : "transparent"};height:${typeof v === "number" ? Math.max(2, Math.round(56 * v / farPeak)) : 0}px;"></div>`).join("")}</div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:4px;"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
+      ${best ? `<p>${escapeHtml(t("re_far_best", "Best: {day} {range}. Looking for a far meter? Leave the search running then.", {day: dayType, range: best}))}</p>` : ""}
+    </div>`;
+
+    return `<div class="re-page">
+      <div class="card"><h2>${escapeHtml(t("re_title", "Radio environment"))}</h2>
+        <p class="hint">${escapeHtml(t("re_intro", "How busy the air around your boards is, compared with the same hour on earlier days of the same kind. It changes nothing in reception."))}</p></div>
+      ${top}${heatCard}${boardsCard}${farCard}
+    </div>`;
+  }
+
   async function loadDrivers(force = false) {
     if (state.xdrvLoading) return;
     if (state.xdrv && !force) return;
@@ -5244,6 +5388,14 @@
         return shell(logsPage());
       case "esp-logs":
         return shell(espLogsPage());
+      case "radio-env":
+        if (!state.re) {
+          loadRadioEnv();
+          return shell(`<div class="card"><p>${escapeHtml(t("webui_loading", "Loading..."))}</p></div>`);
+        }
+        // Hourly data: one refresh a minute is plenty.
+        if (!state.reLoading && Date.now() - (state.reAt || 0) > 60000) loadRadioEnv(true);
+        return shell(radioEnvPage());
       case "diagnostics":
         return shell(espDiagPage());
       case "settings":
@@ -6289,6 +6441,10 @@
     // The Drivers tab shows state that changes elsewhere (a meter switched in
     // the add or edit dialog, the external instance started by the reload):
     // fetched again on every visit, not kept from the first one.
+    if (state.route === "radio-env" && state.re) {
+      await loadRadioEnv(true);
+      return;
+    }
     if (state.route === "drivers") {
       state.xdrvMatches = null;
       if (state.xdrv) {
