@@ -169,6 +169,7 @@ STATUS_ESP_RX_SEQUENCE_FILE = RUNTIME / "status_esp_rx_sequence.tsv"
 STATUS_ESP_RX_BOOTS_FILE = RUNTIME / "status_esp_rx_boots.tsv"
 STATUS_ESP_RX_CLOCK_FILE = RUNTIME / "status_esp_rx_clock.tsv"
 STATUS_ESP_CONFIG_FILE = RUNTIME / "status_esp_config.json"
+STATUS_ESP_SETTINGS_FILE = RUNTIME / "status_esp_settings.json"
 ESP_RF_RX_HISTORY_FILE = BASE / "esp_rf_rx_history.jsonl"
 # Isolated dev-radio evidence (fifo_sample and pipeline_drop). Unlike the
 # ordinary /rx metadata this can include raw radio bytes by explicit design.
@@ -1036,6 +1037,27 @@ def _re_pct(invalid: int, total: int):
     return round(100.0 * invalid / total, 1) if total >= RE_MIN_SYMBOLS else None
 
 
+def _re_board_now(rows: list, now: int) -> tuple:
+    """Frames over the last 60 minutes and meters heard, for one board.
+
+    Returns (frames_h or None, meters or None). Counting may have started
+    mid-hour (add-on start): the rate is then taken over the time actually
+    counted, and only once 10 minutes are in."""
+    cur_hour = now - now % 3600
+    elapsed = max(1, now - cur_hour)
+    by = {r[0]: r for r in rows}
+    cur, prev = by.get(cur_hour), by.get(cur_hour - 3600)
+    counted = max(1, now - (cur[6] if cur is not None and len(cur) > 6 else cur_hour))
+    if prev is not None and (cur is None or counted >= elapsed - 60):
+        f_now = (cur[1] if cur else 0) + prev[1] * (3600 - elapsed) / 3600
+    elif cur is not None and counted >= 600:
+        f_now = cur[1] * 3600 / counted
+    else:
+        f_now = None
+    meters = prev[3] if prev is not None else (cur[3] if cur else None)
+    return f_now, meters
+
+
 def radio_env_payload(now: int | None = None) -> dict:
     now = int(now if now is not None else time.time())
     boards = _re.load(str(RADIO_ENV_FILE), str(RADIO_ENV_NOW_FILE))
@@ -1054,17 +1076,9 @@ def radio_env_payload(now: int | None = None) -> dict:
         last = max((r[0] for r in rows), default=0)
         if now - last > RE_GONE_S:
             continue
-        # Counting may have started mid-hour (add-on start): the rate is
-        # taken over the time actually counted, never the whole hour.
-        counted = max(1, now - (cur[6] if cur is not None and len(cur) > 6 else cur_hour))
         # Frames over the last 60 minutes: this hour so far plus the rest
         # taken from the previous hour, when that one was counted in full.
-        if prev is not None and (cur is None or counted >= elapsed - 60):
-            f_now = (cur[1] if cur else 0) + prev[1] * (3600 - elapsed) / 3600
-        elif cur is not None and counted >= 600:
-            f_now = cur[1] * 3600 / counted
-        else:
-            f_now = None
+        f_now, meters = _re_board_now(rows, now)
         same = [r for r in rows if r[0] < cur_hour - 3600
                 and time.localtime(r[0]).tm_hour == hod and _re_day_type(r[0]) == dtype]
         typ = [r[1] for r in same]
@@ -1072,7 +1086,6 @@ def radio_env_payload(now: int | None = None) -> dict:
         sym_inv = (cur[5] if cur else 0) + (prev[5] if prev else 0)
         sym_now = _re_pct(sym_inv, sym_tot)
         sym_typ = _re_pct(sum(r[5] for r in same), sum(r[4] for r in same))
-        meters = prev[3] if prev is not None else (cur[3] if cur else None)
         b = {"name": name, "frames_h": None if f_now is None else round(f_now), "meters": meters,
              "sym_pct": sym_now, "sym_typ_pct": sym_typ, "typ": None, "typ_lo": None, "typ_hi": None,
              "samples": len(typ), "ratio": None, "_sym_t": sym_tot, "_sym_i": sym_inv,
@@ -4240,6 +4253,12 @@ def status_model(data: dict) -> dict:
         "mqtt_ok": mqtt_ok,
         "raw_ok": raw_ok,
         "wmbus_ok": wmbus_ok,
+        # When the bridge last started: the WebUI drops in-page results (an
+        # M-Bus scan) that belong to an earlier run.
+        "bridge_start_epoch": bridge_start_epoch,
+        # Panel flow: the wmbusmeters instance for meters on external drivers
+        # ({state: running|exited|crash_loop|disabled|no_meters, meters}).
+        "external_instance": read_json(STATUS_EXTERNAL_INSTANCE_FILE),
         "decoded_ok": decoded_ok,
         "discovery_ok": discovery_ok,
         "ha_presence": ha_presence,
@@ -4446,8 +4465,52 @@ def _esp_diag_config() -> dict:
         }
     return out
 
+# ---------------------------------------------------------------------------
+# Board settings (firmware runtime_settings.h): what a board announces on
+# <board>/diag/settings, and the command the Boards tab sends to change it.
+# ---------------------------------------------------------------------------
+BOARD_SETTING_VALUES = {"listen_mode": ("t1", "c1", "both", "s1", "yaml")}
+_BOARD_NAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+
+def _esp_settings() -> dict:
+    try:
+        with open(STATUS_ESP_SETTINGS_FILE, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def board_setting_send(board: str, key: str, value: str) -> tuple[bool, str]:
+    """Publish <wmbus/board>/set/<key> through the persistent MQTT publisher
+    (not retained: the board ignores a value already in effect anyway)."""
+    import socket
+    board, key, value = str(board or ""), str(key or ""), str(value or "").strip().lower()
+    if not _BOARD_NAME_RE.fullmatch(board):
+        return False, "invalid board"
+    if key not in BOARD_SETTING_VALUES or value not in BOARD_SETTING_VALUES[key]:
+        return False, "invalid setting"
+    announced = _esp_settings().get(board)
+    if not isinstance(announced, dict) or not isinstance(announced.get(key), dict):
+        return False, "this board does not take settings from the add-on"
+    if value in (announced[key].get("unsupported") or []):
+        return False, f"{value} is not supported on this board"
+    try:
+        port = int((RUNTIME / "mqtt_publisher.port").read_text(encoding="utf-8").split()[0])
+    except (OSError, ValueError, IndexError):
+        return False, "the MQTT publisher is not running"
+    topic, payload = f"wmbus/{board}/set/{key}".encode(), value.encode()
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+            s.sendall(b"PUB 0 %d %s\n" % (len(payload), topic) + payload + b"\n")
+    except OSError as exc:
+        return False, f"could not send: {exc}"
+    return True, "sent"
+
+
 def _esp_diag_payload() -> dict:
-    """Per-board diagnostics for the Diagnostics tab."""
+    """Per-board diagnostics for the Boards tab (formerly Diagnostics)."""
     now = int(time.time())
     seq_rows = {
         str(r.get("source") or ""): r
@@ -4460,6 +4523,7 @@ def _esp_diag_payload() -> dict:
     boots = _esp_diag_boots()
     clocks = _esp_diag_clock()
     configs = _esp_diag_config()
+    board_settings = _esp_settings()
 
     frames: dict[str, int] = {}
     meters: dict[str, int] = {}
@@ -4526,6 +4590,8 @@ def _esp_diag_payload() -> dict:
             "reboot_median_interval_s": reboot["median_interval_s"],
             "status": status,
             "config": configs.get(name) or {},
+            # None: the board has not announced settings (older firmware).
+            "settings": board_settings.get(name),
             "clock": clocks.get(name) or {},
             "reasons": reasons,
         })
@@ -4762,6 +4828,17 @@ def _esp_payload() -> dict:
     )
     devices_active_count = sum(1 for d in devices_list if d["active"])
 
+    # Frames/h and meters per board from the radio environment book, for the
+    # Panel's flow diagram (line width, board node). None when not counted yet.
+    try:
+        re_boards = _re.load(str(RADIO_ENV_FILE), str(RADIO_ENV_NOW_FILE))
+    except Exception:
+        re_boards = {}
+    for d in devices_list:
+        f_h, m = _re_board_now(re_boards.get(d["name"]) or [], now_epoch)
+        d["frames_h"] = None if f_h is None else round(f_h)
+        d["meters_heard"] = m
+
     # Aggregate radio-health verdict (#24: the aggregate must never hide a dead
     # ESP). Computed only over devices that actually published /health; a stopped
     # ESP is surfaced by name so a multi-ESP setup cannot show all-green while one
@@ -4994,6 +5071,7 @@ class Handler(BaseHTTPRequestHandler):
             '/api/mbus/detect-driver',
             '/api/drivers', '/api/drivers/upload', '/api/drivers/delete', '/api/drivers/matches',
             '/api/radio-env',
+            '/api/esp-setting',
         )
         if any(path.endswith(suffix) for suffix in api_suffixes):
             return path
@@ -5147,6 +5225,11 @@ class Handler(BaseHTTPRequestHandler):
             # fallback, "error" on raised exception). Re-logging here would
             # double-stamp status_events.tsv in the same second.
             ok, msg = remove_meter_from_options(meter_id)
+            self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
+            return
+        if path.endswith('/api/esp-setting'):
+            ok, msg = board_setting_send((params.get('board') or [''])[0], (params.get('key') or [''])[0],
+                                         (params.get('value') or [''])[0])
             self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
             return
         if path.endswith('/api/update-meter'):

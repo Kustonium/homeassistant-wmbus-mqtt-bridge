@@ -2081,7 +2081,127 @@ th.sortable:hover {
   flex-direction: column;
   gap: 14px;
 }
+/* Column headers here read as words ("Płytka"), not in capitals. */
+.re-page th {
+  text-transform: none;
+}
 .re-page .card {
   margin: 0;
   padding: 14px 18px;
 }
+
+/* Board tiles (Boards tab): a clear frame per board; a board without
+   diag/settings gets a dashed, dimmed one. */
+.board-tile {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid #5a6270;
+  border-radius: 10px;
+}
+.board-tile:not(.board-tile-off) {
+  border-color: var(--c, var(--accent));
+  background: color-mix(in srgb, var(--c, var(--accent)) 10%, transparent);
+}
+.board-tile-off {
+  opacity: 0.6;
+  border-style: dashed;
+  border-color: var(--c, #5a6270);
+}
+/* Board colour as in the Panel flow: name, dot, and the active mode button. */
+.board-tile-name { display: inline-flex; align-items: center; gap: 7px; color: var(--c, inherit); }
+.board-tile-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--c, #5a6270); }
+.board-tile .btn.primary { background: var(--c); border-color: var(--c); color: #0f161c; }
+
+/* Panel flow: boards → MQTT → wmbusmeters → HA (wide SVG), told top-down in
+   HTML on narrow screens; meter tiles below. Colours come inline per board. */
+.flow-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+.flow-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600;
+  padding: 4px 10px; border-radius: 999px; color: var(--c);
+  background: color-mix(in srgb, var(--c) 14%, transparent); border: 1px solid color-mix(in srgb, var(--c) 45%, transparent); }
+.flow-chip-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c); }
+.flow-wrap { background: #0f161c; border: 1px solid #22303a; border-radius: 12px; padding: 12px 14px; }
+.flow-svg { display: block; width: 100%; height: auto; }
+.flow-svg .flow-t { fill: #e8eef2; font-size: 14px; font-weight: 600; }
+.flow-svg .flow-s { font-size: 12px; font-weight: 600; }
+.flow-svg .flow-s2 { fill: #8ea4b1; font-size: 11px; }
+.flow-line { fill: none; transition: opacity .2s; }
+.flow-dots { stroke-dasharray: 2 10; stroke-linecap: round; }
+.flow-board, .flow-node { cursor: pointer; transition: opacity .2s; }
+.flow-node:hover rect, .flow-board:hover rect { fill-opacity: .26; }
+.flow-root.focus [data-board]:not(.hl) { opacity: .18; }
+.flow-narrow { display: none; }
+@media (max-width: 700px) {
+  .flow-svg { display: none; }
+  .flow-narrow { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+}
+.flow-nboards { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.flow-nb, .flow-nn { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
+  padding: 8px 10px; border-radius: 10px; color: #e8eef2; cursor: pointer; font: inherit;
+  background: color-mix(in srgb, var(--c) 14%, transparent); border: 1px solid var(--c); transition: opacity .2s; }
+.flow-nb.off { border-style: dashed; }
+.flow-nb-name { font-weight: 600; }
+.flow-nb-sub, .flow-nn span { font-size: 12px; color: var(--c); }
+.flow-nn .flow-nn-sub { color: #8ea4b1; font-size: 11px; }
+.flow-na { text-align: center; font-size: 12px; color: #8ea4b1; }
+.meter-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+.meter-tile { position: relative; padding: 12px 14px; border-radius: 12px; cursor: pointer;
+  background: color-mix(in srgb, var(--c) 12%, #0f161c); border: 1px solid color-mix(in srgb, var(--c) 45%, transparent);
+  transition: opacity .2s, transform .2s; }
+.meter-tile.late { border-color: #f0b03c; box-shadow: inset 0 0 0 1px #f0b03c; }
+.meter-tile.hl { transform: translateY(-2px); border-color: var(--c); }
+.meter-tiles.focus .meter-tile:not(.hl) { opacity: .3; }
+.mt-head { display: flex; align-items: center; gap: 6px; font-weight: 600; color: #e8eef2; }
+.mt-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mt-link { color: #8ea4b1; text-decoration: none; padding: 0 2px; }
+.mt-link:hover { color: var(--c); }
+.mt-id { font-size: 11px; color: #8ea4b1; font-family: var(--mono, monospace); }
+.mt-value { font-size: 26px; font-weight: 700; color: var(--c); margin: 6px 0 2px; line-height: 1.15; }
+.mt-unit { font-size: 13px; color: #9eafba; font-weight: 600; }
+.mt-foot { font-size: 12px; color: #9eafba; }
+.mt-dots { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 8px; }
+.mt-dot { width: 10px; height: 10px; border-radius: 50%; }
+.mt-heard { font-size: 11px; color: #8ea4b1; margin-left: 4px; }
+@keyframes flow-move { to { stroke-dashoffset: -24; } }
+@keyframes flow-wave { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: no-preference) {
+  .flow-dots { animation: flow-move var(--d, 1.2s) linear infinite; }
+  .flow-ant.on .w1, .flow-ant.on .w2, .flow-nb-ant.on { animation: flow-wave 1.4s ease-in-out infinite; }
+  .flow-ant.on .w2 { animation-delay: .35s; }
+}
+.flow-ninst { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+[data-href] { cursor: pointer; }
+
+/* M-Bus page as steps, top-down (port -> mode -> find -> meters -> polling),
+   joined by a line like the Panel flow. --c is the step's state colour. */
+.mbus-steps { display: flex; flex-direction: column; }
+.mbus-step { display: flex; gap: 12px; align-items: flex-start; }
+.mbus-step-num { width: 30px; height: 30px; flex: none; border-radius: 50%; display: flex; align-items: center;
+  justify-content: center; font-weight: 700; color: #0f161c; background: var(--c); margin-top: 8px; }
+.mbus-step-box { flex: 1; min-width: 0; border: 1.5px solid var(--c); border-radius: 12px;
+  background: color-mix(in srgb, var(--c) 8%, transparent); }
+.mbus-step.mbus-step-locked .mbus-step-box { border-style: dashed; }
+.mbus-step-head { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 14px; background: none;
+  border: 0; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.mbus-step-title { font-weight: 700; font-size: 15px; }
+.mbus-step-pill { font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; color: var(--c, #9eafba);
+  background: color-mix(in srgb, var(--c, #9eafba) 16%, transparent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.mbus-step-chev { margin-left: auto; color: #8ea4b1; }
+.mbus-step-body { padding: 0 14px 12px; }
+.mbus-step-body > .card { margin: 6px 0 0; }
+.mbus-lock-note { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 10px; margin-bottom: 8px;
+  border-radius: 8px; background: color-mix(in srgb, #f0b03c 12%, transparent); color: #f0c46a; font-size: 13px; }
+.mbus-step.mbus-step-locked .mbus-scan-section { opacity: .6; }
+.mbus-rail { width: 30px; display: flex; justify-content: center; }
+.mbus-rail span { width: 2px; height: 16px; background: #3a4752; }
+.mbus-mode { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.mbus-mode-tile { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 10px;
+  border: 1px dashed #3a4752; color: #9eafba; font-size: 13px; }
+.mbus-mode-tile strong { color: #e8eef2; font-size: 14px; }
+.mbus-mode-tile.current { border: 1.5px solid var(--c); background: color-mix(in srgb, var(--c) 14%, transparent); color: #cfdbe3; }
+.mbus-mode-tile .btn { align-self: flex-start; }
+.mbus-step-end { display: flex; flex-direction: column; gap: 2px; margin-left: 42px; padding: 10px 14px; border-radius: 12px;
+  border: 1.5px dashed #9ad94a; color: #9ad94a; font-weight: 700; text-decoration: none; }
+.mbus-step-end span { color: #9eafba; font-weight: 400; font-size: 13px; }
+.mbus-tools { margin-top: 14px; border: 1px solid #2a3540; border-radius: 12px; }
+.mbus-tools > .card { margin: 0 12px 12px; }
+.mbus-page > .mbus-untested { font-size: 12px; color: #9eafba; }

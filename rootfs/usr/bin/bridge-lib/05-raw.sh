@@ -49,8 +49,8 @@ _raw_counter_stage() {
       --loglevel="${LOGLEVEL:-}" \
       --mqtt-host="${MQTT_HOST:-}" \
       --mqtt-port="${MQTT_PORT:-}" \
-      --decoded-count="${STATUS_DECODED_COUNT}" \
-      --last-decoded-seen="${STATUS_LAST_DECODED_SEEN}" \
+      --decoded-count-file="${STATUS_DECODED_COUNT_FILE}" \
+      --last-decoded-file="${STATUS_LAST_DECODED_FILE}" \
       --last-error="${STATUS_LAST_ERROR}" \
       --last-event="${STATUS_LAST_EVENT}" \
       --discovery-published="${STATUS_DISCOVERY_PUBLISHED}" \

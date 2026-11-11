@@ -268,7 +268,8 @@ def make_books(spec):
             import esp_books
             book = esp_books.DiagEventsBook(cfg["events_file"], cfg["suggestion_file"], cfg["boot_file"],
                                             cfg["config_file"], cfg.get("history_file", ""),
-                                            bool(cfg.get("history_enabled")))
+                                            bool(cfg.get("history_enabled")),
+                                            cfg.get("settings_file", ""))
         else:
             raise ValueError(f"unknown book {mode!r}")
         deliver = _deliver_lines(book, mode, payload_only=cfg.get("format") == "payload",

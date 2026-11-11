@@ -10,6 +10,7 @@ bash loop and the class on one corpus and compares the files.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from typing import Any, Optional
@@ -298,8 +299,11 @@ class DiagEventsBook:
     """
 
     def __init__(self, events_file: str, suggestion_file: str, boot_file: str, config_file: str,
-                 history_file: str = "", history_enabled: bool = False) -> None:
+                 history_file: str = "", history_enabled: bool = False, settings_file: str = "") -> None:
         self.events_file = events_file
+        # <board>/diag/settings: the settings the board lets the add-on change
+        # (firmware runtime_settings.h), kept per board for the Boards tab.
+        self.settings_file = settings_file
         self.suggestion_file = suggestion_file
         self.boot_file = boot_file
         self.config_file = config_file
@@ -316,6 +320,11 @@ class DiagEventsBook:
         ts = int(bl.now())
         if topic.startswith("wmbus/") and topic.endswith("/diag/config") and len(topic) > 18:
             self._config(topic[6:-12], ts, payload)
+        if topic.startswith("wmbus/") and topic.endswith("/diag/settings") and len(topic) > 20:
+            # A snapshot, not an event: stored and never written to the log.
+            if self.settings_file:
+                self._settings(topic[6:-14], ts, payload)
+            return
         if retained_b == b"1":
             return
         evtype = _event_type(payload)
@@ -369,6 +378,24 @@ class DiagEventsBook:
         except _JqError:
             return
         _write_outputs(self.config_file, outputs)
+
+    def _settings(self, src: str, ts: int, payload: str) -> None:
+        try:
+            value = json.loads(payload)
+        except ValueError:
+            return
+        if not src or not isinstance(value, dict):
+            return
+        try:
+            with open(self.settings_file, encoding="utf-8") as fh:
+                cur = json.load(fh)
+            if not isinstance(cur, dict):
+                cur = {}
+        except (OSError, ValueError):
+            cur = {}
+        value["_bridge_rx_epoch"] = ts
+        cur[src] = value
+        _replace(self.settings_file, json.dumps(cur, separators=(",", ":")).encode())
 
     def _boot_is_new(self, topic: str, payload: str) -> bool:
         src = topic[6:] if topic.startswith("wmbus/") else topic

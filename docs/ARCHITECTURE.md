@@ -1113,6 +1113,7 @@ for understanding the system.
 | `status_seen.tsv` | append-ordered `id`, kind, and epoch reception history |
 | `status_events.tsv` | rolling bridge/WebUI event log |
 | `status_raw_count.txt`, `status_last_raw_seen.txt` | global RAW count and last frame time |
+| `status_decoded_count.txt`, `status_last_decoded_seen.txt` | decoded count and last decoded time; written only by the decode stage, read by every `status.json` writer |
 | `status_recent_raw.tsv` | rolling recent RAW frames used by previews/comparison (appended, cut back to 200 rows above 400; readers use the newest 200) |
 | `status_candidate_analysis.tsv` | candidate encryption/type analysis |
 | `status_candidate_raw.tsv` | last RAW frame keyed by candidate ID |

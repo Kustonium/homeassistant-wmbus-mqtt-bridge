@@ -116,7 +116,7 @@ The add-on ships an interactive web panel (a side panel or the **OPEN WEB UI** b
 
 Views:
 
-- **Dashboard** — the radio pipeline and, after its first valid reply, the wired M-Bus pipeline, reception statistics and detected ESP boards.
+- **Dashboard** — a live flow from every ESP board through MQTT and wmbusmeters to HA, a tile per meter, and, after its first valid reply, the wired M-Bus pipeline.
 - **Meters** — configured radio and wired meters with their current value and an explicit source (`ESP` or `M-Bus · <alias>`).
 - **Received / Search** — LISTEN-mode candidates (ID, driver, media, encryption, reception). Candidates without a required AES key are decoded by one-shot preview processes, and their current value appears in the **Value** column without permanent configuration. Candidates requiring AES are skipped until a key is provided. The **Filter by value** bar narrows already displayed data without running extra drivers.
 - **Logs** — a short runtime event stream (full logs are in the add-on **Log** tab).

@@ -144,7 +144,7 @@ Dostupné v **5 jazycích** (EN/PL/DE/CS/SK) — přepínač vpravo nahoře.
 
 | Záložka | K čemu |
 |---|---|
-| **PANEL** | Dashboard: pipeline ESP→MQTT→wmbusmeters→HA (klikatelné dlaždice) + statistiky. |
+| **PANEL** | Dashboard: živý tok z každé desky ESP (vlastní barva, anténa, tloušťka čáry = rámce/min) přes MQTT a wmbusmeters do HA (kliknutím na uzel podrobnosti) a dlaždice každého měřiče; najetí na měřič zvýrazní desky, které ho slyší. |
 | **MĚŘIČE** | Tvé nakonfigurované měřiče: hodnota, poslední telegram, **PŘÍJEM**. |
 | **PŘÍJEM / HLEDÁNÍ** | Detekovaní kandidáti + nakonfigurované „v éteru"; zde přidáš/odebereš měřiče a filtruješ zobrazené hodnoty. |
 | **LOGY / ESP LOGY** | Runtime události a diagnostika ESP přijímačů. |
@@ -471,7 +471,14 @@ vyžadují `diagnostic_mode: normal` na ESP; ukázkové konfigurace ho mají zap
 Bez něj zbytek záložky funguje a tabulka ukazuje `diagnostic_mode` každé desky. Počty se drží 15 dní v
 `/data/radio_env_hours.json` (několik KB). Jen zobrazení.
 
-### Záložka Diagnostika
+### Záložka Desky (dříve Diagnostika)
+
+Nahoře dlaždice každé desky s nastaveními, která deska dovolí měnit z doplňku:
+zatím režim příjmu (T1, C1, oba, S1). Kliknutí ho pošle desce, ta ho uloží do
+flash a restartuje se (asi 10 s). Deska bez `<deska>/diag/settings` má šedou
+dlaždici s vysvětlením. Pod dlaždicemi diagnostika jako dosud.
+
+#### Záložka Diagnostika
 
 Tabulka po deskách: rámce, měřidla, chybějící události, restarty za posledních
 24 hodin a čas od posledního rámce, plus jeden stav na desku. Pod ní karta každé

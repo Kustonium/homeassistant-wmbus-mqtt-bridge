@@ -146,7 +146,7 @@ Dostępny w **5 językach** (EN/PL/DE/CS/SK) — przełącznik w prawym górnym 
 
 | Zakładka | Po co |
 |---|---|
-| **PANEL** | Dashboard: pipeline ESP→MQTT→wmbusmeters→HA (klikalne kafelki) + statystyki. |
+| **PANEL** | Dashboard: przepływ na żywo od każdej płytki ESP (własny kolor, antena, grubość linii = ramki/min) przez MQTT i wmbusmeters do HA (kliknięcie węzła pokazuje szczegóły) oraz kafelek każdego licznika; najechanie na licznik podświetla płytki, które go słyszą. |
 | **LICZNIKI** | Twoje skonfigurowane liczniki: wartość, ostatni telegram, **ODBIÓR**. |
 | **ODBIERANE / SZUKAJ** | Wykryci kandydaci + skonfigurowane w eterze; tu dodajesz/usuwasz liczniki i filtrujesz pokazane wartości. |
 | **LOGI / LOGI ESP** | Zdarzenia runtime i diagnostyka odbiorników ESP. |
@@ -493,7 +493,18 @@ podpowiedzią przy tych, gdzie jest wyłączony. Liczby są trzymane per płytka
 i godzina przez 15 dni w `/data/radio_env_hours.json` (kilka KB). Tylko
 wyświetlanie: niczego nie zmienia w odbiorze.
 
-### Zakładka Diagnostyka
+### Zakładka Płytki (dawniej Diagnostyka)
+
+Na górze kafelek każdej płytki z ustawieniami, które płytka pozwala zmieniać z
+dodatku. Na razie to tryb nasłuchu (T1, C1, oba, S1): kliknięcie wysyła go do
+płytki, która zapisuje go we flashu i się restartuje (około 10 s), a kafelek
+pokazuje potem tryb zgłoszony przez płytkę. S1 jest wyszarzone przy CC1101 i
+oznaczone jako słabsze przy SX1262. „Wróć do YAML” kasuje zapisaną wartość.
+Płytka, której firmware nie ogłasza ustawień (brak `<płytka>/diag/settings`),
+ma wyszarzony kafelek z wyjaśnieniem; trzeba ją przebudować z aktualnym
+komponentem. Pod kafelkami diagnostyka jak dotąd.
+
+#### Zakładka Diagnostyka
 
 Tabela per płytka: ramki, liczniki, zgubione zdarzenia, restarty w ostatniej
 dobie i czas od ostatniej ramki, plus jeden stan na płytkę. Pod nią karta każdej

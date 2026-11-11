@@ -87,20 +87,6 @@
     webui_cancel: "cancel_label",
   };
 
-  // Dashboard view selector — persisted in localStorage so the user keeps
-  // their preferred lens across reloads. "pipeline" = data-flow diagram with
-  // clickable nodes; "stats" = speed-dial + sparkline + funnel.
-  const LS_VIEW_KEY = "wmbus.dashboardView";
-  function loadDashboardView() {
-    try {
-      const v = window.localStorage.getItem(LS_VIEW_KEY);
-      return (v === "stats" || v === "pipeline") ? v : "pipeline";
-    } catch (_) { return "pipeline"; }
-  }
-  function saveDashboardView(v) {
-    try { window.localStorage.setItem(LS_VIEW_KEY, v); } catch (_) {}
-  }
-
   // Candidate table order, clickable column headers like a spreadsheet. The
   // default is by ID: the backend order follows the newest telegram, so with
   // live updates the rows kept moving under the reader. Persisted per browser.
@@ -155,8 +141,11 @@
     toast: null,
     liveConnected: false,
     mediaFilter: "all",
-    // Dashboard view ("pipeline" | "stats") — segmented control on PANEL.
-    dashboardView: loadDashboardView(),
+    // Panel flow diagram: which meter or board is highlighted (hover, or a
+    // tap that pins it on a phone). {kind: "meter", id, boards} | {kind:
+    // "board", name} | null.
+    flowFocus: null,
+    flowPinned: false,
     // Drill-down workspace when a pipeline node is clicked. null = no drill-down.
     workspace: null,  // "esp" | "mqtt" | "wmbus" | "ha" | null
     // IDs ticked for bulk removal in the configured-meters panel. Persisted in
@@ -1027,6 +1016,13 @@
       state.data.i18n = previousI18n;
     }
     state.error = "";
+    // An M-Bus scan result lives only in this page; once the add-on has
+    // started again it describes a bus as it was before, so it goes.
+    const started = Number(state.data?.model?.bridge_start_epoch || 0);
+    if (state.mbusScan && !state.mbusScan.running && started && state.mbusScan.bridgeStart
+        && started !== state.mbusScan.bridgeStart) {
+      state.mbusScan = null;
+    }
   }
 
   // A failed refresh used to replace the page with its error until a manual
@@ -1475,27 +1471,6 @@
   }
 
   // ──────────────────────────────────────────────────────────────────────
-  // Dashboard view toggle — Pipeline vs Statystyki
-  // Segmented control that switches the top-of-PANEL section between the
-  // data-flow diagram (with drill-down nodes) and the speed-dial + funnel +
-  // sparkline view. User preference persists in localStorage.
-  // ──────────────────────────────────────────────────────────────────────
-  function dashboardViewToggle() {
-    const v = state.dashboardView;
-    const btn = (key, label, icon) => `
-      <button class="view-toggle-btn ${v === key ? "active" : ""}"
-              data-action="dashboard-view" data-view="${key}" type="button">
-        ${icon} ${escapeHtml(label)}
-      </button>`;
-    return `
-      <div class="view-toggle">
-        ${btn("pipeline", t("view_pipeline", "Pipeline"), "🔌")}
-        ${btn("stats",    t("view_stats",    "Statystyki"), "📊")}
-      </div>
-    `;
-  }
-
-  // ──────────────────────────────────────────────────────────────────────
   // Pipeline header — ESP → MQTT → wmbusmeters → HA
   // Each node shows a status dot and a one-line metric. Click drills down
   // into a workspace panel below. The horizontal arrows carry the current
@@ -1696,46 +1671,25 @@
         </div>
       </div>` : "";
 
+    const nodeState = (ok, warn) => bridgeStale ? "unknown" : ok ? "ok" : warn ? "warn" : "bad";
+    const flow = {
+      devices: espDevicesAll,
+      stale: bridgeStale,
+      rate: cur,
+      mqtt: {state: nodeState(!!model.mqtt_ok, false),
+             text: model.mqtt_ok ? t("pipeline_mqtt_online", "online") : t("pipeline_mqtt_offline", "offline"),
+             sub: brokerLabel || ((mqtt.host || "—") + (mqtt.port ? ":" + mqtt.port : ""))},
+      wmbus: {state: nodeState(wmbusOk, wmbusWarn), text: wmbusLabel, sub: wmbusLine,
+              title: t("pipeline_wmbus_tooltip", "received / decoded")},
+      instances: flowInstances(model, {nodeState, wmbusOk, meterCount, candidateCount, decodedCount,
+                                       wiredRunning, wiredAnswering, wiredTotal, wiredAll}),
+      ha: {state: haLink === "ok" ? nodeState(true, false) : haLink === "not_created" ? nodeState(false, false) : "unknown",
+           text: haText, sub: `${meterCount} ${t("pipeline_ha_entities_short", "entit.")}`},
+    };
     return `
       <section class="section">
-        <div class="pipeline">
-          <button class="${cls("esp")}" data-action="open-workspace" data-ws="esp" type="button">
-            <div class="pipeline-icon">📡</div>
-            <div class="pipeline-title">${escapeHtml(espTitle)}</div>
-            <div class="pipeline-meta">${dot(espOnline && !espSomeStale, (espOnline && espSomeStale) || espWarn, espOnline && hasLiveRate && espRateFromDiag && !espSomeStale)} ${escapeHtml(espStatus)}</div>
-            <div class="pipeline-sub">${escapeHtml(espVisibleLine)}</div>
-            <div class="pipeline-sub pipeline-device" title="${escapeHtml(primaryTopic || "")}">${escapeHtml(espDeviceLine)}</div>
-            ${(!bridgeStale && espSomeStale) ? `<div class="pipeline-sub" style="font-size:11px;color:#f3c84b;">⚠ ${escapeHtml(t("pipeline_esp_pulse_stopped", "pulse stopped"))}: ${escapeHtml(espStoppedNames)}</div>` : ""}
-            ${chevron("esp")}
-          </button>
-          <div class="pipeline-arrow"><span>${escapeHtml(rateLabel)}</span></div>
-          <button class="${cls("mqtt")}" data-action="open-workspace" data-ws="mqtt" type="button">
-            <div class="pipeline-icon">📨</div>
-            <div class="pipeline-title">MQTT</div>
-            <div class="pipeline-meta">${dot(!!model.mqtt_ok, false, !!model.mqtt_ok && hasLiveRate)} ${escapeHtml(model.mqtt_ok ? t("pipeline_mqtt_online", "online") : t("pipeline_mqtt_offline", "offline"))}</div>
-            <div class="pipeline-sub">${escapeHtml((mqtt.host || "—") + (mqtt.port ? ":" + mqtt.port : ""))}</div>
-            ${brokerLabel ? `<div class="pipeline-sub" style="font-size:11px;">${escapeHtml(brokerLabel)}</div>` : ""}
-            ${(model.mqtt_tls_intent === true && !model.mqtt_ok) ? `<div class="pipeline-sub" style="font-size:11px;color:#f3c84b;">⚠ TLS ${escapeHtml(t("tls_not_supported", "not supported"))} (1883)</div>` : ""}
-            ${chevron("mqtt")}
-          </button>
-          <div class="pipeline-arrow"><span>${escapeHtml(rateLabel)}</span></div>
-          <button class="${cls("wmbus")}" data-action="open-workspace" data-ws="wmbus" type="button">
-            <div class="pipeline-icon">⚙</div>
-            <div class="pipeline-title">wmbusmeters</div>
-            <div class="pipeline-meta">${dot(wmbusOk, wmbusWarn, wmbusOk && hasLiveRate)} ${escapeHtml(wmbusLabel)}</div>
-            <div class="pipeline-sub" title="${escapeHtml(t("pipeline_wmbus_tooltip", "received / decoded"))}">${escapeHtml(wmbusLine)}</div>
-            ${chevron("wmbus")}
-          </button>
-          <div class="pipeline-arrow"><span>${escapeHtml(rateLabel)}</span></div>
-          <button class="${cls("ha")}" data-action="open-workspace" data-ws="ha" type="button">
-            <div class="pipeline-icon">🏠</div>
-            <div class="pipeline-title">HA</div>
-            <div class="pipeline-meta">${haDot} ${escapeHtml(haText)}</div>
-            <div class="pipeline-sub">${meterCount} ${escapeHtml(t("pipeline_ha_entities_short", "entit."))}</div>
-            ${chevron("ha")}
-          </button>
-        </div>
-        ${wiredPipeline}
+        ${flowChips(flow, model)}
+        ${flowDiagram(flow)}
         ${pipelineWorkspace(model)}
       </section>
     `;
@@ -2025,107 +1979,16 @@
     `;
   }
 
-  // ──────────────────────────────────────────────────────────────────────
-  // Stats view (alternative to pipeline) — speed dial + sparkline + funnel.
-  // Replaces the old mixed-style statsPanel. Funnel uses a consistent
-  // "max = candidate_count" baseline so the relative coverage is obvious.
-  // ──────────────────────────────────────────────────────────────────────
-  function statsViewSpeedDial(model) {
-    const cur  = Number(model.rate_current_min || 0);
-    const prev = Number(model.rate_prev_min || 0);
-    const avg  = Number(model.raw_per_min || 0);
-    const delta = cur - prev;
-    const trendColor = delta > 0 ? "#2de36f" : (delta < 0 ? "#ff646b" : "#8ea4b1");
-    const trendArrow = delta > 0 ? "↑" : (delta < 0 ? "↓" : "→");
-    const trendText  = `${delta > 0 ? "+" : ""}${delta}`;
-    const source = model.rate_source || "bridge";
-    const srcIcon  = source === "esp" ? "📡" : "⚙";
-
-    return `
-      <div class="speed-dial">
-        <div class="speed-dial-main">
-          <div class="speed-dial-value">${escapeHtml(String(cur))}</div>
-          <div class="speed-dial-unit">${escapeHtml(t("rate_tel_min", "tel / min"))}</div>
-        </div>
-        <div class="speed-dial-side">
-          <div>
-            <span style="color:${trendColor};font-weight:800;font-size:18px;">${trendArrow} ${escapeHtml(trendText)}</span>
-            <span style="font-size:11px;color:#8ea4b1;margin-left:6px;">${escapeHtml(t("rate_vs_prev", "vs previous"))} (${prev})</span>
-          </div>
-          <div style="font-size:11px;color:#8ea4b1;margin-top:6px;">
-            ${escapeHtml(t("rate_session_avg_label", "session avg"))}: <strong style="color:#cbd9e1;">${escapeHtml(String(avg))}</strong> ${escapeHtml(t("rate_tel_min", "tel / min"))}
-          </div>
-          <div style="font-size:10px;color:#4d6875;margin-top:4px;">
-            ${escapeHtml(t("rate_source_label", "Rate source"))}: <span style="color:${source === "esp" ? "#00bcd4" : "var(--muted)"};font-weight:700;">${srcIcon} ${escapeHtml(source)}</span>
-          </div>
-        </div>
-      </div>
-      <div style="margin-top:12px;">
-        <div style="font-size:11px;color:#8ea4b1;margin-bottom:4px;">${escapeHtml(t("sparkline_title", "Last 15 minutes"))}</div>
-        ${sparkline15min(model.rate_history_15m || [])}
-      </div>
-    `;
-  }
-
-  function statsViewFunnel(model) {
-    const candidates = Number(model.candidate_count || 0);
-    const meters     = Number(model.meter_count || 0);
-    // "Decodes live" = configured meters with at least one telegram in last 15 min.
-    // We approximate from session data — exact figure requires per-meter freshness check.
-    const liveMeters = asArray((state.data || {}).meters).filter(m => Number(m.seen_15m || 0) > 0).length;
-    const baseline   = Math.max(candidates, 1);
-    const pct1       = candidates > 0 ? Math.round((meters / candidates) * 100) : 0;
-    const pct2       = meters > 0     ? Math.round((liveMeters / meters) * 100) : 0;
-
-    const barW = (n) => Math.max(2, Math.round((n / baseline) * 100));
-    const row = (icon, label, value, pctOfTotal, pctOfPrev, pctLabel, color) => `
-      <div class="funnel-row">
-        <div class="funnel-row-head">
-          <span class="funnel-icon">${icon}</span>
-          <span class="funnel-label">${escapeHtml(label)}</span>
-          <span class="funnel-value">${escapeHtml(String(value))}</span>
-        </div>
-        <div class="funnel-bar"><span style="width:${pctOfTotal}%;background:${color};"></span></div>
-        ${pctLabel ? `<div class="funnel-pct">${escapeHtml(pctLabel)}</div>` : ""}
-      </div>`;
-    return `
-      <h3 style="margin:0 0 12px;font-size:14px;color:#cbd9e1;">🎯 ${escapeHtml(t("funnel_title", "Coverage"))}</h3>
-      ${row("📡", t("funnel_in_air",      "In air"),         candidates, 100,                  null, null, "#7e57c2")}
-      <div class="funnel-arrow">↓ ${pct1}% ${escapeHtml(t("funnel_of_air", "of air → configured"))}</div>
-      ${row("⚙",  t("funnel_configured",  "Configured"),     meters,     barW(meters),         null, null, "#26a69a")}
-      <div class="funnel-arrow">↓ ${pct2}% ${escapeHtml(t("funnel_of_conf", "of configured → live"))}</div>
-      ${row("✓",  t("funnel_live",        "Decodes live"),   liveMeters, barW(liveMeters),     null, null, "#2de36f")}
-    `;
-  }
-
-  function dashboardStatsView(model) {
-    return `
-      <section class="section">
-        <div class="card">
-          ${statsViewSpeedDial(model)}
-        </div>
-      </section>
-      <section class="section">
-        <div class="card">
-          ${statsViewFunnel(model)}
-        </div>
-      </section>
-    `;
-  }
-
   function dashboard() {
     const data = state.data || {};
     const model = data.model || {};
-    const recentMeters = asArray(data.meters).slice(0, 6);
+    const allMeters = asArray(data.meters);
     const meterCount = Number(model.meter_count || 0);
     const candidateCount = Number(model.candidate_count || 0);
 
     const pending = pendingMeters();
 
-    // Top section depends on selected dashboard view.
-    const topSection = state.dashboardView === "stats"
-      ? dashboardStatsView(model)
-      : pipelineHeader(model);
+    const topSection = pipelineHeader(model);
 
     // When the user has no configured meters yet, the meters table would
     // be empty and we'd be showing the candidates table separately — which
@@ -2152,24 +2015,380 @@
         </section>`
       : `
         <section class="section">
-          <div class="section-head"><h2>${escapeHtml(t("webui_recent_meters", "Recent meters"))}</h2><span>${recentMeters.length} ${escapeHtml(t("webui_shown", "shown"))}</span></div>
-          ${meterTable(recentMeters, false)}
+          <div class="section-head"><h2>${escapeHtml(t("webui_recent_meters", "Recent meters"))}</h2><span>${allMeters.length} ${escapeHtml(t("webui_shown", "shown"))}</span></div>
+          ${meterTiles(allMeters)}
         </section>`;
 
     return `
-      ${dashboardViewToggle()}
       ${topSection}
 
       ${dashboardPendingPanel(pending, model, data.analysis || {})}
 
       ${metersSection}
-
-      <section class="section">
-        <div class="section-head"><h2>${escapeHtml(t("recent_events_title", "Recent events"))}</h2><span>${asArray(data.events).length} ${escapeHtml(t("webui_total", "total"))}</span></div>
-        ${eventsList(asArray(data.events).slice(0, 8))}
-      </section>
     `;
   }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Panel flow: boards → MQTT → wmbusmeters → HA, drawn live.
+  // Every board the add-on hears gets a node, an antenna and a line in its
+  // own colour; the line's width follows its frames per minute and dots run
+  // along it while frames come in. A silent board turns dashed grey. On a
+  // phone the same story is told top-down in HTML (the SVG would shrink to
+  // unreadable text).
+  // ──────────────────────────────────────────────────────────────────────
+  const FLOW_PALETTE = ["#4aa3ff", "#2fd3a6", "#ff6fa5", "#ff8a4c", "#9ad94a", "#b08cff",
+                        "#ffd04a", "#4fd6ff", "#ff6b6b", "#7ee0c3", "#f0a3ff", "#d4b85a"];
+  const FLOW_NODE = {mqtt: "#a596ff", wmbus: "#f0b03c", ha: "#4aa3ff"};
+  const FLOW_STATE = {warn: "#f0b03c", bad: "#ff6b6b", unknown: "#7d8a96"};
+
+  // One colour per board, from its name: the same board keeps its colour on
+  // every reload and device. A clash moves the later name (alphabetically)
+  // to the next free colour.
+  function flowBoardColors(names) {
+    const out = new Map();
+    const taken = new Set();
+    [...new Set(names.filter(Boolean))].sort().forEach((n) => {
+      let h = 0;
+      for (const ch of n) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+      let i = h % FLOW_PALETTE.length;
+      for (let k = 0; k < FLOW_PALETTE.length && taken.has(i); k++) i = (i + 1) % FLOW_PALETTE.length;
+      taken.add(i);
+      out.set(n, FLOW_PALETTE[i]);
+    });
+    return out;
+  }
+
+  function flowColors() {
+    const data = state.data || {};
+    const names = asArray((data.esp || {}).devices).map((d) => d && d.name);
+    asArray(data.meters).forEach((m) => asArray(m.reception_esps).forEach((e) => names.push(e.esp)));
+    return flowBoardColors(names);
+  }
+
+  function flowClip(s, n) {
+    s = String(s || "");
+    return s.length > n ? s.slice(0, n - 1) + "…" : s;
+  }
+
+  function flowBoardInfo(d, stale) {
+    const live = !stale && d.health === "online";
+    const warn = !stale && d.health === "warn";
+    const fh = Number(d.frames_h);
+    const perMin = Number.isFinite(fh) && d.frames_h !== null ? fh / 60 : null;
+    const rateTxt = perMin === null ? "" : (perMin < 10 ? perMin.toFixed(1) : String(Math.round(perMin)));
+    const sub = live
+      ? (perMin === null ? t("flow_board_counting", "counting…")
+        : t("flow_board_sub", "{rate}/min · {m} meters", {rate: rateTxt, m: d.meters_heard ?? "—"}))
+      : t("flow_silent", "silent {age}", {age: fmtInterval(Number(d.telegram_age_s) || 0)});
+    return {live, warn, rate: Number.isFinite(fh) ? fh : 0, rateTxt, sub};
+  }
+
+  function flowFocused(kind, key) {
+    const f = state.flowFocus;
+    if (!f) return false;
+    if (kind === "board") return f.kind === "meter" ? f.boards.includes(key) : f.name === key;
+    return f.kind === "meter" ? f.id === key : asArray(key).includes(f.name);
+  }
+
+  function flowChips(o, model) {
+    const devs = asArray(o.devices);
+    const online = devs.filter((d) => d && d.health === "online").length;
+    const meters = asArray((state.data || {}).meters);
+    const late = meters.filter((m) => {
+      const ts = m.last_seen ? Date.parse(m.last_seen) : NaN;
+      if (!Number.isFinite(ts)) return false;
+      return meterRhythmStatus((Date.now() - ts) / 1000, m.avg_interval_s).label !== t("online_label", "online");
+    }).length;
+    const chip = (color, text) => `<span class="flow-chip" style="--c:${color}"><span class="flow-chip-dot"></span>${escapeHtml(text)}</span>`;
+    const boardsColor = o.stale ? FLOW_STATE.unknown : online === devs.length && online > 0 ? "#2fd3a6" : online > 0 ? FLOW_STATE.warn : FLOW_STATE.bad;
+    const stCol = (st, own) => st === "ok" ? own : FLOW_STATE[st] || FLOW_STATE.unknown;
+    return `<div class="flow-chips">
+      ${chip(boardsColor, t("flow_boards_live", "{n} of {m} boards sending", {n: online, m: devs.length}))}
+      ${chip("#4fd6ff", t("flow_frames_min", "{n} frames/min", {n: o.rate}))}
+      ${chip(stCol(o.mqtt.state, FLOW_NODE.mqtt), `MQTT ${o.mqtt.text}`)}
+      ${chip(stCol(o.ha.state, "#9ad94a"), o.ha.text)}
+      ${meters.length ? chip(late ? FLOW_STATE.warn : "#2fd3a6", late
+        ? t("flow_meters_late", "{n} meter(s) late", {n: late})
+        : t("flow_meters_on_time", "all meters on time")) : ""}
+    </div>`;
+  }
+
+  // The wmbusmeters instances the add-on runs, as the code wires them
+  // (bridge-lib/12-pipeline.sh, 11-listen.sh, 15-external.sh, 14-mbus.sh):
+  //   dec   the main instance, your configured meters -> decode stage -> HA
+  //         (with no meters configured it only listens, for Received)
+  //   ext   meters on external_* drivers; its JSON goes through a FIFO into
+  //         the same decode stage
+  //   list  pure listen, no meters: the candidates on Received / Search
+  //   mbus  wired M-Bus, its own serial input, publishes its meters itself
+  // Each one: {key, color, title, purpose, state, status, to: "decode" |
+  // "candidates" | "ha", input: "raw" | "mbus"}.
+  function flowInstances(model, c) {
+    const data = state.data || {};
+    const out = [];
+    const running = (ok) => ok ? t("flow_st_running", "running") : t("flow_st_stopped", "stopped");
+    const extMeters = asArray(data.meters).filter((m) => String(m.driver || "").startsWith("external_")).length;
+    const reads = asArray(data.meters).filter((m) => m.source !== "mbus" && !String(m.driver || "").startsWith("external_"))
+      .map((m) => Date.parse(m.last_seen || "")).filter(Number.isFinite);
+    const lastRead = reads.length ? Math.max(...reads) : null;
+    // Radio meters on built-in drivers: decoded ones plus those still
+    // waiting for their first telegram (wired and external ones have their
+    // own instance).
+    const radioIds = new Set(asArray(data.meters)
+      .filter((m) => m.source !== "mbus" && !String(m.driver || "").startsWith("external_"))
+      .map((m) => String(m.id || m.meter_id || "")));
+    asArray(data.pending_meters).forEach((m) => {
+      if (!String((m && m.driver) || "").startsWith("external_")) radioIds.add(String((m && (m.id || m.meter_id)) || ""));
+    });
+    radioIds.delete("");
+    const decMeters = radioIds.size;
+    out.push({
+      key: "dec", color: "#f0b03c", title: "wmbusmeters · DEC",
+      purpose: c.meterCount > 0
+        ? t("flow_inst_dec", "your meters ({n})", {n: decMeters})
+        : t("flow_inst_dec_zero", "listening, no meters yet"),
+      state: c.nodeState(c.wmbusOk, false),
+      // The age of its newest reading, not pipeline.decoded_count: that
+      // counter is overwritten with 0 by the RAW counter's status writes.
+      status: `${running(c.wmbusOk)} · ${lastRead === null ? t("flow_no_reading", "no reading yet")
+        : t("flow_last_read", "last reading {age} ago", {age: fmtInterval(Math.max(0, Math.round((Date.now() - lastRead) / 1000)))})}`,
+      to: c.meterCount > 0 ? "decode" : "candidates", input: "raw",
+    });
+    const ext = model.external_instance || {};
+    if (["running", "exited", "crash_loop"].includes(ext.state)) {
+      out.push({
+        key: "ext", color: "#ff6fa5", title: "wmbusmeters · EXT",
+        purpose: t("flow_inst_ext", "custom drivers ({n})", {n: Number(ext.meters) || extMeters}),
+        state: ext.state === "running" ? "ok" : "bad",
+        status: ext.state === "running" ? t("flow_st_running", "running")
+          : ext.state === "crash_loop" ? t("flow_st_crash", "stopped after repeated crashes") : t("flow_st_exited", "exited"),
+        to: "decode", input: "raw",
+      });
+    }
+    if (c.meterCount > 0) {
+      const fresh = asArray(data.candidates).some((r) => {
+        const ts = r && r.last_seen ? Date.parse(r.last_seen) : NaN;
+        return Number.isFinite(ts) && Date.now() - ts < 5 * 60 * 1000;
+      });
+      out.push({
+        key: "list", color: "#2fd3a6", title: "wmbusmeters · LIST",
+        purpose: t("flow_inst_list", "listening for other meters"),
+        state: fresh ? "ok" : "warn",
+        status: `${fresh ? t("flow_st_running", "running") : t("flow_st_idle", "nothing heard for 5 min")} · ${t("flow_candidates_sub", "{n} visible", {n: c.candidateCount})}`,
+        to: "candidates", input: "raw",
+      });
+    }
+    if (c.wiredRunning) {
+      out.push({
+        key: "mbus", color: "#9ad94a", title: "wmbusmeters · M-Bus",
+        purpose: t("flow_inst_mbus", "wired meters ({n})", {n: c.wiredTotal}),
+        state: c.nodeState(c.wiredAll, c.wiredAnswering > 0),
+        status: t("pipeline_wired_answering", "{x} of {y} answer").replace("{x}", String(c.wiredAnswering)).replace("{y}", String(c.wiredTotal)),
+        to: "ha", input: "mbus",
+      });
+    }
+    return out;
+  }
+
+  function flowDiagram(o) {
+    const devs = asArray(o.devices).slice().sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));  // fixed order: by name, not by who spoke last
+    const colors = flowColors();
+    const focus = !!state.flowFocus;
+    const inst = asArray(o.instances);
+    const n = Math.max(1, devs.length);
+    const compact = devs.length > 8;
+    const bh = compact ? 30 : 46, gap = compact ? 6 : 10;
+    const colH = devs.length ? n * bh + (n - 1) * gap : 0;
+    const IH = 64, IG = 16;
+    const instH = inst.length * IH + Math.max(0, inst.length - 1) * IG;
+    const H = Math.max(colH, instH, 170) + 40;
+    const cy = H / 2, top = (H - colH) / 2, itop = (H - instH) / 2;
+    // Columns: boards | MQTT | instances | decode / Received | HA
+    const BX = 44, BW = 190, MX = 290, MW = 150, IX = 500, IW = 250, DX = 810, DW = 175, HX = 1040, HW = 150, NH = 70;
+    const W = HX + HW + 10;
+    const maxRate = Math.max(1, ...devs.map((d) => Number(d.frames_h) || 0));
+    const nodeColor = (st, own) => st === "ok" ? own : FLOW_STATE[st] || FLOW_STATE.unknown;
+    const iy = (i) => itop + i * (IH + IG) + IH / 2;
+    let boards = "", lines = "";
+    devs.forEach((d, i) => {
+      const info = flowBoardInfo(d, o.stale);
+      const y = top + i * (bh + gap), my = y + bh / 2;
+      const own = colors.get(d.name) || FLOW_STATE.unknown;
+      const c = info.live ? own : info.warn ? FLOW_STATE.warn : FLOW_STATE.unknown;
+      const hl = flowFocused("board", d.name) ? " hl" : "";
+      const ey = cy + (n > 1 ? (i / (n - 1) - 0.5) * 40 : 0);
+      const path = `M${BX + BW} ${my} C${BX + BW + 40} ${my} ${MX - 40} ${ey} ${MX} ${ey}`;
+      const name = escapeHtml(d.name);
+      lines += info.live
+        ? `<path class="flow-line flow-dots${hl}" data-board="${name}" d="${path}" stroke="${c}" stroke-width="${(1.5 + 4.5 * info.rate / maxRate).toFixed(1)}" style="--d:${(2.6 - 1.8 * info.rate / maxRate).toFixed(2)}s"/>`
+        : `<path class="flow-line${hl}" data-board="${name}" d="${path}" stroke="${c}" stroke-width="1.2" stroke-dasharray="5 5"/>`;
+      const dead = !info.live && !info.warn;
+      boards += `<g class="flow-ant${info.live ? " on" : ""}" transform="translate(22 ${my})" stroke="${c}" fill="none" stroke-width="1.6" stroke-linecap="round">
+          <line x1="0" y1="-2" x2="0" y2="${compact ? 8 : 12}"/><path class="w1" d="M-5 -5 A7 7 0 0 1 5 -5"/>${compact ? "" : `<path class="w2" d="M-9 -9 A12.7 12.7 0 0 1 9 -9"/>`}
+          ${dead ? `<line x1="-9" y1="-11" x2="9" y2="10" stroke="${FLOW_STATE.bad}"/>` : ""}</g>
+        <g class="flow-board${hl}" data-board="${name}" data-action="open-workspace" data-ws="esp">
+          <title>${name} · ${escapeHtml(info.sub)}</title>
+          <rect x="${BX}" y="${y}" width="${BW}" height="${bh}" rx="8" fill="${c}" fill-opacity="0.14" stroke="${c}"${info.live ? "" : ` stroke-dasharray="4 3"`}/>
+          ${compact
+            ? `<text class="flow-t" x="${BX + 12}" y="${my}" dominant-baseline="central">${escapeHtml(flowClip(d.name, 14))}<tspan class="flow-s" fill="${c}"> ${info.live ? escapeHtml(info.rateTxt ? info.rateTxt + "/min" : "") : "—"}</tspan></text>`
+            : `<text class="flow-t" x="${BX + 12}" y="${y + 17}" dominant-baseline="central">${escapeHtml(flowClip(d.name, 20))}</text>
+               <text class="flow-s" x="${BX + 12}" y="${y + 34}" dominant-baseline="central" fill="${c}">${escapeHtml(flowClip(info.sub, 25))}</text>`}
+        </g>`;
+    });
+    const icon = {
+      mqtt: (x, y, c) => `<g fill="${c}" stroke="${c}" stroke-width="1.2"><circle cx="${x}" cy="${y}" r="3.5"/><circle cx="${x + 9}" cy="${y - 7}" r="2.3"/><circle cx="${x + 9}" cy="${y + 7}" r="2.3"/><line x1="${x}" y1="${y}" x2="${x + 9}" y2="${y - 7}"/><line x1="${x}" y1="${y}" x2="${x + 9}" y2="${y + 7}"/></g>`,
+      gear: (x, y, c) => `<g stroke="${c}" fill="none" stroke-width="1.8" stroke-linecap="round"><circle cx="${x + 4}" cy="${y}" r="4.5"/><line x1="${x + 4}" y1="${y - 9}" x2="${x + 4}" y2="${y - 7}"/><line x1="${x + 4}" y1="${y + 7}" x2="${x + 4}" y2="${y + 9}"/><line x1="${x - 5}" y1="${y}" x2="${x - 3}" y2="${y}"/><line x1="${x + 11}" y1="${y}" x2="${x + 13}" y2="${y}"/></g>`,
+      ha: (x, y, c) => `<g stroke="${c}" fill="none" stroke-width="1.8" stroke-linejoin="round"><path d="M${x - 4} ${y + 1} L${x + 4} ${y - 7} L${x + 12} ${y + 1}"/><path d="M${x - 2} ${y} L${x - 2} ${y + 8} L${x + 10} ${y + 8} L${x + 10} ${y}"/></g>`,
+      list: (x, y, c) => `<g stroke="${c}" fill="none" stroke-width="1.8" stroke-linecap="round"><circle cx="${x + 3}" cy="${y - 1}" r="5"/><line x1="${x + 7}" y1="${y + 3}" x2="${x + 11}" y2="${y + 7}"/></g>`,
+      plug: (x, y, c) => `<g stroke="${c}" fill="none" stroke-width="1.8" stroke-linecap="round"><rect x="${x - 3}" y="${y - 4}" width="12" height="8" rx="2"/><line x1="${x}" y1="${y - 8}" x2="${x}" y2="${y - 4}"/><line x1="${x + 6}" y1="${y - 8}" x2="${x + 6}" y2="${y - 4}"/><line x1="${x + 3}" y1="${y + 4}" x2="${x + 3}" y2="${y + 9}"/></g>`,
+    };
+    // A box with an icon, a title and two lines; ws opens the drill-down,
+    // href goes to a tab instead.
+    const box = (x, y, w, h, color, ic, title, l1, l2, link, tip) => `<g class="flow-node" ${link}>
+        <title>${escapeHtml(tip || [title, l1, l2].filter(Boolean).join(" · "))}</title>
+        <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10" fill="${color}" fill-opacity="0.14" stroke="${color}"/>
+        ${ic(x + 16, y + 18, color)}
+        <text class="flow-t" x="${x + 36}" y="${y + 18}" dominant-baseline="central">${escapeHtml(flowClip(title, Math.floor((w - 40) / 8)))}</text>
+        <text class="flow-s" x="${x + 12}" y="${y + 39}" dominant-baseline="central" fill="${color}">${escapeHtml(flowClip(l1, Math.floor((w - 24) / 7.6)))}</text>
+        ${l2 ? `<text class="flow-s2" x="${x + 12}" y="${y + 55}" dominant-baseline="central">${escapeHtml(flowClip(l2, Math.floor((w - 24) / 6.4)))}</text>` : ""}
+      </g>`;
+    const ws = (k) => `data-action="open-workspace" data-ws="${k}"`;
+    const curve = (x1, y1, x2, y2, color, moving, dash, width = 3) =>
+      `<path class="flow-line${moving ? " flow-dots" : ""}" d="M${x1} ${y1} C${(x1 + x2) / 2} ${y1} ${(x1 + x2) / 2} ${y2} ${x2} ${y2}" stroke="${color}" stroke-width="${width}"${moving ? "" : dash ? ` stroke-dasharray="5 5"` : ""} style="--d:0.9s"/>`;
+    const moving = o.rate > 0 && !o.stale;
+    const mqC = nodeColor(o.mqtt.state, FLOW_NODE.mqtt);
+    let mid = "";
+    // MQTT -> each radio instance (the same RAW stream reaches all of them)
+    const decIdx = [], candIdx = [];
+    inst.forEach((it, i) => {
+      const y = iy(i);
+      const c = nodeColor(it.state, it.color);
+      if (it.input === "raw") mid += curve(MX + MW, cy, IX, y, mqC, moving && it.state === "ok", true, 2.5);
+      if (it.to === "decode") decIdx.push(i);
+      if (it.to === "candidates") candIdx.push(i);
+      mid += box(IX, y - IH / 2, IW, IH, c, it.key === "list" ? icon.list : it.key === "mbus" ? icon.plug : icon.gear,
+        it.title, it.purpose, it.status, it.key === "mbus" ? `data-action="flow-go" data-href="#mbus"` : it.key === "ext" ? `data-action="flow-go" data-href="#drivers"` : ws("wmbus"));
+    });
+    // Wired M-Bus has its own input, drawn under MQTT.
+    const mbusI = inst.findIndex((it) => it.input === "mbus");
+    if (mbusI >= 0) {
+      const y = iy(mbusI), c = nodeColor(inst[mbusI].state, inst[mbusI].color);
+      mid += box(MX, y - 26, MW, 52, c, icon.plug, "M-Bus", t("flow_mbus_in", "serial bus"), "", `data-action="flow-go" data-href="#mbus"`)
+        + curve(MX + MW, y, IX, y, c, inst[mbusI].state === "ok", true, 2.5);
+    }
+    // Decode stage (one process for DEC and EXT) and Received / Search.
+    const decY = decIdx.length ? decIdx.reduce((a2, i) => a2 + iy(i), 0) / decIdx.length : null;
+    const candY = candIdx.length ? candIdx.reduce((a2, i) => a2 + iy(i), 0) / candIdx.length : null;
+    const DC = "#ffa64d", CC = "#4fd6ff";
+    let haY = decY !== null ? decY : cy;
+    if (decY !== null) {
+      decIdx.forEach((i) => {
+        const it = inst[i];
+        mid += curve(IX + IW, iy(i), DX, decY, nodeColor(it.state, it.color), moving && it.state === "ok", true);
+        if (it.key === "ext") mid += `<text class="flow-s2" x="${(IX + IW + DX) / 2}" y="${(iy(i) + decY) / 2 + 14}" text-anchor="middle">FIFO</text>`;
+      });
+      mid += box(DX, decY - NH / 2, DW, NH, DC, icon.gear, t("flow_decode", "decoding"), t("flow_decode_sub", "status + discovery"), "", ws("wmbus"));
+      const haC = nodeColor(o.ha.state, FLOW_NODE.ha);
+      mid += curve(DX + DW, decY, HX, haY, haC, moving && o.ha.state === "ok", true)
+        + `<text class="flow-s2" x="${(DX + DW + HX) / 2}" y="${haY - 10}" text-anchor="middle">${o.rate}/min</text>`;
+    }
+    if (candY !== null) {
+      candIdx.forEach((i) => {
+        const it = inst[i];
+        mid += curve(IX + IW, iy(i), DX, candY, nodeColor(it.state, it.color), moving && it.state === "ok", true);
+      });
+      mid += box(DX, candY - NH / 2, DW, NH, CC, icon.list, t("flow_candidates", "Received"),
+        t("flow_candidates_sub", "{n} visible", {n: Number((state.data || {}).model?.candidate_count || 0)}), "", `data-action="flow-go" data-href="#discover"`);
+    }
+    if (mbusI >= 0) {
+      // Under the decode and Received boxes, then up into HA from below.
+      const it = inst[mbusI], y = iy(mbusI), c = nodeColor(it.state, it.color), on = it.state === "ok";
+      mid += `<path class="flow-line${on ? " flow-dots" : ""}" d="M${IX + IW} ${y} L${HX + HW / 2 - 8} ${y} Q${HX + HW / 2} ${y} ${HX + HW / 2} ${y - 8} L${HX + HW / 2} ${haY + NH / 2}" stroke="${c}" stroke-width="3"${on ? "" : ` stroke-dasharray="5 5"`} style="--d:0.9s"/>`;
+    }
+    const haC = nodeColor(o.ha.state, FLOW_NODE.ha);
+    mid += box(HX, haY - NH / 2, HW, NH, haC, icon.ha, "HA", o.ha.text, o.ha.sub, ws("ha"));
+    const mqttBox = box(MX, cy - NH / 2, MW, NH, mqC, icon.mqtt, "MQTT", o.mqtt.text, o.mqtt.sub, ws("mqtt"));
+    const wide = `<svg class="flow-svg flow-root${focus ? " focus" : ""}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${escapeHtml(t("flow_aria", "Frames from the boards through MQTT and wmbusmeters to Home Assistant"))}">
+        ${lines}${mid}${boards}${mqttBox}
+      </svg>`;
+    const narrowBoards = devs.map((d) => {
+      const info = flowBoardInfo(d, o.stale);
+      const own = colors.get(d.name) || FLOW_STATE.unknown;
+      const c = info.live ? own : info.warn ? FLOW_STATE.warn : FLOW_STATE.unknown;
+      return `<button type="button" class="flow-nb${info.live ? "" : " off"}${flowFocused("board", d.name) ? " hl" : ""}" data-board="${escapeHtml(d.name)}" data-action="open-workspace" data-ws="esp" style="--c:${c}">
+          <span class="flow-nb-ant${info.live ? " on" : ""}">📡</span><span class="flow-nb-name">${escapeHtml(d.name)}</span><span class="flow-nb-sub">${escapeHtml(info.sub)}</span></button>`;
+    }).join("");
+    const nn = (c, title, l1, l2, attrs) => `<button type="button" class="flow-nn" ${attrs} style="--c:${c}"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(l1)}</span>${l2 ? `<span class="flow-nn-sub">${escapeHtml(l2)}</span>` : ""}</button>`;
+    const arrow = (txt) => `<div class="flow-na">↓${txt ? " " + escapeHtml(txt) : ""}</div>`;
+    const narrowInst = inst.map((it) => nn(nodeColor(it.state, it.color), it.title, it.purpose, it.status,
+      it.key === "mbus" ? `data-action="flow-go" data-href="#mbus"` : it.key === "ext" ? `data-action="flow-go" data-href="#drivers"` : ws("wmbus"))).join("");
+    const narrow = `<div class="flow-narrow">
+        ${devs.length ? `<div class="flow-nboards flow-root${focus ? " focus" : ""}">${narrowBoards}</div>${arrow(`${o.rate}/min`)}` : ""}
+        ${nn(mqC, "MQTT", o.mqtt.text, o.mqtt.sub, ws("mqtt"))}${arrow("")}
+        <div class="flow-ninst">${narrowInst}</div>${arrow("")}
+        ${nn(nodeColor(o.ha.state, FLOW_NODE.ha), "HA", o.ha.text, o.ha.sub, ws("ha"))}
+      </div>`;
+    return `<div class="flow-wrap">${devs.length ? "" : `<div class="hint" style="margin-bottom:6px;">${escapeHtml(t("flow_no_boards", "No ESP board heard yet."))}</div>`}${wide}${narrow}
+      <p class="hint" style="margin:6px 0 0;">${escapeHtml(t("flow_legend", "Line colour = board, width = frames per minute, dots = traffic. Dashed grey = silent. Hover over a meter to see which boards hear it. Click a node for details."))}</p></div>`;
+  }
+
+  // Meter tiles under the flow: the value in the colour of its medium, how
+  // long ago it was heard, and a dot per board that hears it (board colours).
+  const FLOW_MEDIA = {water: "#4aa3ff", warm_water: "#ff8a4c", heat: "#ff6b6b", electricity: "#ffd04a", other: "#9eafba"};
+
+  function meterTiles(rows) {
+    if (!rows.length) return `<div class="empty">${escapeHtml(t("webui_no_meters", "No meters yet."))}</div>`;
+    const colors = flowColors();
+    const focus = !!state.flowFocus;
+    return `<div class="meter-tiles flow-root${focus ? " focus" : ""}">${rows.map((row) => {
+      const id = row.id || row.meter_id || "";
+      const {icon, mc} = mediaIcon(row.media || "", row.driver || "");
+      const c = FLOW_MEDIA[mc] || FLOW_MEDIA.other;
+      const ts = row.last_seen ? Date.parse(row.last_seen) : NaN;
+      const ageS = Number.isFinite(ts) ? (Date.now() - ts) / 1000 : Infinity;
+      const st = meterRhythmStatus(ageS, row.avg_interval_s);
+      const late = st.label !== t("online_label", "online");
+      const boards = [...new Set(asArray(row.reception_esps).map((e) => e && e.esp).filter(Boolean))];
+      const hasValue = !!(row.value && row.value !== "-");
+      const unit = unitFromKey(row.value_key || "");
+      const heard = row.source === "mbus"
+        ? `<span class="mt-heard">🔌 ${escapeHtml(row.source_label || "M-Bus")}</span>`
+        : boards.map((b) => `<span class="mt-dot" title="${escapeHtml(b)}" style="background:${colors.get(b) || FLOW_STATE.unknown}"></span>`).join("")
+          + (boards.length ? `<span class="mt-heard">${escapeHtml(t("flow_heard_by", "{n} boards", {n: boards.length}))}</span>` : "");
+      return `<div class="meter-tile${late ? " late" : ""}${flowFocused("meter", id) ? " hl" : ""}" data-action="flow-pin" data-meter="${escapeHtml(id)}" data-boards="${escapeHtml(boards.join(","))}" style="--c:${c}">
+          <div class="mt-head"><span class="mt-icon">${icon}</span><span class="mt-name">${escapeHtml(row.name || id)}</span><a class="mt-link" href="#meters" title="${escapeHtml(t("flow_open_meters", "Open in Meters"))}">↗</a></div>
+          <div class="mt-id">${escapeHtml(id)}${aesLockBadge(row)}</div>
+          <div class="mt-value">${escapeHtml(hasValue ? row.value : "—")}${unit ? ` <span class="mt-unit">${escapeHtml(unit)}</span>` : ""}</div>
+          <div class="mt-foot"><span style="color:${st.color}">${escapeHtml(st.label)}</span>${Number.isFinite(ageS) ? ` · ${escapeHtml(t("flow_ago", "{age} ago", {age: fmtInterval(Math.max(0, Math.round(ageS)))}))}` : ""}</div>
+          <div class="mt-dots">${heard}</div>
+          ${keyProblemPill(String(row.key_problem || ""))}
+        </div>`;
+    }).join("")}</div>`;
+  }
+
+  // Highlight without a re-render (hover): the same classes the render puts
+  // in from state.flowFocus, so a live update keeps them.
+  function applyFlowFocus() {
+    const f = state.flowFocus;
+    document.querySelectorAll(".flow-root").forEach((el) => el.classList.toggle("focus", !!f));
+    document.querySelectorAll("[data-board]").forEach((el) => el.classList.toggle("hl", flowFocused("board", el.dataset.board)));
+    document.querySelectorAll(".meter-tile").forEach((el) => el.classList.toggle("hl",
+      !!f && (f.kind === "meter" ? el.dataset.meter === f.id : (el.dataset.boards || "").split(",").includes(f.name))));
+  }
+
+  document.addEventListener("mouseover", (event) => {
+    if (state.route !== "dashboard" || state.flowPinned) return;
+    const tile = event.target.closest && event.target.closest(".meter-tile");
+    const board = !tile && event.target.closest && event.target.closest("[data-board]");
+    let f = null;
+    if (tile) f = {kind: "meter", id: tile.dataset.meter || "", boards: (tile.dataset.boards || "").split(",").filter(Boolean)};
+    else if (board) f = {kind: "board", name: board.dataset.board};
+    const same = JSON.stringify(f) === JSON.stringify(state.flowFocus);
+    if (!same) {
+      state.flowFocus = f;
+      applyFlowFocus();
+    }
+  });
 
   // Keys the bridge never turns into an entity — they identify the meter or the
   // reception rather than measuring anything. Mirrors the exclusion list in
@@ -3329,6 +3548,71 @@
       </div>`;
   }
 
+  // Board tiles (Boards tab): one per board the add-on hears, drawn from what
+  // the board announces on <board>/diag/settings. Without it the board runs
+  // firmware that cannot take settings: the tile is greyed out and says so.
+  function boardTile(d) {
+    const name = String(d.name || "?");
+    const s = d.settings;
+    const pending = (state.bsPending || {})[name];
+    // The board's colour from the Panel flow, so a board looks the same in both.
+    const color = flowColors().get(name) || FLOW_STATE.unknown;
+    const head = (pill) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+        <strong class="board-tile-name"><span class="board-tile-dot"></span>${escapeHtml(name)}</strong>${pill}</div>`;
+    if (!s || typeof s !== "object" || !s.listen_mode) {
+      return `<div class="card board-tile board-tile-off" style="--c:${color}">
+        ${head(`<span class="pill muted">${escapeHtml(t("bs_old_fw", "older firmware"))}</span>`)}
+        <p class="hint" style="margin:8px 0 0;">${escapeHtml(t("bs_no_settings", "This board does not announce settings (no diag/settings), so the add-on cannot change them. Rebuild it with the current component."))}</p>
+      </div>`;
+    }
+    const lm = s.listen_mode || {};
+    const value = String(lm.value || "");
+    const unsupported = asArray(lm.unsupported);
+    const weak = asArray(lm.weak);
+    let pill = `<span class="pill ok">${escapeHtml(t("bs_online", "online"))}</span>`;
+    let note = "";
+    if (pending) {
+      if (pending.value === value || (pending.value === "yaml" && lm.source === "yaml")) {
+        delete state.bsPending[name];
+      } else if (Date.now() - pending.at > 90000) {
+        pill = `<span class="pill bad">${escapeHtml(t("bs_no_confirm", "not confirmed"))}</span>`;
+        note = t("bs_pending_slow", "No confirmation from the board yet. Check that it is online.");
+      } else {
+        pill = `<span class="pill warn">${escapeHtml(t("bs_restarting", "restarting…"))}</span>`;
+        note = t("bs_pending", "Sent. The board stores it and restarts (about 10 s).");
+      }
+    }
+    const label = (o) => o === "both" ? t("bs_both", "both") : o.toUpperCase();
+    const buttons = asArray(lm.options).map(o => {
+      const on = o === value;
+      const off = unsupported.includes(o) || !!(state.bsPending || {})[name];
+      return `<button class="btn${on ? " primary" : ""}" style="padding:4px 10px;font-size:12px;" data-action="board-set"
+        data-board="${escapeHtml(name)}" data-key="listen_mode" data-value="${escapeHtml(o)}"
+        ${off || on ? "disabled" : ""}>${escapeHtml(label(o))}${weak.includes(o) ? " ⚠" : ""}</button>`;
+    }).join("");
+    const hints = [];
+    if (weak.includes("s1")) hints.push(t("bs_weak_s1", "S1 works on this chip, with weaker sensitivity."));
+    if (unsupported.includes("s1")) hints.push(t("bs_unsupported_s1", "S1 is not available on this chip."));
+    const source = lm.source === "stored"
+      ? `${escapeHtml(t("bs_source_stored", "stored on the board"))} · <a href="#" data-action="board-set" data-board="${escapeHtml(name)}" data-key="listen_mode" data-value="yaml">${escapeHtml(t("bs_reset", "back to YAML ({value})", {value: label(String(lm.yaml || "both"))}))}</a>`
+      : escapeHtml(t("bs_source_yaml", "from YAML"));
+    return `<div class="card board-tile" style="--c:${color}">
+      ${head(pill)}
+      <div class="hint" style="margin:6px 0;">${escapeHtml(String(s.radio || ""))} · ${escapeHtml(t("bs_listen_mode", "Listen mode"))}: <strong>${escapeHtml(label(value))}</strong> (${source})</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">${buttons}</div>
+      ${note ? `<p class="hint" style="margin:6px 0 0;">${escapeHtml(note)}</p>` : ""}
+      ${hints.length ? `<p class="hint" style="margin:6px 0 0;">${escapeHtml(hints.join(" "))}</p>` : ""}
+    </div>`;
+  }
+
+  function boardTiles(devices) {
+    return `<section class="section">
+      <div class="section-head"><h2>${escapeHtml(t("bs_title", "Board settings"))}</h2>
+        <span class="hint">${escapeHtml(t("bs_apply_restart", "A change restarts the board (about 10 s)."))}</span></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;">${devices.slice().sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""))).map(boardTile).join("")}</div>
+    </section>`;
+  }
+
   function espDiagPage() {
     const diag = (state.data || {}).esp_diag || {};
     const devices = asArray(diag.devices);
@@ -3359,10 +3643,10 @@
         <td>${diagStatusPill(d.status)}</td>
       </tr>`).join("");
 
-    return `
+    return `${boardTiles(devices)}
       <section class="section">
         <div class="section-head">
-          <h2>${escapeHtml(t("nav_diagnostics", "Diagnostics"))}</h2>
+          <h2>${escapeHtml(t("diag_section", "Diagnostics"))}</h2>
           <span>${summary}</span>
         </div>
         <table>
@@ -4482,6 +4766,8 @@
         ? t("re_learning_note", "Typical values need {n} earlier days of the same kind. Collected so far: {days} days.", {n: x.min_samples || 3, days: x.days})
         : asArray(x.boards).length > 1 ? t("re_v_hint_all", "All boards agree.") : "";
     const fmt = (v) => (v === null || v === undefined) ? "—" : String(v);
+    // Labels and pills on this page start with a capital letter.
+    const cap = (s) => s ? String(s).charAt(0).toLocaleUpperCase() + String(s).slice(1) : s;
     const typ = (x.head_typ_lo !== null && x.head_typ_lo !== undefined)
       ? t("re_typical", "typically {range}", {range: `${x.head_typ_lo}–${x.head_typ_hi}`})
       : t("re_typical_pending", "typical: collecting data");
@@ -4494,28 +4780,46 @@
     const top = `<div class="card" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;">
       <div><div class="hint">${escapeHtml(t("re_now", "Now ({time}, {day})", {time: `${hh}:00`, day: dayType}))}</div>
         <div style="font-size:22px;font-weight:600;">${escapeHtml(t("re_frames_h", "{n} frames/h", {n: fmt(x.head_frames_h)}))}</div>
-        <div class="hint">${escapeHtml(typ)}</div>
-        ${x.head && asArray(x.boards).length > 1 ? `<div class="hint">${escapeHtml(t("re_head_board", "board that hears the most: {board}", {board: x.head}))}</div>` : ""}</div>
+        <div class="hint">${escapeHtml(cap(typ))}</div>
+        ${x.head && asArray(x.boards).length > 1 ? `<div class="hint">${escapeHtml(cap(t("re_head_board", "board that hears the most: {board}", {board: x.head})))}</div>` : ""}</div>
       <div><div class="hint">${escapeHtml(t("re_sym", "Invalid 3-of-6 symbols"))}</div>
         <div style="font-size:22px;font-weight:600;">${escapeHtml(x.sym_pct === null || x.sym_pct === undefined ? "—" : `${x.sym_pct}%`)}</div>
-        <div class="hint">${escapeHtml(symTyp)}</div></div>
+        <div class="hint">${escapeHtml(cap(symTyp))}</div></div>
       <div><div class="hint">${escapeHtml(t("re_verdict", "Verdict"))}</div>
-        <div style="margin-top:6px;"><span class="pill ${verdictPill[0]}">${escapeHtml(verdictPill[1])}</span></div>
+        <div style="margin-top:6px;"><span class="pill ${verdictPill[0]}">${escapeHtml(cap(verdictPill[1]))}</span></div>
         <div class="hint" style="margin-top:6px;">${escapeHtml(verdictHint)}</div></div>
     </div>`;
 
     const heat = asArray(x.heat);
-    const peak = Math.max(1, ...heat.flat().filter(v => typeof v === "number"));
+    // Three colours only, by where the hour sits among the filled cells:
+    // green = near the quietest, red = near the busiest, yellow = around the
+    // median (the borders lie halfway between median and min/max).
+    const heatVals = heat.flat().filter(v => typeof v === "number").sort((a, b) => a - b);
+    const hMin = heatVals.length ? heatVals[0] : 0;
+    const hMax = heatVals.length ? heatVals[heatVals.length - 1] : 0;
+    const hMed = heatVals.length ? (heatVals.length % 2 ? heatVals[(heatVals.length - 1) / 2]
+      : (heatVals[heatVals.length / 2 - 1] + heatVals[heatVals.length / 2]) / 2) : 0;
+    const HC = [[63, 185, 80], [210, 170, 40], [235, 80, 70]];
+    const mix = (a, b, f) => `rgb(${a.map((c, i) => Math.round(c + (b[i] - c) * f)).join(",")})`;
+    const heatColor = v => {
+      if (hMax <= hMin) return mix(HC[1], HC[1], 0);
+      if (v < (hMin + hMed) / 2) return mix(HC[0], HC[0], 0);
+      if (v > (hMed + hMax) / 2) return mix(HC[2], HC[2], 0);
+      return mix(HC[1], HC[1], 0);
+    };
     const days = [0, 1, 2, 3, 4, 5, 6].map(i => t(`re_wd_${i}`, ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i]));
     const heatRows = heat.map((row, wd) => `<div style="font-size:11px;color:var(--muted);">${escapeHtml(days[wd])}</div>` +
       asArray(row).map((v, h) => typeof v === "number"
-        ? `<div title="${escapeHtml(`${days[wd]} ${String(h).padStart(2, "0")}:00 · ${v}/h`)}" style="height:14px;border-radius:2px;background:#378ADD;opacity:${(0.12 + 0.88 * v / peak).toFixed(2)};"></div>`
+        ? `<div title="${escapeHtml(`${days[wd]} ${String(h).padStart(2, "0")}:00 · ${v}/h`)}" style="height:14px;border-radius:2px;background:${heatColor(v)};"></div>`
         : `<div style="height:14px;border-radius:2px;border:1px dashed #2a3a3a;"></div>`).join("")).join("");
     const heatCard = `<div class="card">
       <h3>${escapeHtml(t("re_heatmap", "Air density: week × hour"))}</h3>
       <div style="display:grid;grid-template-columns:30px repeat(24,minmax(0,1fr));gap:2px;align-items:center;">${heatRows}</div>
       <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin:4px 0 0 32px;"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
-      <p class="hint">${escapeHtml(t("re_heatmap_hint", "Darker = more frames per hour. Empty cells: no data yet."))}</p>
+      ${heatVals.length ? `<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;margin-top:8px;">${[
+        ["re_heat_min", "min", hMin, HC[0]], ["re_heat_median", "median", hMed, HC[1]], ["re_heat_max", "max", hMax, HC[2]]]
+        .map(([k, d, v, c]) => `<span><span style="display:inline-block;width:12px;height:12px;border-radius:2px;vertical-align:-2px;background:${mix(c, c, 0)};"></span> ${escapeHtml(t(k, d))} ${Math.round(v)}/h</span>`).join("")}</div>` : ""}
+      <p class="hint">${escapeHtml(t("re_heatmap_hint", "Green = quietest hour, yellow = median, red = busiest (frames per hour). Empty cells: no data yet."))}</p>
     </div>`;
 
     const statePill = (b) => {
@@ -4530,22 +4834,52 @@
         silent: ["bad", t("re_s_silent", "no frames")],
       }[b.state] || ["muted", b.state];
     };
+    // Per column, three colours: the strongest board green, the weakest red,
+    // the rest yellow. For invalid symbols the lowest rate is the strongest.
+    // Returns the cell attribute.
+    const rank = (key, lowBest) => {
+      const vals = asArray(x.boards).map(b => b[key]).filter(v => typeof v === "number");
+      const lo = Math.min(...vals), hi = Math.max(...vals);
+      return (v) => {
+        if (typeof v !== "number" || vals.length < 2 || hi <= lo) return "";
+        const best = lowBest ? lo : hi, worst = lowBest ? hi : lo;
+        const c = v === best ? HC[0] : v === worst ? HC[2] : HC[1];
+        return ` style="color:${mix(c, c, 0)};font-weight:600;"`;
+      };
+    };
+    // Trend against the typical value for this hour and kind of day: ▲ above,
+    // ▼ below. Frames: beyond ±15 %. Invalid symbols: half again or half as
+    // much, and at least 0.3 points apart. Nothing until typical is known.
+    const arrow = (now, typ, up, label) => (up === null) ? ""
+      : ` <span title="${escapeHtml(t("re_typical", "typically {range}", {range: label}))}">${up ? "▲" : "▼"}</span>`;
+    const trendFrames = (b) => {
+      if (typeof b.frames_h !== "number" || !b.typ) return "";
+      const r = b.frames_h / b.typ;
+      return arrow(b.frames_h, b.typ, r > 1.15 ? true : r < 0.85 ? false : null, `${b.typ}/h`);
+    };
+    const trendSym = (b) => {
+      const v = b.sym_pct, ty = b.sym_typ_pct;
+      if (typeof v !== "number" || typeof ty !== "number" || b.state === "learning") return "";
+      const far = Math.abs(v - ty) >= 0.3;
+      return arrow(v, ty, far && v > ty * 1.5 ? true : far && v < ty / 1.5 ? false : null, `${ty}%`);
+    };
+    const rkFrames = rank("frames_h", false), rkMeters = rank("meters", false), rkSym = rank("sym_pct", true);
     const diagPill = (b) => {
       const m = String(b.diag_mode || "");
       if (m === "off") return `<span class="pill warn">off</span>`;
       if (m) return `<span class="pill ok">${escapeHtml(m)}</span>`;
-      return b.summaries ? `<span class="pill ok">${escapeHtml(t("re_diag_on", "on"))}</span>` : `<span class="hint">—</span>`;
+      return b.summaries ? `<span class="pill ok">${escapeHtml(cap(t("re_diag_on", "on")))}</span>` : `<span class="hint">—</span>`;
     };
     const diagOff = asArray(x.boards).filter(b => b.diag_mode === "off" || (!b.diag_mode && !b.summaries));
     const boardRows = asArray(x.boards).map(b => {
       const p = statePill(b);
       return `<tr>
         <td>${escapeHtml(b.name)}</td>
-        <td>${escapeHtml(fmt(b.frames_h))}${b.typ !== null && b.typ !== undefined ? ` <span class="hint">/ ${escapeHtml(String(b.typ))}</span>` : ""}</td>
-        <td>${escapeHtml(fmt(b.meters))}</td>
-        <td>${escapeHtml(b.sym_pct === null || b.sym_pct === undefined ? "—" : `${b.sym_pct}%`)}</td>
+        <td${rkFrames(b.frames_h)}>${escapeHtml(fmt(b.frames_h))}${trendFrames(b)}${b.typ !== null && b.typ !== undefined ? ` <span class="hint">/ ${escapeHtml(String(b.typ))}</span>` : ""}</td>
+        <td${rkMeters(b.meters)}>${escapeHtml(fmt(b.meters))}</td>
+        <td${rkSym(b.sym_pct)}>${escapeHtml(b.sym_pct === null || b.sym_pct === undefined ? "—" : `${b.sym_pct}%`)}${trendSym(b)}</td>
         <td>${diagPill(b)}</td>
-        <td><span class="pill ${p[0]}">${escapeHtml(p[1])}</span></td>
+        <td><span class="pill ${p[0]}">${escapeHtml(cap(p[1]))}</span></td>
       </tr>`;
     }).join("");
     const boardsCard = `<div class="card">
@@ -5112,7 +5446,6 @@
       : "";
     return `
       <div class="mbus-scan-section">
-        <h2>${escapeHtml(t("mbus_scan_title", "Scan primary addresses"))}</h2>
         <p class="hint">${escapeHtml(t("mbus_scan_hint", "The diagnostic scan checks whether each address acknowledges and immediately requests its data. It never starts on its own. Valid primaries are p0–p250; p0 is where a meter answers until it is given an address."))}</p>
         <div class="mbus-scan-controls">
           <label>${escapeHtml(t("mbus_scan_from", "From"))}
@@ -5228,32 +5561,39 @@
       busy_or_error: "mbus_device_busy",
     };
 
-    return `<div class="mbus-page">
-      <div class="card banner-untested mbus-hero">
-        <div>
-          <h2>${escapeHtml(t("mbus_title", "M-Bus (wired)"))}</h2>
-          <p>${escapeHtml(t("mbus_subtitle", "Through an M-Bus master converter on a serial port (USB / RS-232 / RS-485)."))}</p>
+    // The page as the order you set a bus up in: port -> mode -> find
+    // meters -> meters -> operation, each step a block with its state, joined
+    // by a line like the Panel flow. Polling on = the add-on is the bus master
+    // and the tools (scan, poll once, detect driver) are refused, so the mode
+    // sits right after the port instead of at the bottom.
+    const on = !!mbus.enabled;
+    const hasPort = !!String(mbus.device || "").trim();
+    const scan = state.mbusScan || {};
+    const opened = state.mbusStepOpen || {};
+    const isOpen = (k, dflt) => (k in opened ? !!opened[k] : dflt);
+    const runState = String((mbus.runtime || {}).state || "unknown");
+    const runMeta = on ? (MBUS_HEALTH[runState] || MBUS_HEALTH.unknown) : MBUS_HEALTH.disabled;
+    const C = {done: "#9ad94a", active: "#4aa3ff", locked: "#7d8a96", warn: "#f0b03c"};
+    const step = (n, k, st, title, pill, body, dflt) => {
+      const open = isOpen(k, dflt);
+      return `<div class="mbus-step mbus-step-${st}" style="--c:${C[st]}">
+        <div class="mbus-step-num">${st === "done" ? "✓" : n}</div>
+        <div class="mbus-step-box">
+          <button type="button" class="mbus-step-head" data-action="mbus-step-toggle" data-step="${k}" data-open="${open ? 1 : 0}">
+            <span class="mbus-step-title">${n}. ${escapeHtml(title)}</span>
+            ${pill ? `<span class="mbus-step-pill">${escapeHtml(pill)}</span>` : ""}
+            <span class="mbus-step-chev">${open ? "▴" : "▾"}</span>
+          </button>
+          ${open ? `<div class="mbus-step-body">${body}</div>` : ""}
         </div>
-        ${(() => {
-          // The bus state, the same one the health card shows: this pill said
-          // "Traffic healthy" whenever polling was on, whatever the bus did.
-          const st = String((mbus.runtime || {}).state || "unknown");
-          const meta = mbus.enabled ? (MBUS_HEALTH[st] || MBUS_HEALTH.unknown) : MBUS_HEALTH.disabled;
-          return `<span class="pill ${meta.cls}"><span class="dot"></span>${escapeHtml(
-            t(meta.key, mbus.enabled ? st : "Polling off"))}</span>`;
-        })()}
-        <p class="mbus-untested"><strong>${escapeHtml(t("mbus_untested_title", "Not verified on a real bus."))}</strong>
-          ${escapeHtml(t("mbus_untested_body", "The author has no wired M-Bus hardware. The protocol was tested against a simulator, your meters were not. If something does not work — or works and you want it to keep working — open an issue. That is the only way this gets fixed."))}
-          <a href="https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/issues" target="_blank" rel="noopener">${escapeHtml(t("mbus_untested_link", "Report an issue"))}</a>
-        </p>
-      </div>
+      </div>`;
+    };
+    const rail = `<div class="mbus-rail"><span></span></div>`;
+    const lockedNote = (txt, btn) => `<div class="mbus-lock-note">${escapeHtml(txt)}${btn || ""}</div>`;
+    const toConfigBtn = ` <button class="btn" data-action="mbus-engine-set" data-on="0">${escapeHtml(t("mbus_to_config", "Switch to configuration"))}</button>`;
 
-      ${mbusAccessBanner(mbus)}
-
-      ${mbusHealthCard(mbus)}
-
-      <div class="card mbus-port-card">
-        <h2>${escapeHtml(t("mbus_port_title", "Port"))}</h2>
+    // 1. Port
+    const portBody = `
         <p class="hint">${escapeHtml(t("mbus_port_hint", "The add-on never scans ports — probing transmits frames and can disrupt a Zigbee coordinator."))}</p>
         <div class="mbus-port-grid">
           <label>${escapeHtml(t("mbus_device_label", "Device"))}
@@ -5281,16 +5621,42 @@
           <code>${escapeHtml(`${mbus.bus_alias || "MAIN"}=${mbus.device || "…"}:mbus:${mbus.baudrate || "2400"}`)}</code></p>
         <div class="row-actions">
           <button class="btn primary" data-action="mbus-save-device">${escapeHtml(t("mbus_save_device", "Save port"))}</button>
-          <button class="btn" data-action="mbus-probe">${escapeHtml(t("mbus_probe_button", "Check whether the bus is alive"))}</button>
+          <button class="btn" data-action="mbus-probe"${on ? " disabled" : ""}>${escapeHtml(t("mbus_probe_button", "Check whether the bus is alive"))}</button>
         </div>
         ${probe ? `<p class="hint">${escapeHtml(t(probeKeys[probe.state] || "mbus_probe_unknown", probe.state))}
           ${probe.reply_hex ? `<code>${escapeHtml(probe.reply_hex.slice(0, 40))}</code>` : ""}</p>` : ""}
-        <p class="hint">${escapeHtml(t("mbus_probe_hint", "The probe sends one broadcast frame (0xFE). With several meters the replies overlap and come back damaged — that is expected, not a fault."))}</p>
-      </div>
+        <p class="hint">${escapeHtml(t("mbus_probe_hint", "The probe sends one broadcast frame (0xFE). With several meters the replies overlap and come back damaged — that is expected, not a fault."))}</p>`;
+    const portPill = hasPort
+      ? `${mbus.device} · ${mbus.baudrate || "2400"} · ${mbus.bus_alias || "MAIN"}`
+      : t("mbus_pill_no_port", "not saved");
 
-      <div class="card mbus-meters-card">
+    // 2. Mode
+    const modeBody = `
+        <div class="mbus-mode">
+          <div class="mbus-mode-tile${on ? "" : " current"}" style="--c:${C.active}">
+            <strong>${escapeHtml(t("mbus_mode_config", "Configuration"))}</strong>
+            <span>${escapeHtml(t("mbus_engine_off_body", "Keep it off while probing, scanning or using Poll once. Those actions are blocked while the engine is the bus master."))}</span>
+            ${on ? `<button class="btn" data-action="mbus-engine-set" data-on="0">${escapeHtml(t("mbus_to_config", "Switch to configuration"))}</button>` : ""}
+          </div>
+          <div class="mbus-mode-tile${on ? " current" : ""}" style="--c:${C.done}">
+            <strong>${escapeHtml(t("mbus_mode_work", "Operation"))}</strong>
+            <span>${escapeHtml(t("mbus_engine_on_body", "After saving the port and at least one meter, turn the engine on. It polls meters continuously and publishes their readings."))}</span>
+          </div>
+        </div>
+        <p class="hint">${escapeHtml(t("mbus_mode_note", "Switching reloads only the polling engine, no add-on restart: it stops or starts within a few seconds. Turn polling on in step 5."))}
+          ${escapeHtml(t("mbus_engine_hint", "This controls only wired M-Bus. The radio path is never stopped."))}</p>`;
+
+    // 3. Find meters
+    const found = asArray(scan.found).length;
+    const findPill = scan.running ? t("mbus_scan_running", "Scanning…")
+      : scan.done ? t("mbus_pill_scan", "{n} answered", {n: found}) : "";
+    const findBody = on
+      ? lockedNote(t("mbus_locked_work", "Polling is on, so the add-on is the bus master. Switch to configuration to scan or poll."), toConfigBtn) + mbusScanCard(mbus)
+      : mbusScanCard(mbus);
+
+    // 4. Meters
+    const metersBody = `
         <div class="mbus-card-head">
-          <h2>${escapeHtml(t("mbus_meters_title", "Meters on the bus"))}</h2>
           <label class="mbus-default-poll">${escapeHtml(t("mbus_poll_label", "Default poll interval"))}
             <input type="text" id="mbus_poll_interval" value="${escapeHtml(mbus.poll_interval || "15m")}"
                    oninput="window.__mbusPollIntervalSet(this.value)">
@@ -5312,15 +5678,15 @@
                     placeholder="${escapeHtml(mbus.poll_interval || "15m")}"
                     oninput="window.__mbusMeterSet(${index}, 'poll_interval', this.value)"></td>
               <td><div class="actions"><button class="btn" data-action="mbus-poll-one" data-i="${index}"${
-                    mbus.enabled || !/^p(?:\d|[1-9]\d|1\d\d|2[0-4]\d|250)$/.test(String(m.address || "")) ? " disabled" : ""}
-                    title="${escapeHtml(mbus.enabled
+                    on || !/^p(?:\d|[1-9]\d|1\d\d|2[0-4]\d|250)$/.test(String(m.address || "")) ? " disabled" : ""}
+                    title="${escapeHtml(on
                       ? t("mbus_engine_holds_bus", "Turn polling off first — it is the bus master.")
                       : (!/^p(?:\d|[1-9]\d|1\d\d|2[0-4]\d|250)$/.test(String(m.address || ""))
                           ? t("mbus_poll_primary_only", "Only a primary address (p0–p250) can be polled from here.")
                           : ""))}"
                   >${escapeHtml(t("mbus_poll_once", "Poll once"))}</button>
                 <button class="btn" data-action="mbus-detect-driver" data-i="${index}"${
-                    mbus.enabled || !/^p(?:\d|[1-9]\d|1\d\d|2[0-4]\d|250)$/.test(String(m.address || "")) ? " disabled" : ""}
+                    on || !/^p(?:\d|[1-9]\d|1\d\d|2[0-4]\d|250)$/.test(String(m.address || "")) ? " disabled" : ""}
                     title="${escapeHtml(t("mbus_detect_driver_hint", "Poll this address and ask the bundled wmbusmeters analyzer for a driver suggestion. Nothing is saved automatically."))}"
                   >${escapeHtml(t("mbus_detect_driver", "Detect driver"))}</button>
                 <button class="btn danger" data-action="mbus-del-meter" data-i="${index}">${escapeHtml(t("remove", "Remove"))}</button></div></td>
@@ -5330,33 +5696,56 @@
           <button class="btn" data-action="mbus-add-meter">${escapeHtml(t("mbus_add_meter", "Add meter"))}</button>
           <button class="btn primary" data-action="mbus-save-meters">${escapeHtml(t("mbus_save_meters", "Save meters"))}</button>
         </div>
-        <p class="hint">${escapeHtml(t("mbus_poll_once_diagnostic", "Poll once is diagnostic only: it shows the raw reply but does not decode it, publish it to MQTT/Home Assistant or add the meter to Pipeline."))}</p>
-        ${meters.length && !mbus.enabled ? `<div class="banner banner-warn">${escapeHtml(t("mbus_engine_required_banner", "The meter is saved, but polling is OFF. To make it appear in Pipeline and Home Assistant, enable the engine below and click Apply."))}</div>` : ""}
-        ${mbusScanCard(mbus)}
+        <p class="hint">${escapeHtml(t("mbus_poll_once_diagnostic", "Poll once is diagnostic only: it shows the raw reply but does not decode it, publish it to MQTT/Home Assistant or add the meter to Pipeline."))}</p>`;
+
+    // 5. Operation
+    const canRun = hasPort && meters.length > 0;
+    const runBody = on
+      ? `${mbusHealthCard(mbus)}<div class="row-actions">${toConfigBtn}</div>`
+      : `<p>${escapeHtml(t("mbus_run_body", "Turns polling on: the add-on polls the meters and publishes them to Home Assistant."))}</p>
+         ${canRun ? "" : `<p class="hint">${escapeHtml(t("mbus_run_needs", "Needs a saved port (step 1) and at least one saved meter (step 4)."))}</p>`}
+         <div class="row-actions"><button class="btn primary" data-action="mbus-engine-set" data-on="1"${canRun ? "" : " disabled"}>${escapeHtml(t("mbus_to_work", "Turn polling on"))}</button></div>`;
+    const runPill = on ? t(runMeta.key, runState) : canRun ? t("mbus_pill_ready", "ready") : t("mbus_pill_waiting", "waiting for steps 1 and 4");
+    const runSt = on ? (["ok"].includes(runState) ? "done" : "warn") : canRun ? "active" : "locked";
+
+    return `<div class="mbus-page">
+      <div class="card mbus-hero">
+        <div>
+          <h2>${escapeHtml(t("mbus_title", "M-Bus (wired)"))}</h2>
+          <p>${escapeHtml(t("mbus_subtitle", "Through an M-Bus master converter on a serial port (USB / RS-232 / RS-485)."))}</p>
+        </div>
+        <span class="pill ${runMeta.cls}"><span class="dot"></span>${escapeHtml(t(runMeta.key, on ? runState : "Polling off"))}</span>
       </div>
 
-      ${mbusConsoleCard(mbus)}
+      ${mbusAccessBanner(mbus)}
 
-      <div class="card mbus-engine-card">
-        <h2>${escapeHtml(t("mbus_engine_title", "Engine"))}</h2>
-        <div class="mbus-engine-guide">
-          <div class="mbus-engine-mode on">
-            <strong>${escapeHtml(t("mbus_engine_on_title", "For normal operation: ON"))}</strong>
-            <span>${escapeHtml(t("mbus_engine_on_body", "After saving the port and at least one meter, turn the engine on. It polls meters continuously and publishes their readings."))}</span>
-          </div>
-          <div class="mbus-engine-mode off">
-            <strong>${escapeHtml(t("mbus_engine_off_title", "For setup and tests: OFF"))}</strong>
-            <span>${escapeHtml(t("mbus_engine_off_body", "Keep it off while probing, scanning or using Poll once. Those actions are blocked while the engine is the bus master."))}</span>
-          </div>
-        </div>
-        <label class="mbus-engine-switch"><input type="checkbox" id="mbus_enabled"${mbus.enabled ? " checked" : ""}>
-          <span>${escapeHtml(t("mbus_enabled_label", "Enable continuous automatic bus polling"))}</span></label>
-        <p class="mbus-engine-restart">${escapeHtml(t("mbus_engine_restart_note", "Apply saves the switch and reloads the polling engine - no add-on restart is needed. It stops or starts within a few seconds."))}</p>
-        <p class="hint">${escapeHtml(t("mbus_engine_hint", "This controls only wired M-Bus. The radio path is never stopped."))}</p>
-        <div class="row-actions">
-          <button class="btn primary" data-action="mbus-save-engine">${escapeHtml(t("mbus_save_engine", "Apply"))}</button>
-        </div>
+      <div class="mbus-steps">
+        ${step(1, "port", hasPort ? "done" : "active", t("mbus_port_title", "Port"), portPill, portBody, !hasPort)}
+        ${rail}
+        ${step(2, "mode", on ? "done" : "active", t("mbus_step_mode", "Bus mode"),
+          on ? t("mbus_mode_work", "Operation") : t("mbus_mode_config", "Configuration"), modeBody, true)}
+        ${rail}
+        ${step(3, "find", on ? "locked" : (scan.done && found ? "done" : "active"), t("mbus_scan_title", "Scan primary addresses"),
+          findPill, findBody, !on)}
+        ${rail}
+        ${step(4, "meters", meters.length ? (on ? "done" : "active") : "active", t("mbus_meters_title", "Meters on the bus"),
+          t("mbus_pill_meters", "{n} meter(s)", {n: meters.length}), metersBody, !on || !meters.length)}
+        ${rail}
+        ${step(5, "run", runSt, t("mbus_step_run", "Polling"), runPill, runBody, true)}
+        ${on ? `${rail}<a class="mbus-step-end" href="#dashboard">${escapeHtml(t("mbus_flow_end", "Panel and Home Assistant"))} →<span>${escapeHtml(t("mbus_flow_end_body", "The wired meters show up in the Panel flow and in Meters."))}</span></a>` : ""}
       </div>
+
+      <div class="mbus-tools">
+        <button type="button" class="mbus-step-head" data-action="mbus-step-toggle" data-step="console" data-open="${isOpen("console", false) ? 1 : 0}">
+          <span class="mbus-step-title">${escapeHtml(t("mbus_console_title", "Bus console"))}</span><span class="mbus-step-chev">${isOpen("console", false) ? "▴" : "▾"}</span>
+        </button>
+        ${isOpen("console", false) ? mbusConsoleCard(mbus) : ""}
+      </div>
+
+      <p class="mbus-untested"><strong>${escapeHtml(t("mbus_untested_title", "Not verified on a real bus."))}</strong>
+        ${escapeHtml(t("mbus_untested_body", "The author has no wired M-Bus hardware. The protocol was tested against a simulator, your meters were not. If something does not work — or works and you want it to keep working — open an issue. That is the only way this gets fixed."))}
+        <a href="https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/issues" target="_blank" rel="noopener">${escapeHtml(t("mbus_untested_link", "Report an issue"))}</a>
+      </p>
     </div>`;
   }
 
@@ -5648,7 +6037,8 @@
       const lo = Math.min(from, to), hi = Math.max(from, to);
       const results = [];
       state.mbusScan = {running: true, results: [], found: [], from: lo, to: hi,
-                        at: lo, nextFirst: from, nextLast: to};
+                        at: lo, nextFirst: from, nextLast: to,
+                        bridgeStart: Number(state.data?.model?.bridge_start_epoch || 0)};
       render();
       let cursor = lo, failed = "";
       while (cursor <= hi) {
@@ -5847,7 +6237,19 @@
       return;
     }
 
-    if (action === "mbus-save-engine") {
+    // M-Bus steps: open/close a step; switch between configuration (polling
+    // off) and operation (polling on).
+    if (action === "mbus-step-toggle") {
+      const k = target.dataset.step || "";
+      state.mbusStepOpen = {...(state.mbusStepOpen || {}), [k]: target.dataset.open !== "1"};
+      render();
+      return;
+    }
+
+    if (action === "mbus-save-engine" || action === "mbus-engine-set") {
+      const on = action === "mbus-engine-set"
+        ? target.dataset.on === "1"
+        : !!document.getElementById("mbus_enabled")?.checked;
       try {
         const result = await postApi("mbus/device", {
           device: state.mbus?.device || "",
@@ -5855,7 +6257,7 @@
           baudrate: String(state.mbus?.baudrate || "2400"),
           poll_interval: state.mbus?.poll_interval || "15m",
           donotprobe_all: state.mbus?.donotprobe_all ? "true" : "false",
-          mbus_enabled: document.getElementById("mbus_enabled")?.checked ? "true" : "false",
+          mbus_enabled: on ? "true" : "false",
         });
         toast(result.message || t("saved", "Saved"));
         await loadMbus(true);
@@ -6017,6 +6419,26 @@
           toast(error.message, true);
           render();
         }
+      })();
+      return;
+    }
+
+    if (action === "board-set") {
+      event.preventDefault && event.preventDefault();
+      const board = target.dataset.board || "";
+      const key = target.dataset.key || "";
+      const value = target.dataset.value || "";
+      if (!board || !key || !value) return;
+      state.bsPending = state.bsPending || {};
+      (async () => {
+        try {
+          await postApi("esp-setting", {board, key, value});
+          state.bsPending[board] = {value, at: Date.now()};
+          toast(t("bs_pending", "Sent. The board stores it and restarts (about 10 s)."));
+        } catch (error) {
+          toast(error.message, true);
+        }
+        render();
       })();
       return;
     }
@@ -6308,16 +6730,25 @@
       return;
     }
 
-    // Dashboard view switcher — pure client-side, persisted to localStorage.
-    if (action === "dashboard-view") {
-      const v = target.dataset.view || "pipeline";
-      if (v !== state.dashboardView) {
-        state.dashboardView = v;
-        saveDashboardView(v);
-        // Switching view also clears any open pipeline drill-down.
-        state.workspace = null;
-        render();
+    // Panel flow node that leads to another tab (Received, M-Bus, Drivers).
+    if (action === "flow-go") {
+      window.location.hash = target.dataset.href;
+      return;
+    }
+
+    // Meter tile on the Panel: a tap pins the highlight of the boards that
+    // hear it (phones have no hover); a second tap on the same tile frees it.
+    if (action === "flow-pin") {
+      if (event.target.closest("a")) return;
+      const id = target.dataset.meter || "";
+      if (state.flowPinned && state.flowFocus && state.flowFocus.kind === "meter" && state.flowFocus.id === id) {
+        state.flowPinned = false;
+        state.flowFocus = null;
+      } else {
+        state.flowPinned = true;
+        state.flowFocus = {kind: "meter", id, boards: (target.dataset.boards || "").split(",").filter(Boolean)};
       }
+      applyFlowFocus();
       return;
     }
 
