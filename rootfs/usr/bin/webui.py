@@ -1119,8 +1119,14 @@ def radio_env_payload(now: int | None = None) -> dict:
     odd = [b for b in known if b["state"] != "normal"]
     if not out:
         return {"ok": True, "empty": True}
-    if known and all(b["state"] == "silent" for b in known):
+    silent_boards = [b for b in out if b["state"] == "silent"]
+    if len(silent_boards) == len(out):
         verdict, odd_board = "silent", ""
+    elif known and all(b["state"] == "silent" for b in known):
+        # Only the silent boards are past learning, the others are still
+        # collecting and do send frames: not "no frames from the boards".
+        verdict, odd_board = (("one_board", silent_boards[0]["name"]) if len(silent_boards) == 1
+                              else ("learning", ""))
     elif not known:
         verdict, odd_board = "learning", ""
     elif len(known) >= 2 and len(odd) == 1:
