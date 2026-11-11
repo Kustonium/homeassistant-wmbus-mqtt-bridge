@@ -1,3 +1,8 @@
+## 1.6.19
+
+### Other (review)
+- radio env says 'no frames from the boards' only when every board is silent (6b916e5)
+
 ## 1.6.18
 
 ### Added
