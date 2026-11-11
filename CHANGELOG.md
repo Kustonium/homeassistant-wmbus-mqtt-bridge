@@ -1,3 +1,23 @@
+## 1.6.18
+
+### Added
+- Boards tab with board settings, starting with the listen mode (c039494)
+
+### Other (review)
+- Panel flow DEC counts its own radio meters (not total minus wired), instance tiles wide enough for the last-reading text, short M-Bus input label (50df796)
+- decoded count and last decoded time kept in runtime files, so status.json no longer shows 0 (336dfaf)
+- boards in the Panel flow and the Boards tab in alphabetical order, so they no longer jump with whichever spoke last (6b9a845)
+- DEC tile shows the age of its newest reading instead of pipeline.decoded_count (which the RAW counter resets to 0) (9121e71)
+- Panel flow MQTT and decode tiles wide enough for broker name and 'status + discovery' (1ca4e74)
+- Panel flow HA tile wide enough for its status in every language; node text clipped inside the box (5fb3560)
+- board tiles on the Boards tab use each board's colour from the Panel flow (7a818c9)
+- wait for bash's zero-meter LISTEN parser before reading the decode stage's files (47de911)
+- Panel flow shows every wmbusmeters instance (DEC, EXT, LIST, M-Bus) wired as in the code (81fdb20)
+- Panel becomes a live flow diagram (boards -> MQTT -> wmbusmeters -> HA) with meter tiles; Statistics view and event list removed (3c209aa)
+- radio env arrows show trend against typical, colours rank the boards (390613d)
+- radio env board table ranked green/yellow/red with arrows, 3-colour heatmap, capitalised labels (8c205a7)
+- radio env heatmap coloured green/yellow/red by min/median/max with legend (1e20a31)
+
 ## 1.6.17
 
 ### Fixed

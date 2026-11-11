@@ -144,7 +144,7 @@ Dostupné v **5 jazykoch** (EN/PL/DE/CS/SK) — prepínač vpravo hore.
 
 | Záložka | Na čo |
 |---|---|
-| **PANEL** | Dashboard: pipeline ESP→MQTT→wmbusmeters→HA (klikateľné dlaždice) + štatistiky. |
+| **PANEL** | Dashboard: živý tok z každej dosky ESP (vlastná farba, anténa, hrúbka čiary = rámce/min) cez MQTT a wmbusmeters do HA (kliknutím na uzol podrobnosti) a dlaždica každého merača; prejdenie na merač zvýrazní dosky, ktoré ho počujú. |
 | **MERAČE** | Tvoje nakonfigurované merače: hodnota, posledný telegram, **PRÍJEM**. |
 | **PRÍJEM / HĽADANIE** | Detegovaní kandidáti + nakonfigurované „v éteri"; tu pridáš/odoberieš merače a filtruješ zobrazené hodnoty. |
 | **LOGY / ESP LOGY** | Runtime udalosti a diagnostika ESP prijímačov. |
@@ -473,7 +473,14 @@ zapnutý. Bez neho zvyšok záložky funguje a tabuľka ukazuje `diagnostic_mode
 každej dosky. Počty sa držia 15 dní v
 `/data/radio_env_hours.json` (niekoľko KB). Len zobrazenie.
 
-### Záložka Diagnostika
+### Záložka Dosky (predtým Diagnostika)
+
+Hore dlaždica každej dosky s nastaveniami, ktoré doska dovolí meniť z doplnku:
+zatiaľ režim príjmu (T1, C1, oba, S1). Kliknutie ho pošle doske, tá ho uloží do
+flash a reštartuje sa (asi 10 s). Doska bez `<doska>/diag/settings` má sivú
+dlaždicu s vysvetlením. Pod dlaždicami diagnostika ako doteraz.
+
+#### Záložka Diagnostika
 
 Tabuľka podľa dosiek: rámce, merače, chýbajúce udalosti, reštarty za posledných
 24 hodín a čas od posledného rámca, plus jeden stav na dosku. Pod ňou karta

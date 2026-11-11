@@ -94,6 +94,30 @@ status_read_last_raw_seen() {
   cat "${STATUS_LAST_RAW_FILE}" 2>/dev/null || true
 }
 
+# STATUS_DECODED_COUNT and STATUS_LAST_DECODED_SEEN from their files (see
+# STATUS_DECODED_COUNT_FILE in bridge.sh), without a fork: it runs for every
+# decoded telegram in _decode_consume_bash. A missing or non-numeric count is 0.
+status_load_decoded() {
+  local v=""
+  { IFS= read -r v || true; } 2>/dev/null < "${STATUS_DECODED_COUNT_FILE}" || true
+  [[ "${v}" =~ ^[0-9]+$ ]] || v=0
+  STATUS_DECODED_COUNT="${v}"
+  v=""
+  { IFS= read -r v || true; } 2>/dev/null < "${STATUS_LAST_DECODED_FILE}" || true
+  # shellcheck disable=SC2034  # read by write_status_json
+  STATUS_LAST_DECODED_SEEN="${v}"
+}
+
+# One more decoded telegram, seen at $1 (ISO time), in both files.
+status_store_decoded() {
+  status_load_decoded
+  STATUS_DECODED_COUNT=$((STATUS_DECODED_COUNT + 1))
+  # shellcheck disable=SC2034  # read by write_status_json
+  STATUS_LAST_DECODED_SEEN="$1"
+  printf '%s\n' "${STATUS_DECODED_COUNT}" 2>/dev/null > "${STATUS_DECODED_COUNT_FILE}" || true
+  printf '%s\n' "$1" 2>/dev/null > "${STATUS_LAST_DECODED_FILE}" || true
+}
+
 status_find_recent_raw_for_id() {
   local id="$1"
   local le raw n=0
@@ -119,6 +143,9 @@ write_status_json() {
   # would overwrite raw_count back to 0.
   STATUS_RAW_COUNT="$(status_read_raw_count)"
   STATUS_LAST_RAW_SEEN="$(status_read_last_raw_seen)"
+  # The decoded count likewise: only the decode stage counts; the RAW counter
+  # and the main shell would otherwise write their own copy of it (0).
+  status_load_decoded
   # discovery_published is file-backed too (see STATUS_DISCOVERY_FLAG) so the
   # frequent raw-counter subshell can't clobber a 'true' set by the decode loop.
   local _disc_pub="${STATUS_DISCOVERY_PUBLISHED}" _disc_at="${STATUS_DISCOVERY_PUBLISHED_AT}"

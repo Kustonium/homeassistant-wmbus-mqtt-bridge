@@ -145,7 +145,7 @@ Verfügbar in **5 Sprachen** (EN/PL/DE/CS/SK) — Umschalter oben rechts.
 
 | Tab | Zweck |
 |---|---|
-| **PANEL** | Dashboard: die Pipeline ESP→MQTT→wmbusmeters→HA (klickbare Kacheln) + Statistik. |
+| **PANEL** | Dashboard: Live-Fluss von jeder ESP-Platine (eigene Farbe, Antenne, Linienbreite = Frames/min) über MQTT und wmbusmeters zu HA (Knoten anklicken für Details) und eine Kachel je Zähler; Zeigen auf einen Zähler hebt die Platinen hervor, die ihn hören. |
 | **ZÄHLER** | Deine konfigurierten Zähler: Wert, letztes Telegramm, **EMPFANG**. |
 | **EMPFANG / SUCHE** | Erkannte Kandidaten + konfigurierte „on air"; hier Zähler hinzufügen/entfernen und angezeigte Werte filtern. |
 | **LOGS / ESP-LOGS** | Runtime-Ereignisse und ESP-Empfänger-Diagnose. |
@@ -501,7 +501,15 @@ Beispielkonfigurationen haben es an. Ohne es funktioniert der Rest des Tabs, und
 die Tabelle zeigt den `diagnostic_mode` jeder Platine. Die Zählungen liegen 15 Tage lang in
 `/data/radio_env_hours.json` (einige KB). Nur Anzeige.
 
-### Diagnose-Tab
+### Tab Platinen (früher Diagnose)
+
+Oben eine Kachel je Platine mit den Einstellungen, die die Platine vom Add-on
+ändern lässt: derzeit der Empfangsmodus (T1, C1, beide, S1). Ein Klick sendet
+ihn an die Platine, die ihn im Flash speichert und neu startet (etwa 10 s).
+Eine Platine ohne `<platine>/diag/settings` zeigt eine ausgegraute Kachel mit
+dem Grund. Darunter die Diagnose wie bisher.
+
+#### Diagnose-Tab
 
 Eine Tabelle je Platine: Frames, Zähler, fehlende Ereignisse, Neustarts der
 letzten 24 Stunden und Zeit seit dem letzten Frame, dazu ein Status je Platine.

@@ -144,7 +144,7 @@ Available in **5 languages** (EN/PL/DE/CS/SK) — switcher in the top-right corn
 
 | Tab | Purpose |
 |---|---|
-| **PANEL** | Dashboard: the ESP→MQTT→wmbusmeters→HA pipeline (clickable tiles) + statistics. |
+| **PANEL** | Dashboard: a live flow from every ESP board (own colour, antenna, line width = frames/min) through MQTT and wmbusmeters to HA (click a node for details), and a tile per meter; hovering a meter highlights the boards that hear it. |
 | **METERS** | Your configured meters: value, last telegram, **RECEPTION**. |
 | **RECEIVING / SEARCH** | Detected candidates + configured-on-air; add/remove meters and filter displayed values here. |
 | **LOGS / ESP LOGS** | Runtime events and ESP receiver diagnostics. |
@@ -495,7 +495,17 @@ from the received frames, and the board table shows each board's
 in `/data/radio_env_hours.json` (a few kilobytes). Display only: nothing in
 reception changes.
 
-### Diagnostics tab
+### Boards tab (formerly Diagnostics)
+
+On top, a tile per board with the settings the board lets the add-on change.
+Today that is the listen mode (T1, C1, both, S1): a click sends it to the board,
+which stores it in flash and restarts (about 10 s); the tile then shows the mode
+the board reports. S1 is greyed out on CC1101 and marked as weaker on SX1262.
+"Back to YAML" drops the stored value. A board whose firmware does not announce
+settings (no `<board>/diag/settings`) shows a greyed tile with that reason;
+rebuild it with the current component. Below the tiles, the diagnostics as before.
+
+#### Diagnostics tab
 
 A per-board table: frames, meters, missing events, restarts in the last 24 hours
 and time since the last frame, with one status per board. Below it, a card per

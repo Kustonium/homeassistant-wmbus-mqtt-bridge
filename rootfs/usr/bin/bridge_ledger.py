@@ -1297,6 +1297,25 @@ def _digits_or_zero(path: str) -> str:
     return text if re.fullmatch(r"[0-9]+", text) else "0"
 
 
+def _file_first_line(path: str) -> str:
+    """`IFS= read -r v < path`: the first line, "" when it cannot be read."""
+    if not path:
+        return ""
+    try:
+        with open(path, "rb") as fh:
+            return _s(fh.readline()).rstrip("\n")
+    except OSError:
+        return ""
+
+
+def _read_decoded(count_path: str, last_path: str) -> Tuple[int, str]:
+    """status_load_decoded: the decoded count (0 when missing or not a
+    number) and the last decoded time, from the files only the decode stage
+    writes (STATUS_DECODED_COUNT_FILE in bridge.sh)."""
+    text = _file_first_line(count_path)
+    return (int(text) if re.fullmatch(r"[0-9]+", text) else 0), _file_first_line(last_path)
+
+
 def mfct_code_from_raw_hex(raw: str) -> str:
     """05-raw.sh mfct_code_from_raw_hex: the EN 13757 three-letter code of the M-field."""
     raw = _BASH_SPACE.sub("", raw)
@@ -2443,6 +2462,9 @@ class RawBook:
         if os.path.isfile(a.discovery_flag_file) and os.path.getsize(a.discovery_flag_file) > 0:
             pub = "true"
             pub_at = _s(_read_lines(a.discovery_flag_file)[0]) if _read_lines(a.discovery_flag_file) else ""
+        # The decode stage counts, in another process: its files, not a value
+        # inherited when this counter started (that was 0 for good).
+        decoded, last_decoded = _read_decoded(a.decoded_count_file, a.last_decoded_file)
         doc = {
             "updated_at": iso_now(),
             "config": {"raw_topic": a.raw_topic, "state_prefix": a.state_prefix,
@@ -2450,12 +2472,12 @@ class RawBook:
                        "search_mode": a.search_mode == "true", "loglevel": a.loglevel},
             "mqtt": {"host": a.mqtt_host, "port": a.mqtt_port, "connected": True},
             "pipeline": {"raw_count": _jq_tonumber(raw_count),
-                         "decoded_count": _jq_tonumber(a.decoded_count),
+                         "decoded_count": _jq_tonumber(str(decoded)),
                          "wmbusmeters_running": True,
                          "discovery_published": pub == "true",
                          "discovery_published_at": pub_at,
                          "last_raw_seen": last_raw,
-                         "last_decoded_seen": a.last_decoded_seen,
+                         "last_decoded_seen": last_decoded,
                          "last_error": a.last_error,
                          "last_event": self.last_event},
         }
@@ -3231,7 +3253,10 @@ class DecodeBook:
     one of a temporary search_<id> meter goes no further.
 
     The STATUS_* values start as the pipeline's subshell inherited them
-    (--decoded-count etc.), as the bash loop's did. A DEC frame the publisher
+    (--last-event etc.), as the bash loop's did; the decoded count and last
+    decoded time come from their files (--decoded-count-file,
+    --last-decoded-file), which this stage writes for every other
+    status.json writer to read. A DEC frame the publisher
     does not take is asked of the bash loop behind ("publish": the
     mosquitto_pub path of publish_decoded_json), as is a SEARCH message
     ("pub": mqtt_pub).
@@ -3241,9 +3266,8 @@ class DecodeBook:
         self.a = a
         self.out = out if out is not None else sys.stdout
         self.err = err if err is not None else sys.stderr
-        self.decoded = int(a.decoded_count) if re.fullmatch(r"[0-9]+", a.decoded_count or "") else 0
+        self.decoded, self.last_decoded = _read_decoded(a.decoded_count_file, a.last_decoded_file)
         self.running = a.wmbusmeters_running
-        self.last_decoded = a.last_decoded_seen
         self.last_event = a.last_event
         self.disc_pub, self.disc_at = a.discovery_published, a.discovery_published_at
         self.excludes: Dict[str, str] = {}
@@ -3291,8 +3315,7 @@ class DecodeBook:
 
     def telegram(self, line: str) -> None:
         self.running = "true"
-        self.decoded += 1
-        self.last_decoded = iso_now()
+        self.store_decoded()
         self.add_event("ok", "Decoded telegram received")
         self.write_status()
         if self.search is not None and self.search.telegram(line):
@@ -3304,6 +3327,22 @@ class DecodeBook:
     def add_event(self, level: str, message: str) -> None:
         self.last_event = message
         append_event(self.a.events_file, level, message)
+
+    def store_decoded(self) -> None:
+        """status_store_decoded: one more decoded telegram, seen now, in the
+        count files (the file's count + 1, so a restarted stage goes on from
+        it). Without the files (--decoded-count-file unset) counted here only."""
+        a = self.a
+        if a.decoded_count_file:
+            self.decoded = _read_decoded(a.decoded_count_file, "")[0]
+        self.decoded += 1
+        self.last_decoded = iso_now()
+        for path, value in ((a.decoded_count_file, str(self.decoded)), (a.last_decoded_file, self.last_decoded)):
+            if path:
+                try:
+                    _write_replace_tmp(path, _b(value) + b"\n")
+                except OSError:
+                    pass
 
     def write_status(self) -> None:
         """write_status_json from the decode loop's subshell."""
@@ -3759,9 +3798,13 @@ def _parser() -> argparse.ArgumentParser:
     # Values the counter subshell inherits when the pipeline starts; they go
     # into status.json unchanged, as the bash counter wrote them.
     for name in ("raw-topic", "state-prefix", "discovery-prefix", "search-mode", "loglevel",
-                 "mqtt-host", "mqtt-port", "decoded-count", "last-decoded-seen",
+                 "mqtt-host", "mqtt-port",
                  "last-error", "last-event", "discovery-published", "discovery-published-at"):
         raw.add_argument(f"--{name}", default="")
+    # The decode stage's count and last decoded time (STATUS_DECODED_COUNT_FILE):
+    # read for every status.json written here; without them 0 and "".
+    for name in ("decoded-count", "last-decoded"):
+        raw.add_argument(f"--{name}-file", default="")
     listen = modes.add_parser("listen", help="output of the pure LISTEN wmbusmeters instance")
     for name in ("candidates", "seen", "recent-raw", "candidate-raw", "candidate-analysis",
                  "snippet", "official-count"):
@@ -3788,9 +3831,13 @@ def _parser() -> argparse.ArgumentParser:
                      help="hand the other lines to the main instance's LISTEN parser (no meter configured)")
     # The STATUS_* values and settings the pipeline's subshell inherits.
     for name in ("raw-topic", "state-prefix", "discovery-prefix", "search-mode", "loglevel", "mqtt-host",
-                 "mqtt-port", "mqtt-connected", "wmbusmeters-running", "decoded-count", "last-decoded-seen",
+                 "mqtt-port", "mqtt-connected", "wmbusmeters-running",
                  "last-error", "last-event", "discovery-published", "discovery-published-at"):
         dec.add_argument(f"--{name}", default="")
+    # The count and last decoded time this stage keeps for every status.json
+    # writer (STATUS_DECODED_COUNT_FILE); without them counted in memory only.
+    for name in ("decoded-count", "last-decoded"):
+        dec.add_argument(f"--{name}-file", default="")
     # The LISTEN parser's files (--zero true).
     for name in ("candidates", "recent-raw", "candidate-raw", "candidate-analysis", "snippet",
                  "official-count", "preview-state", "candidate-values"):

@@ -89,6 +89,13 @@ STATUS_EVENTS_FILE="${RUNTIME}/status_events.tsv"
 STATUS_SEEN_FILE="${RUNTIME}/status_seen.tsv"
 STATUS_RAW_COUNT_FILE="${RUNTIME}/status_raw_count.txt"
 STATUS_LAST_RAW_FILE="${RUNTIME}/status_last_raw_seen.txt"
+# The decoded count and last decoded time, kept in files like the RAW count:
+# only the decode stage (bridge_ledger.py decode, or _decode_consume_bash)
+# counts, but every status.json writer (write_status_json, the RAW counter, the
+# decode stage) runs in its own process or subshell with its own copy of
+# STATUS_DECODED_COUNT, so each of them reads these files instead.
+STATUS_DECODED_COUNT_FILE="${RUNTIME}/status_decoded_count.txt"
+STATUS_LAST_DECODED_FILE="${RUNTIME}/status_last_decoded_seen.txt"
 STATUS_RECENT_RAW_FILE="${RUNTIME}/status_recent_raw.tsv"
 STATUS_CANDIDATE_ANALYSIS_FILE="${RUNTIME}/status_candidate_analysis.tsv"
 STATUS_CANDIDATE_RAW_FILE="${RUNTIME}/status_candidate_raw.tsv"
@@ -211,6 +218,8 @@ STATUS_ESP_RX_CLOCK_FILE="${RUNTIME}/status_esp_rx_clock.tsv"
 # Retained per-source snapshot of the effective ESP configuration.
 # One JSON map source -> {radio, lines, epoch}; refreshed once per ESP boot.
 STATUS_ESP_CONFIG_FILE="${RUNTIME}/status_esp_config.json"
+# <board>/diag/settings per board (esp_books.DiagEventsBook), for the Boards tab.
+STATUS_ESP_SETTINGS_FILE="${RUNTIME}/status_esp_settings.json"
 SEARCH_MATCHES_FILE="${BASE}/search_matches.tsv"
 SEARCH_STATUS_FILE="${BASE}/search_status.json"
 # discovery_published flag — file-backed (see write_status_json). The raw-counter
@@ -227,7 +236,7 @@ STATUS_MQTT_CONNECTED="false"
 STATUS_WMBUSMETERS_RUNNING="false"
 # shellcheck disable=SC2034
 STATUS_RAW_COUNT=0
-# shellcheck disable=SC2034  # read by _decode_stage / _decode_consume_bash (12-pipeline.sh)
+# shellcheck disable=SC2034  # a copy: status_load_decoded sets it from STATUS_DECODED_COUNT_FILE
 STATUS_DECODED_COUNT=0
 # shellcheck disable=SC2034
 STATUS_DISCOVERY_PUBLISHED="false"
@@ -235,7 +244,7 @@ STATUS_DISCOVERY_PUBLISHED="false"
 STATUS_DISCOVERY_PUBLISHED_AT=""
 # shellcheck disable=SC2034
 STATUS_LAST_RAW_SEEN=""
-# shellcheck disable=SC2034  # read by _decode_stage / _decode_consume_bash (12-pipeline.sh)
+# shellcheck disable=SC2034  # a copy: status_load_decoded sets it from STATUS_LAST_DECODED_FILE
 STATUS_LAST_DECODED_SEEN=""
 STATUS_LAST_ERROR=""
 # shellcheck disable=SC2034
@@ -286,6 +295,8 @@ mkdir -p "${RUNTIME}/.preview_attempts" 2>/dev/null || true
 : > "${STATUS_ESP_RX_BOOTS_FILE}" 2>/dev/null || true
 : > "${STATUS_ESP_RX_CLOCK_FILE}" 2>/dev/null || true
 : > "${STATUS_ESP_CONFIG_FILE}" 2>/dev/null || true
+# Retained on the broker: emptied here, filled again when the books subscribe.
+: > "${STATUS_ESP_SETTINGS_FILE}" 2>/dev/null || true
 # HA presence is session-scoped to the current broker. Clear stale state so a
 # previous run's "online" cannot mask a now-foreign broker until the retained
 # birth message (if any) re-arrives on subscribe.
@@ -305,6 +316,8 @@ mkdir -p "${RUNTIME}/.preview_attempts" 2>/dev/null || true
 # replaces it.
 touch "${STATUS_CANDIDATE_VALUES_FILE}" 2>/dev/null || true
 [[ -f "${STATUS_RAW_COUNT_FILE}" ]] || echo "0" > "${STATUS_RAW_COUNT_FILE}"
+[[ -f "${STATUS_DECODED_COUNT_FILE}" ]] || echo "0" > "${STATUS_DECODED_COUNT_FILE}"
+touch "${STATUS_LAST_DECODED_FILE}" 2>/dev/null || true
 
 # Record bridge start time for the WebGUI rate denominator fix.
 printf '%s\n' "$(epoch_now)" > "${STATUS_BRIDGE_START_FILE}" 2>/dev/null || true
