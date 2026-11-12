@@ -4792,14 +4792,15 @@
 
     const heat = asArray(x.heat);
     // Three colours only, by where the hour sits among the filled cells:
-    // green = near the quietest, red = near the busiest, yellow = around the
-    // median (the borders lie halfway between median and min/max).
+    // yellow = near the quietest, green = around the median (normal traffic),
+    // red = near the busiest (the borders lie halfway between median and
+    // min/max).
     const heatVals = heat.flat().filter(v => typeof v === "number").sort((a, b) => a - b);
     const hMin = heatVals.length ? heatVals[0] : 0;
     const hMax = heatVals.length ? heatVals[heatVals.length - 1] : 0;
     const hMed = heatVals.length ? (heatVals.length % 2 ? heatVals[(heatVals.length - 1) / 2]
       : (heatVals[heatVals.length / 2 - 1] + heatVals[heatVals.length / 2]) / 2) : 0;
-    const HC = [[63, 185, 80], [210, 170, 40], [235, 80, 70]];
+    const HC = [[210, 170, 40], [63, 185, 80], [235, 80, 70]];  // min, median, max
     const mix = (a, b, f) => `rgb(${a.map((c, i) => Math.round(c + (b[i] - c) * f)).join(",")})`;
     const heatColor = v => {
       if (hMax <= hMin) return mix(HC[1], HC[1], 0);
@@ -4897,10 +4898,17 @@
     const farPeak = Math.max(1, ...far.filter(v => typeof v === "number"));
     const best = reHours(x.far_best);
     const farCard = `<div class="card">
-      <h3>${escapeHtml(t("re_far", "When far meters are heard (frames at -90 dBm or weaker)"))}</h3>
-      <div style="display:flex;align-items:flex-end;gap:2px;height:60px;">${far.map((v, h) =>
-        `<div title="${escapeHtml(`${String(h).padStart(2, "0")}:00 · ${v === null ? "—" : v}/h`)}" style="flex:1;border-radius:2px 2px 0 0;background:${typeof v === "number" ? "#1D9E75" : "transparent"};height:${typeof v === "number" ? Math.max(2, Math.round(56 * v / farPeak)) : 0}px;"></div>`).join("")}</div>
-      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:4px;"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
+      <h3>${escapeHtml(t("re_far", "When far meters can be heard"))}</h3>
+      <p class="hint" style="margin:0 0 8px;">${escapeHtml(t("re_far_hint", "Each bar is one hour of the day: how many weak frames (-90 dBm or weaker) a board hears in it, on average. Weak frames come from far meters, so a taller bar means more far meters on air at that hour. Bright bars: the best hours."))}</p>
+      <div style="display:flex;gap:6px;">
+        <div style="display:flex;flex-direction:column;justify-content:space-between;font-size:11px;color:var(--muted);height:80px;text-align:right;min-width:34px;">
+          <span>${escapeHtml(String(Math.round(farPeak)))}/h</span><span>0</span></div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:flex-end;gap:2px;height:80px;border-bottom:1px solid #3a4752;">${far.map((v, h) =>
+            `<div title="${escapeHtml(`${String(h).padStart(2, "0")}:00–${String((h + 1) % 24).padStart(2, "0")}:00 · ${v === null ? "—" : v}/h`)}" style="flex:1;border-radius:2px 2px 0 0;background:${typeof v !== "number" ? "transparent" : v >= 0.7 * farPeak ? "#2fd3a6" : "#1d6e58"};height:${typeof v === "number" ? Math.max(2, Math.round(78 * v / farPeak)) : 0}px;"></div>`).join("")}</div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:4px;">${[0, 3, 6, 9, 12, 15, 18, 21].map((h) => `<span>${String(h).padStart(2, "0")}</span>`).join("")}<span>24</span></div>
+        </div>
+      </div>
       ${best ? `<p>${escapeHtml(t("re_far_best", "Best: {day} {range}. Looking for a far meter? Leave the search running then.", {day: dayType, range: best}))}</p>`
         : `<p class="hint">${escapeHtml(t("re_far_pending", "No full hours stored yet. The chart fills in hour by hour."))}</p>`}
     </div>`;
