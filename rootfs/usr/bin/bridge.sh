@@ -271,6 +271,12 @@ STATUS_RSSI_FILE="${RUNTIME}/status_rssi.tsv"
 RADIO_ENV_FILE="${BASE}/radio_env_hours.json"
 # shellcheck disable=SC2034
 RADIO_ENV_NOW_FILE="${RUNTIME}/status_radio_env_now.json"
+# The boards' status lights (board_lights.py): a week of hours per board on
+# persistent storage, the hour in progress in RAM.
+# shellcheck disable=SC2034  # passed to the MQTT publisher in start_mqtt_publisher (12)
+BOARD_LIGHTS_FILE="${BASE}/board_lights_hours.json"
+# shellcheck disable=SC2034
+BOARD_LIGHTS_NOW_FILE="${RUNTIME}/status_board_lights_now.json"
 # What the data directory is stored on, written once at start (WebUI panel).
 STATUS_STORAGE_FILE="${RUNTIME}/status_storage.json"
 

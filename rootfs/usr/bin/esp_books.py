@@ -164,6 +164,17 @@ class SummaryBook:
                         env.summary(parts[1], v, add["_bridge_rx_epoch"])
             except Exception:  # noqa: BLE001
                 pass
+        # The status lights' day of counts (board_lights.py), the same way.
+        if os.environ.get("BOARD_LIGHTS_FILE"):
+            try:
+                import board_lights
+                lights = board_lights.instance()
+                parts = bl._s(topic_b).split("/")
+                if lights is not None and len(parts) > 2:
+                    for v in outputs:
+                        lights.summary(parts[1], v, add["_bridge_rx_epoch"])
+            except Exception:  # noqa: BLE001
+                pass
 
 
 class MeterWindowBook:

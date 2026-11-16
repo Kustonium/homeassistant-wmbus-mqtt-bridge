@@ -1114,7 +1114,8 @@ class RxBook:
                 if env is not None:
                     for n in normalized:
                         mid = n.get("meter_id")
-                        env.frame(device, "" if mid is None else _jq_tostring(mid), n.get("rssi_dbm"), ts)
+                        env.frame(device, "" if mid is None else _jq_tostring(mid), n.get("rssi_dbm"), ts,
+                                  n.get("mode"))
             except Exception:  # noqa: BLE001
                 pass
         lines = []
