@@ -144,7 +144,7 @@ Dostupné v **5 jazycích** (EN/PL/DE/CS/SK) — přepínač vpravo nahoře.
 
 | Záložka | K čemu |
 |---|---|
-| **PANEL** | Dashboard: živý tok z každé desky ESP (vlastní barva, anténa, tloušťka čáry = rámce/min) přes MQTT a wmbusmeters do HA (kliknutím na uzel podrobnosti) a dlaždice každého měřiče; najetí na měřič zvýrazní desky, které ho slyší. |
+| **PANEL** | Dashboard: živý tok z každé desky ESP (vlastní barva, anténa, tloušťka čáry = rámce/min) přes MQTT a wmbusmeters do HA (kliknutím na uzel podrobnosti) a dlaždice každého měřiče; najetí na měřič zvýrazní desky, které ho slyší. Každá deska ukazuje i pásmo, které poslouchá (T1, C1, T1+C1, S1). Čtyři tečky u názvu desky jsou její kontrolky (záložka Desky). |
 | **MĚŘIČE** | Tvé nakonfigurované měřiče: hodnota, poslední telegram, **PŘÍJEM**. |
 | **PŘÍJEM / HLEDÁNÍ** | Detekovaní kandidáti + nakonfigurované „v éteru"; zde přidáš/odebereš měřiče a filtruješ zobrazené hodnoty. |
 | **LOGY / ESP LOGY** | Runtime události a diagnostika ESP přijímačů. |
@@ -465,6 +465,10 @@ dnech stejného typu: pracovní den nebo víkend, vybráno automaticky.
   chybných symbolů bez více rámců) nebo „odlišuje se jen <deska>“.
 - **Mapa hustoty** týdne po hodinách, **tabulka desek** a **hodiny, kdy jsou
   slyšet vzdálené měřiče** (rámce -90 dBm a slabší).
+- **Přepínač pásem:** všechna pásma dohromady, nebo zvlášť T1, C1 či S1.
+  Pohled na pásmo ukazuje jen desky, které ho teď poslouchají; tabulka desek
+  ukazuje i režim poslechu každé desky. Pásma se počítají zvlášť od verze
+  1.6.21, takže pohled na pásmo nejdřív sbírá vlastní typické hodnoty.
 
 Typické hodnoty potřebují tři dřívější dny stejného typu. Podíl chybných symbolů a verdikty kolize/rušení
 vyžadují `diagnostic_mode: normal` na ESP; ukázkové konfigurace ho mají zapnutý.
@@ -477,6 +481,24 @@ Nahoře dlaždice každé desky s nastaveními, která deska dovolí měnit z do
 zatím režim příjmu (T1, C1, oba, S1). Kliknutí ho pošle desce, ta ho uloží do
 flash a restartuje se (asi 10 s). Deska bez `<deska>/diag/settings` má šedou
 dlaždici s vysvětlením. Pod dlaždicemi diagnostika jako dosud.
+
+**Další nastavení.** S aktuálním firmwarem dlaždice přepíná také diagnostiku
+desky (`diagnostic_mode`), sílu signálu po měřičích (`publish_rssi`) a podle
+čipu zesílení RX a dlouhé rámce (SX1262) nebo přeplněný éter (SX1276); pod
+každým jedna věta, co dělá. Funguje to i při vypnuté diagnostice.
+
+**Kontrolky.** Pod dlaždicemi desek čtyři kontrolky každé desky, každá s pamětí
+posledních 24 hodin: **Žije** (puls desky každých 60 s a restarty; jeden restart
+denně je normální), **Rádio** (přerušení z rádiového čipu; dlouho žádné při
+běžící desce znamená hluché rádio), **Stíhá** (přetečení FIFO a useknuté rámce,
+ztracené, protože přijímač nestíhal) a **Příjem** (odmítnuté rámce a chybné
+symboly 3 z 6 ve srovnání s dřívějšími dny desky). Zelená je norma, žlutá hůř
+než obvykle, červená událost během dne, šedá žádná data (deska neposílá
+diagnostické souhrny, `diagnostic_mode` vypnutý). Čísla jsou vidět jen u žluté a
+červené kontrolky, podrobnosti po najetí myší. U desky poslouchající S1 je hodina
+bez rámce normální a kontrolku nezčervená. PANEL ukazuje tytéž kontrolky jako
+čtyři tečky u názvu desky. Uloženo po deskách a hodinách na 7 dní v
+`/data/board_lights_hours.json`; jen zobrazení.
 
 #### Záložka Diagnostika
 

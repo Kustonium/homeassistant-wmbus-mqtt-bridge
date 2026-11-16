@@ -9,6 +9,9 @@ one row per board and hour instead, a few kilobytes for two weeks:
 
 - frames, weak frames (rssi_dbm <= WEAK_DBM) and meters come from the
   board's /rx messages (bridge_ledger.RxBook), one per received frame;
+- the same counts per band go under "<board>|T1", "<board>|C1" and
+  "<board>|S1" (the frame's mode), so the tab can show one band at a time;
+  the plain "<board>" key keeps all bands together, as before;
 - the 3-of-6 symbol counts come from the 60 s diag/summary
   (esp_books.SummaryBook), t1.sym_total and t1.sym_invalid, which the ESP
   resets after every summary. A board without diagnostic_mode publishes no
@@ -36,6 +39,12 @@ NOW_WRITE_EVERY_S = 60
 # started or restarted mid-hour) is not stored: it would pull "typical" down.
 PARTIAL_HOUR_S = 300
 _ROW = ("hour", "frames", "weak", "meters", "sym_total", "sym_invalid")
+BANDS = ("T1", "C1", "S1")
+BAND_SEP = "|"
+
+
+def band_key(board: str, band: str) -> str:
+    return f"{board}{BAND_SEP}{band}"
 
 
 def _write_json(path: str, data: Any) -> None:
@@ -82,7 +91,7 @@ class RadioEnv:
                         "sym_total": int(c.get("sym_total") or 0),
                         "sym_invalid": int(c.get("sym_invalid") or 0)}
 
-    def _bucket(self, board: str, ts: int) -> Dict[str, Any]:
+    def _bucket(self, board: str, ts: int, start: Optional[int] = None) -> Dict[str, Any]:
         hour = ts - ts % 3600
         c = self.cur.get(board)
         if c is not None and c["hour"] != hour:
@@ -92,8 +101,11 @@ class RadioEnv:
             else:
                 return c  # a late message for an older hour: counted where we are
         if c is None:
-            c = {"hour": hour, "start": ts, "frames": 0, "weak": 0, "meters": set(), "sym_total": 0,
-                 "sym_invalid": 0}
+            # A band's first frame can come late in the hour (S1 meters send
+            # a few times a day): its hour counts from where the board's own
+            # hour started, not from that frame.
+            c = {"hour": hour, "start": ts if start is None else start, "frames": 0, "weak": 0,
+                 "meters": set(), "sym_total": 0, "sym_invalid": 0}
             self.cur[board] = c
         return c
 
@@ -116,19 +128,25 @@ class RadioEnv:
                 "meter_ids": sorted(c["meters"]), "sym_total": c["sym_total"], "sym_invalid": c["sym_invalid"]}
             for b, c in self.cur.items()}})
 
-    def frame(self, board: str, meter: str, rssi: Any, ts: int) -> None:
+    @staticmethod
+    def _count(c: Dict[str, Any], meter: str, rssi: Any) -> None:
+        c["frames"] += 1
+        try:
+            if rssi is not None and float(rssi) <= WEAK_DBM:
+                c["weak"] += 1
+        except (TypeError, ValueError):
+            pass
+        if meter:
+            c["meters"].add(str(meter))
+
+    def frame(self, board: str, meter: str, rssi: Any, ts: int, mode: Any = None) -> None:
         if not board:
             return
         with self.lock:
             c = self._bucket(board, ts)
-            c["frames"] += 1
-            try:
-                if rssi is not None and float(rssi) <= WEAK_DBM:
-                    c["weak"] += 1
-            except (TypeError, ValueError):
-                pass
-            if meter:
-                c["meters"].add(str(meter))
+            self._count(c, meter, rssi)
+            if mode in BANDS:
+                self._count(self._bucket(band_key(board, mode), ts, c.get("start", c["hour"])), meter, rssi)
             self._maybe_write_now(ts)
 
     def summary(self, board: str, payload: Any, ts: int) -> None:
@@ -147,6 +165,11 @@ class RadioEnv:
             c = self._bucket(board, ts)
             c["sym_total"] += total
             c["sym_invalid"] += min(invalid, total)
+            # The symbols are T1's (3-of-6 is T-mode coding): the T1 band
+            # gets them too.
+            ct = self._bucket(band_key(board, "T1"), ts, c.get("start", c["hour"]))
+            ct["sym_total"] += total
+            ct["sym_invalid"] += min(invalid, total)
             self._maybe_write_now(ts)
 
 

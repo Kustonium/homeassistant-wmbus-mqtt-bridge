@@ -1,3 +1,19 @@
+## 1.6.21
+
+### Added
+- board tiles switch the new settings, each with what it does (183e6f6)
+- YAML options with a description on each board tile (fb9ad90)
+- status lights per board with a 24 h memory (0d7eaa1)
+- show each board's band on the Panel and split the radio environment tab by band (aafa101)
+
+### Fixed
+- board settings in the same order on every tile (9f3c1fb)
+- drop the read-only YAML options list from the board tiles (6c037a9)
+- reception light learns first, diagnostics folded under the lights (0982c34)
+
+### Other (review)
+- board tiles show every setting a board announces (CC1101 RX filter, carrier sense), not only listen_mode (b75a3ab)
+
 ## 1.6.20
 
 ### Other (review)

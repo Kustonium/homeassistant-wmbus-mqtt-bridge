@@ -2139,7 +2139,23 @@ th.sortable:hover {
   padding: 8px 10px; border-radius: 10px; color: #e8eef2; cursor: pointer; font: inherit;
   background: color-mix(in srgb, var(--c) 14%, transparent); border: 1px solid var(--c); transition: opacity .2s; }
 .flow-nb.off { border-style: dashed; }
-.flow-nb-name { font-weight: 600; }
+.flow-nb-name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.flow-nb-lights { display: inline-flex; gap: 3px; }
+.flow-nb-lights i { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.lights-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.lights-card { border-left: 3px solid var(--c); padding: 10px 12px; }
+.lights-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.lights-name { font-weight: 600; color: var(--c); }
+.lights-row { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 3px 0; cursor: default; }
+.lights-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; display: inline-block; }
+.lights-val { margin-left: auto; font-size: 11px; color: #8ea4b1; text-align: right; }
+.lights-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; }
+.lights-legend > span { display: inline-flex; align-items: center; gap: 5px; }
+.bo-desc { color: #9eafba; margin-top: 2px; }
+.diag-fold > summary { cursor: pointer; list-style: none; }
+.diag-fold > summary::-webkit-details-marker { display: none; }
+.diag-fold > summary h2::before { content: "▸ "; color: #8ea4b1; }
+.diag-fold[open] > summary h2::before { content: "▾ "; }
 .flow-nb-sub, .flow-nn span { font-size: 12px; color: var(--c); }
 .flow-nn .flow-nn-sub { color: #8ea4b1; font-size: 11px; }
 .flow-na { text-align: center; font-size: 12px; color: #8ea4b1; }

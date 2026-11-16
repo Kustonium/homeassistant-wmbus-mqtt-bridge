@@ -2211,10 +2211,14 @@
     const iy = (i) => itop + i * (IH + IG) + IH / 2;
     let boards = "", lines = "";
     devs.forEach((d, i) => {
+      const lights = boardLightsOf(d.name);
       const info = flowBoardInfo(d, o.stale);
+      const quiet = flowS1Quiet(d, info, lights, o.stale);
+      if (quiet) info.sub = t("flow_s1_quiet", "S1 · last frame {age} ago", {age: fmtInterval(Number(d.telegram_age_s) || 0)});
+      const hasLights = Object.keys(lights).length > 0;
       const y = top + i * (bh + gap), my = y + bh / 2;
       const own = colors.get(d.name) || FLOW_STATE.unknown;
-      const c = info.live ? own : info.warn ? FLOW_STATE.warn : FLOW_STATE.unknown;
+      const c = info.live || quiet ? own : info.warn ? FLOW_STATE.warn : FLOW_STATE.unknown;
       const hl = flowFocused("board", d.name) ? " hl" : "";
       const ey = cy + (n > 1 ? (i / (n - 1) - 0.5) * 40 : 0);
       const path = `M${BX + BW} ${my} C${BX + BW + 40} ${my} ${MX - 40} ${ey} ${MX} ${ey}`;
@@ -2222,17 +2226,19 @@
       lines += info.live
         ? `<path class="flow-line flow-dots${hl}" data-board="${name}" d="${path}" stroke="${c}" stroke-width="${(1.5 + 4.5 * info.rate / maxRate).toFixed(1)}" style="--d:${(2.6 - 1.8 * info.rate / maxRate).toFixed(2)}s"/>`
         : `<path class="flow-line${hl}" data-board="${name}" d="${path}" stroke="${c}" stroke-width="1.2" stroke-dasharray="5 5"/>`;
-      const dead = !info.live && !info.warn;
+      const dead = !info.live && !info.warn && !quiet;
       boards += `<g class="flow-ant${info.live ? " on" : ""}" transform="translate(22 ${my})" stroke="${c}" fill="none" stroke-width="1.6" stroke-linecap="round">
           <line x1="0" y1="-2" x2="0" y2="${compact ? 8 : 12}"/><path class="w1" d="M-5 -5 A7 7 0 0 1 5 -5"/>${compact ? "" : `<path class="w2" d="M-9 -9 A12.7 12.7 0 0 1 9 -9"/>`}
           ${dead ? `<line x1="-9" y1="-11" x2="9" y2="10" stroke="${FLOW_STATE.bad}"/>` : ""}</g>
         <g class="flow-board${hl}" data-board="${name}" data-action="open-workspace" data-ws="esp">
-          <title>${name} · ${escapeHtml(info.sub)}</title>
-          <rect x="${BX}" y="${y}" width="${BW}" height="${bh}" rx="8" fill="${c}" fill-opacity="0.14" stroke="${c}"${info.live ? "" : ` stroke-dasharray="4 3"`}/>
+          <title>${name}${listenModeBands(d.listen_mode) ? ` · ${escapeHtml(listenModeBands(d.listen_mode))}` : ""} · ${escapeHtml(info.sub)}</title>
+          <rect x="${BX}" y="${y}" width="${BW}" height="${bh}" rx="8" fill="${c}" fill-opacity="0.14" stroke="${c}"${info.live || quiet ? "" : ` stroke-dasharray="4 3"`}/>
           ${compact
-            ? `<text class="flow-t" x="${BX + 12}" y="${my}" dominant-baseline="central">${escapeHtml(flowClip(d.name, 14))}<tspan class="flow-s" fill="${c}"> ${info.live ? escapeHtml(info.rateTxt ? info.rateTxt + "/min" : "") : "—"}</tspan></text>`
-            : `<text class="flow-t" x="${BX + 12}" y="${y + 17}" dominant-baseline="central">${escapeHtml(flowClip(d.name, 20))}</text>
+            ? `<text class="flow-t" x="${BX + 12}" y="${my}" dominant-baseline="central">${escapeHtml(flowClip(d.name, hasLights ? 10 : 14))}<tspan class="flow-s" fill="${c}"> ${info.live ? escapeHtml(info.rateTxt ? info.rateTxt + "/min" : "") : "—"}</tspan></text>`
+            : `<text class="flow-t" x="${BX + 12}" y="${y + 17}" dominant-baseline="central">${escapeHtml(flowClip(d.name, listenModeBands(d.listen_mode) ? (hasLights ? 11 : 13) : (hasLights ? 15 : 20)))}${listenModeBands(d.listen_mode)
+                 ? `<tspan class="flow-s2" dx="6">${escapeHtml(listenModeBands(d.listen_mode))}</tspan>` : ""}</text>
                <text class="flow-s" x="${BX + 12}" y="${y + 34}" dominant-baseline="central" fill="${c}">${escapeHtml(flowClip(info.sub, 25))}</text>`}
+          ${lightDotsSvg(lights, BX + BW - 10, compact ? my : y + 17)}
         </g>`;
     });
     const icon = {
@@ -2312,11 +2318,14 @@
         ${lines}${mid}${boards}${mqttBox}
       </svg>`;
     const narrowBoards = devs.map((d) => {
+      const lights = boardLightsOf(d.name);
       const info = flowBoardInfo(d, o.stale);
+      const quiet = flowS1Quiet(d, info, lights, o.stale);
+      if (quiet) info.sub = t("flow_s1_quiet", "S1 · last frame {age} ago", {age: fmtInterval(Number(d.telegram_age_s) || 0)});
       const own = colors.get(d.name) || FLOW_STATE.unknown;
-      const c = info.live ? own : info.warn ? FLOW_STATE.warn : FLOW_STATE.unknown;
-      return `<button type="button" class="flow-nb${info.live ? "" : " off"}${flowFocused("board", d.name) ? " hl" : ""}" data-board="${escapeHtml(d.name)}" data-action="open-workspace" data-ws="esp" style="--c:${c}">
-          <span class="flow-nb-ant${info.live ? " on" : ""}">📡</span><span class="flow-nb-name">${escapeHtml(d.name)}</span><span class="flow-nb-sub">${escapeHtml(info.sub)}</span></button>`;
+      const c = info.live || quiet ? own : info.warn ? FLOW_STATE.warn : FLOW_STATE.unknown;
+      return `<button type="button" class="flow-nb${info.live || quiet ? "" : " off"}${flowFocused("board", d.name) ? " hl" : ""}" data-board="${escapeHtml(d.name)}" data-action="open-workspace" data-ws="esp" style="--c:${c}">
+          <span class="flow-nb-ant${info.live ? " on" : ""}">📡</span><span class="flow-nb-name">${escapeHtml(d.name)}${lightDotsHtml(lights)}</span><span class="flow-nb-sub">${escapeHtml(info.sub)}</span></button>`;
     }).join("");
     const nn = (c, title, l1, l2, attrs) => `<button type="button" class="flow-nn" ${attrs} style="--c:${c}"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(l1)}</span>${l2 ? `<span class="flow-nn-sub">${escapeHtml(l2)}</span>` : ""}</button>`;
     const arrow = (txt) => `<div class="flow-na">↓${txt ? " " + escapeHtml(txt) : ""}</div>`;
@@ -3489,7 +3498,7 @@
       if (!el || el.tagName !== "DETAILS") return;
       const key = el.getAttribute("data-cfg-key");
       if (!key) return;
-      try { localStorage.setItem(key, el.open ? "1" : "0"); } catch (_) {}
+      try { localStorage.setItem(key, el.open ? "1" : (el.getAttribute("data-cfg-closed") || "0")); } catch (_) {}
     }, true);
   }
   function diagConfigSection(cfg, name) {
@@ -3572,7 +3581,8 @@
     let pill = `<span class="pill ok">${escapeHtml(t("bs_online", "online"))}</span>`;
     let note = "";
     if (pending) {
-      if (pending.value === value || (pending.value === "yaml" && lm.source === "yaml")) {
+      const ps = s[pending.key || "listen_mode"] || {};
+      if (pending.value === String(ps.value || "") || (pending.value === "yaml" && ps.source === "yaml")) {
         delete state.bsPending[name];
       } else if (Date.now() - pending.at > 90000) {
         pill = `<span class="pill bad">${escapeHtml(t("bs_no_confirm", "not confirmed"))}</span>`;
@@ -3596,10 +3606,40 @@
     const source = lm.source === "stored"
       ? `${escapeHtml(t("bs_source_stored", "stored on the board"))} · <a href="#" data-action="board-set" data-board="${escapeHtml(name)}" data-key="listen_mode" data-value="yaml">${escapeHtml(t("bs_reset", "back to YAML ({value})", {value: label(String(lm.yaml || "both"))}))}</a>`
       : escapeHtml(t("bs_source_yaml", "from YAML"));
+    // Further settings the board announces (diagnostic_mode, rx_gain, ...):
+    // one row each with what it does, same buttons and "back to YAML".
+    const optLabel = (spec, o) => o === "on" || o === "true" ? t("bs_on", "on")
+      : o === "off" && spec.options.includes("on") ? t("bs_off", "off")
+      : o === "false" ? t("bs_off", "off")
+      : `${o}${spec.unit ? " " + spec.unit : ""}`;
+    // Same order on every board, whatever order the firmware sends: the
+    // settings all boards have first, then the chip's own.
+    const ORDER = ["diagnostic_mode", "publish_rssi", "rx_gain", "long_gfsk_packets", "sx1276_busy_ether_mode"];
+    const rank = (k) => (ORDER.indexOf(k) + 1) || ORDER.length + 1;
+    const extra = Object.keys(s).filter((k) => !["v", "radio", "listen_mode"].includes(k)
+      && s[k] && typeof s[k] === "object" && Array.isArray(s[k].options))
+      .sort((x, y) => rank(x) - rank(y) || x.localeCompare(y)).map((k) => {
+      const spec = s[k];
+      const cur = String(spec.value || "");
+      const btns = spec.options.map((o) => {
+        const on = String(o) === cur;
+        return `<button class="btn${on ? " primary" : ""}" style="padding:4px 10px;font-size:12px;" data-action="board-set"
+          data-board="${escapeHtml(name)}" data-key="${escapeHtml(k)}" data-value="${escapeHtml(String(o))}"
+          ${on || pending ? "disabled" : ""}>${escapeHtml(optLabel(spec, String(o)))}</button>`;
+      }).join("");
+      const src = spec.source === "stored"
+        ? `${escapeHtml(t("bs_source_stored", "stored on the board"))} · <a href="#" data-action="board-set" data-board="${escapeHtml(name)}" data-key="${escapeHtml(k)}" data-value="yaml">${escapeHtml(t("bs_reset", "back to YAML ({value})", {value: optLabel(spec, String(spec.yaml || ""))}))}</a>`
+        : escapeHtml(t("bs_source_yaml", "from YAML"));
+      const desc = t(`bo_${k}`, "");
+      return `<div class="hint" style="margin:10px 0 4px;">${escapeHtml(t(`bs_key_${k}`, k))}: <strong>${escapeHtml(optLabel(spec, cur))}</strong> (${src})</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">${btns}</div>
+        ${desc ? `<div class="bo-desc" style="font-size:11px;margin-top:4px;">${escapeHtml(desc)}</div>` : ""}`;
+    }).join("");
     return `<div class="card board-tile" style="--c:${color}">
       ${head(pill)}
       <div class="hint" style="margin:6px 0;">${escapeHtml(String(s.radio || ""))} · ${escapeHtml(t("bs_listen_mode", "Listen mode"))}: <strong>${escapeHtml(label(value))}</strong> (${source})</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">${buttons}</div>
+      ${extra}
       ${note ? `<p class="hint" style="margin:6px 0 0;">${escapeHtml(note)}</p>` : ""}
       ${hints.length ? `<p class="hint" style="margin:6px 0 0;">${escapeHtml(hints.join(" "))}</p>` : ""}
     </div>`;
@@ -3643,12 +3683,20 @@
         <td>${diagStatusPill(d.status)}</td>
       </tr>`).join("");
 
-    return `${boardTiles(devices)}
-      <section class="section">
-        <div class="section-head">
+    // Folded by default: the status lights above answer "is it fine" at a
+    // glance. It opens by itself when a board needs attention, unless it was
+    // closed while those very boards were the problem.
+    const problems = devices.filter((d) => d.status === "warn" || d.status === "alarm").map((d) => d.name).sort();
+    const sig = "0|" + problems.join(",");
+    let stored = null;
+    try { stored = localStorage.getItem("esp:diag-open"); } catch (_) {}
+    const open = stored === "1" || (problems.length > 0 && stored !== sig);
+    return `${boardTiles(devices)}${lightsSection(devices)}
+      <details class="section diag-fold" data-cfg-key="esp:diag-open" data-cfg-closed="${escapeHtml(sig)}"${open ? " open" : ""}>
+        <summary class="section-head">
           <h2>${escapeHtml(t("diag_section", "Diagnostics"))}</h2>
           <span>${summary}</span>
-        </div>
+        </summary>
         <table>
           <thead>
             <tr>
@@ -3666,11 +3714,9 @@
         <div style="font-size:11px;color:#7a8a96;margin-top:8px;">
           ${escapeHtml(t("diag_gap_caveat", "A gap in the sequence means an event was lost between the ESP and this add-on. It does not identify the radio, MQTT, the network or the subscriber as the cause."))}
         </div>
-      </section>
-      <section class="section">
-        <div class="section-head"><h2>${escapeHtml(t("diag_per_board", "Per board"))}</h2></div>
+        <div class="section-head" style="margin-top:18px;"><h2>${escapeHtml(t("diag_per_board", "Per board"))}</h2></div>
         ${devices.map(diagDeviceCard).join("")}
-      </section>
+      </details>
     `;
   }
 
@@ -4711,7 +4757,8 @@
     if (state.re && !force) return;
     state.reLoading = true;
     try {
-      const response = await fetch("api/radio-env", {cache: "no-store"});
+      const band = state.reBand || "all";
+      const response = await fetch(`api/radio-env?band=${encodeURIComponent(band)}`, {cache: "no-store"});
       state.re = response.ok ? await response.json() : {error: true};
     } catch (_) {
       state.re = {error: true};
@@ -4740,14 +4787,129 @@
     return ranges.join(", ");
   }
 
+  // Listen mode as the boards announce it (t1/c1/both/s1), shown as bands.
+  function listenModeBands(mode) {
+    return {t1: "T1", c1: "C1", both: "T1+C1", s1: "S1"}[String(mode || "").toLowerCase()] || "";
+  }
+
+  // Status lights (board_lights.py): one per question a user can act on,
+  // each remembering the last 24 hours. Numbers are shown only next to a
+  // yellow or red light; a green one needs no reading.
+  const LIGHT_KEYS = ["alive", "radio", "keeps_up", "reception"];
+  const LIGHT_COLOR = {ok: "#2fd3a6", warn: "#f0b03c", bad: "#ff6b6b", none: "#55646f"};
+
+  function boardLightsOf(name) {
+    const d = asArray(((state.data || {}).esp_diag || {}).devices).find((x) => x && x.name === name);
+    return (d && d.lights) || {};
+  }
+
+  function lightLabel(k) {
+    return t(`light_${k}`, {alive: "Alive", radio: "Radio", keeps_up: "Keeps up", reception: "Reception"}[k] || k);
+  }
+
+  function lightClock(epoch) {
+    const n = Number(epoch) || 0;
+    return n > 0 ? new Date(n * 1000).toLocaleTimeString(undefined, {hour: "2-digit", minute: "2-digit"}) : "—";
+  }
+
+  function lightValue(k, l) {
+    if (!l || (l.state !== "warn" && l.state !== "bad")) return "";
+    if (k === "alive") {
+      return l.stale ? t("lv_pulse_stale", "no pulse for {age}", {age: fmtInterval(Number(l.pulse_age_s) || 0)})
+        : t("lv_reboots", "restarts: {n}, last {time}", {n: l.reboots, time: lightClock(l.last_boot)});
+    }
+    if (k === "radio") {
+      if (l.deaf) {
+        return l.silent_s === null || l.silent_s === undefined ? t("lv_radio_never", "no interrupts yet")
+          : t("lv_radio_deaf", "no interrupts for {age}", {age: fmtInterval(Number(l.silent_s) || 0)});
+      }
+      return t("lv_radio_no_data", "interrupts without data: {n} ({pct}%)", {n: l.no_data, pct: l.no_data_pct});
+    }
+    if (k === "keeps_up") {
+      return t("lv_keeps_up", "overruns: {o}, truncated: {tr}, last {time}", {o: l.overrun, tr: l.truncated, time: lightClock(l.last)});
+    }
+    const typ = (v) => (v === null || v === undefined) ? "" : ` (${t("lv_typ", "typical {typ}%", {typ: v})})`;
+    const parts = [];
+    if (l.drop_bad) parts.push(t("lv_drop", "rejected {pct}%", {pct: l.drop_pct}) + typ(l.drop_typ));
+    if (l.sym_bad) parts.push(t("lv_sym", "invalid symbols {pct}%", {pct: l.sym_pct}) + typ(l.sym_typ));
+    return parts.join("; ");
+  }
+
+  function lightTitle(k, l) {
+    const st = (l && l.state) || "none";
+    const v = lightValue(k, l);
+    const tip = st === "none" ? t("light_none_tip", "No data: the board sends no diagnostic summary (diagnostic_mode off).")
+      : t(`light_${k}_tip`, "");
+    const learning = l && l.learning ? t("light_learning", "learning this board's normal (about a day)") : "";
+    return [`${lightLabel(k)}: ${t(`lights_legend_${st}`, st)}`, learning, v, tip].filter(Boolean).join(" · ");
+  }
+
+  // Four small dots for the Panel's board node, right-aligned to x.
+  function lightDotsSvg(lights, x, y) {
+    if (!lights || !Object.keys(lights).length) return "";
+    return `<g class="flow-lights">${LIGHT_KEYS.map((k, i) => {
+      const l = lights[k] || {state: "none"};
+      return `<circle cx="${x - (LIGHT_KEYS.length - 1 - i) * 9}" cy="${y}" r="3.2" fill="${LIGHT_COLOR[l.state] || LIGHT_COLOR.none}"><title>${escapeHtml(lightTitle(k, l))}</title></circle>`;
+    }).join("")}</g>`;
+  }
+
+  function lightDotsHtml(lights) {
+    if (!lights || !Object.keys(lights).length) return "";
+    return `<span class="flow-nb-lights">${LIGHT_KEYS.map((k) => {
+      const l = lights[k] || {state: "none"};
+      return `<i style="background:${LIGHT_COLOR[l.state] || LIGHT_COLOR.none}" title="${escapeHtml(lightTitle(k, l))}"></i>`;
+    }).join("")}</span>`;
+  }
+
+  // An S1 board whose pulse is fine is quiet, not dead: S1 meters send
+  // rarely and on schedules that differ between installations.
+  function flowS1Quiet(d, info, lights, stale) {
+    return !stale && !info.live && String(d.listen_mode || "").toLowerCase() === "s1"
+      && (lights.alive || {}).state === "ok";
+  }
+
+  function lightsSection(devices) {
+    const rows = devices.filter((d) => d && d.lights && Object.keys(d.lights).length)
+      .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+    if (!rows.length) return "";
+    const colors = flowColors();
+    const card = (d) => {
+      const band = listenModeBands(((d.settings || {}).listen_mode || {}).value);
+      return `<div class="card lights-card" style="--c:${colors.get(d.name) || FLOW_STATE.unknown}">
+        <div class="lights-head"><span class="lights-name">${escapeHtml(d.name)}</span>${band ? `<span class="hint">${escapeHtml(band)}</span>` : ""}</div>
+        ${LIGHT_KEYS.map((k) => {
+          const l = d.lights[k] || {state: "none"};
+          const v = lightValue(k, l);
+          return `<div class="lights-row" title="${escapeHtml(lightTitle(k, l))}"><span class="lights-dot" style="background:${LIGHT_COLOR[l.state] || LIGHT_COLOR.none}"></span><span>${escapeHtml(lightLabel(k))}</span>${v ? `<span class="lights-val">${escapeHtml(v)}</span>` : ""}</div>`;
+        }).join("")}
+      </div>`;
+    };
+    const legend = ["ok", "warn", "bad", "none"].map((s) =>
+      `<span><span class="lights-dot" style="background:${LIGHT_COLOR[s]}"></span>${escapeHtml(t(`lights_legend_${s}`, s))}</span>`).join("");
+    return `<section class="section">
+      <div class="section-head"><h2>${escapeHtml(t("lights_title", "Status lights"))}</h2>
+        <span class="hint">${escapeHtml(t("lights_hint", "Last 24 hours. Hover over a light for details."))}</span></div>
+      <div class="lights-grid">${rows.map(card).join("")}</div>
+      <div class="lights-legend hint">${legend}</div>
+    </section>`;
+  }
+
   function radioEnvPage() {
     const x = state.re || {};
     if (x.error) {
       return `<div class="card"><p>${escapeHtml(t("re_load_failed", "Could not load the radio environment."))}</p></div>`;
     }
+    // All bands together (as before) or one band at a time.
+    const band = state.reBand || "all";
+    const bandSwitch = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">${["all", "T1", "C1", "S1"].map((b) =>
+      `<button class="btn${b === band ? " primary" : ""}" style="padding:4px 12px;font-size:12px;" data-action="re-band" data-band="${b}"${b === band ? " disabled" : ""}>${escapeHtml(b === "all" ? t("re_band_all", "All bands") : b)}</button>`).join("")}</div>
+      ${band !== "all" ? `<p class="hint" style="margin:8px 0 0;">${escapeHtml(t("re_band_hint", "Only frames received in {band}, and only the boards that listen to it now. Bands are counted separately from this version on, so typical values for a band need {n} days of the same kind first.", {band, n: x.min_samples || 3}))}</p>` : ""}`;
+    const titleCard = `<div class="card"><h2>${escapeHtml(t("re_title", "Radio environment"))}</h2>
+        <p class="hint">${escapeHtml(t("re_intro", "How busy the air around your boards is, compared with the same hour on earlier days of the same kind. It changes nothing in reception."))}</p>${bandSwitch}</div>`;
     if (x.empty) {
-      return `<div class="card"><h2>${escapeHtml(t("re_title", "Radio environment"))}</h2>
-        <p class="hint">${escapeHtml(t("re_no_data", "No data yet. Counting starts with the first frame from an ESP board."))}</p></div>`;
+      return `<div class="re-page">${titleCard}<div class="card">
+        <p class="hint">${escapeHtml(band === "all" ? t("re_no_data", "No data yet. Counting starts with the first frame from an ESP board.")
+          : t("re_band_no_data", "No frames in {band} yet, and no board listens to it now.", {band}))}</p></div></div>`;
     }
     const dayType = x.day_type === "weekend" ? t("re_weekend", "weekend") : t("re_workday", "working day");
     const verdictPill = {
@@ -4875,7 +5037,7 @@
     const boardRows = asArray(x.boards).map(b => {
       const p = statePill(b);
       return `<tr>
-        <td>${escapeHtml(b.name)}</td>
+        <td>${escapeHtml(b.name)}${listenModeBands(b.listen_mode) ? ` <span class="hint">· ${escapeHtml(listenModeBands(b.listen_mode))}</span>` : ""}</td>
         <td${rkFrames(b.frames_h)}>${escapeHtml(fmt(b.frames_h))}${trendFrames(b)}${b.typ !== null && b.typ !== undefined ? ` <span class="hint">/ ${escapeHtml(String(b.typ))}</span>` : ""}</td>
         <td${rkMeters(b.meters)}>${escapeHtml(fmt(b.meters))}</td>
         <td${rkSym(b.sym_pct)}>${escapeHtml(b.sym_pct === null || b.sym_pct === undefined ? "—" : `${b.sym_pct}%`)}${trendSym(b)}</td>
@@ -4914,8 +5076,7 @@
     </div>`;
 
     return `<div class="re-page">
-      <div class="card"><h2>${escapeHtml(t("re_title", "Radio environment"))}</h2>
-        <p class="hint">${escapeHtml(t("re_intro", "How busy the air around your boards is, compared with the same hour on earlier days of the same kind. It changes nothing in reception."))}</p></div>
+      ${titleCard}
       ${top}${heatCard}${boardsCard}${farCard}
     </div>`;
   }
@@ -6431,6 +6592,16 @@
       return;
     }
 
+    if (action === "re-band") {
+      const band = target.dataset.band || "all";
+      if (band === (state.reBand || "all")) return;
+      state.reBand = band;
+      state.re = null;
+      loadRadioEnv(true);
+      render();
+      return;
+    }
+
     if (action === "board-set") {
       event.preventDefault && event.preventDefault();
       const board = target.dataset.board || "";
@@ -6441,7 +6612,7 @@
       (async () => {
         try {
           await postApi("esp-setting", {board, key, value});
-          state.bsPending[board] = {value, at: Date.now()};
+          state.bsPending[board] = {key, value, at: Date.now()};
           toast(t("bs_pending", "Sent. The board stores it and restarts (about 10 s)."));
         } catch (error) {
           toast(error.message, true);

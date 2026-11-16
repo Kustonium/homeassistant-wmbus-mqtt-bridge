@@ -145,7 +145,7 @@ Verfügbar in **5 Sprachen** (EN/PL/DE/CS/SK) — Umschalter oben rechts.
 
 | Tab | Zweck |
 |---|---|
-| **PANEL** | Dashboard: Live-Fluss von jeder ESP-Platine (eigene Farbe, Antenne, Linienbreite = Frames/min) über MQTT und wmbusmeters zu HA (Knoten anklicken für Details) und eine Kachel je Zähler; Zeigen auf einen Zähler hebt die Platinen hervor, die ihn hören. |
+| **PANEL** | Dashboard: Live-Fluss von jeder ESP-Platine (eigene Farbe, Antenne, Linienbreite = Frames/min) über MQTT und wmbusmeters zu HA (Knoten anklicken für Details) und eine Kachel je Zähler; Zeigen auf einen Zähler hebt die Platinen hervor, die ihn hören. Jede Platine zeigt auch das Band, das sie hört (T1, C1, T1+C1, S1). Die vier Punkte neben dem Platinennamen sind ihre Kontrollleuchten (Tab Platinen). |
 | **ZÄHLER** | Deine konfigurierten Zähler: Wert, letztes Telegramm, **EMPFANG**. |
 | **EMPFANG / SUCHE** | Erkannte Kandidaten + konfigurierte „on air"; hier Zähler hinzufügen/entfernen und angezeigte Werte filtern. |
 | **LOGS / ESP-LOGS** | Runtime-Ereignisse und ESP-Empfänger-Diagnose. |
@@ -494,6 +494,11 @@ einer Platine, eine Wochenendnacht etwa 3000.
   <Platine> weicht ab“.
 - **Dichtekarte** der Woche nach Stunden, **Tabelle pro Platine** und die
   **Stunden, in denen ferne Zähler zu hören sind** (Frames -90 dBm und schwächer).
+- **Bandumschalter:** alle Bänder zusammen oder T1, C1 bzw. S1 einzeln. Eine
+  Bandansicht zeigt nur die Platinen, die dieses Band gerade hören; die
+  Platinentabelle zeigt auch den Empfangsmodus jeder Platine. Bänder werden ab
+  1.6.21 getrennt gezählt, eine Bandansicht sammelt also zuerst eigene
+  typische Werte.
 
 Typische Werte brauchen drei frühere Tage derselben Art. Die Symbolfehlerrate und die Bewertungen
 Kollisionen/Störungen brauchen `diagnostic_mode: normal` am ESP; die
@@ -508,6 +513,26 @@ Oben eine Kachel je Platine mit den Einstellungen, die die Platine vom Add-on
 ihn an die Platine, die ihn im Flash speichert und neu startet (etwa 10 s).
 Eine Platine ohne `<platine>/diag/settings` zeigt eine ausgegraute Kachel mit
 dem Grund. Darunter die Diagnose wie bisher.
+
+**Weitere Einstellungen.** Mit aktueller Firmware schaltet die Kachel auch die
+Diagnose der Platine (`diagnostic_mode`), die Signalstärke je Zähler
+(`publish_rssi`) und je nach Chip die RX-Verstärkung und lange Frames (SX1262)
+oder die volle Funkumgebung (SX1276), jeweils mit einem Satz, was sie bewirkt.
+Das geht auch bei ausgeschalteter Diagnose.
+
+**Kontrollleuchten.** Unter den Platinenkacheln vier Leuchten je Platine, jede
+mit dem Gedächtnis der letzten 24 Stunden: **Lebt** (Puls der Platine alle 60 s
+und Neustarts; ein Neustart pro Tag ist normal), **Funk** (Interrupts vom
+Funkchip; lange keine bei laufender Platine heißt Funk taub), **Hält mit**
+(FIFO-Überläufe und abgeschnittene Frames, verloren, weil der Empfänger nicht
+mitkam) und **Empfang** (verworfene Frames und ungültige 3-aus-6-Symbole im
+Vergleich zu früheren Tagen der Platine). Grün ist normal, gelb schlechter als
+üblich, rot ein Ereignis innerhalb des Tages, grau keine Daten (die Platine
+sendet keine Diagnose-Zusammenfassung, `diagnostic_mode` aus). Zahlen stehen nur
+neben gelben oder roten Leuchten, Details beim Überfahren mit der Maus. Bei einer
+Platine auf S1 ist eine Stunde ohne Frame normal und macht keine Leuchte rot. Das
+Panel zeigt dieselben Leuchten als vier Punkte neben dem Platinennamen. Je
+Platine und Stunde 7 Tage lang in `/data/board_lights_hours.json`; nur Anzeige.
 
 #### Diagnose-Tab
 
