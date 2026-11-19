@@ -425,6 +425,10 @@ def candidate_issue_report(meter_id: str) -> tuple[bool, dict]:
     )
     cand = next((c for c in candidates if normalize_meter_id(c.get("id")) == mid), {})
     driver = str(cand.get("driver") or "").strip() or "unknown"
+    # Where the driver line comes from: wmbusmeters' listen-mode guess for a
+    # candidate, or the driver the user set for a configured meter. Labelled
+    # apart, so the report does not call the user's choice a suggestion.
+    driver_label = "suggested driver (wmbusmeters listen mode)" if driver != "unknown" else "driver"
     mtype = str(cand.get("type") or "").strip() or "unknown"
     manufacturer = str(cand.get("manufacturer") or "").strip() or "unknown"
 
@@ -454,6 +458,7 @@ def candidate_issue_report(meter_id: str) -> tuple[bool, dict]:
             cfg_driver = str(meter_entry.get("type_other") or "").strip()
         if driver == "unknown" and cfg_driver:
             driver = cfg_driver
+            driver_label = "configured driver"
     if mtype == "unknown":
         last_row = next(
             (r for r in read_tsv(METER_LAST_JSON_TSV, ["id", "ts", "json"])
@@ -501,8 +506,12 @@ def candidate_issue_report(meter_id: str) -> tuple[bool, dict]:
         if mfct:
             manufacturer = mfct.group(1)
 
+    # "Analysed with the key", not "decrypted": a key is passed whenever one is
+    # configured, but the telegram may not be encrypted at all (e.g. CI 0x78,
+    # manufacturer data), and the report must not claim a decryption that did
+    # not happen. Whether it did is in the analysis itself.
     analyze_note = (
-        "--- wmbusmeters --analyze output (decrypted with the configured AES key; key not included) ---"
+        "--- wmbusmeters --analyze output (run with the configured AES key; key not included) ---"
         if key
         else "--- wmbusmeters --analyze output ---"
     )
@@ -532,7 +541,7 @@ def candidate_issue_report(meter_id: str) -> tuple[bool, dict]:
         f"telegram=|{raw}|",
         f"manufacturer: {manufacturer}",
         f"type/medium: {mtype}",
-        f"suggested driver: {driver}",
+        f"{driver_label}: {driver}",
         f"wmbusmeters: {wm_version or 'unknown'}",
         f"setup: Home Assistant add-on wMBus MQTT Bridge {ADDON_VERSION} "
         "(frames from an ESP32 radio over MQTT, fed to wmbusmeters as stdin:hex)",
@@ -4670,6 +4679,13 @@ def _esp_diag_payload() -> dict:
             "config": configs.get(name) or {},
             # None: the board has not announced settings (older firmware).
             "settings": board_settings.get(name),
+            # "espnow": the board is behind an ESP-NOW bridge (repeater mode): no MQTT
+            # of its own, so no settings can ever arrive - not an old firmware.
+            "via": str((health_raw.get(name) or {}).get("via") or "") if isinstance(health_raw.get(name), dict) else "",
+            # What the board is, from its pulse - the only description a board
+            # behind a bridge can give (it has no diag/config of its own).
+            "pulse": {k: (health_raw.get(name) or {}).get(k) for k in ("chip", "listen_mode", "bridge", "link_rssi")}
+            if isinstance(health_raw.get(name), dict) else {},
             "clock": clocks.get(name) or {},
             "reasons": reasons,
             "lights": _board_lights_of(name, lights_data, health_raw.get(name), board_settings.get(name),
