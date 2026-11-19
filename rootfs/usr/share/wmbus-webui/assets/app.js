@@ -3568,6 +3568,28 @@
     const color = flowColors().get(name) || FLOW_STATE.unknown;
     const head = (pill) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
         <strong class="board-tile-name"><span class="board-tile-dot"></span>${escapeHtml(name)}</strong>${pill}</div>`;
+    // A board behind an ESP-NOW bridge: chip, listen mode, bridge and link signal
+    // from the pulse the bridge publishes for it. withChip=false on the settings
+    // tile, which already shows the listen mode.
+    const viaLine = (withChip) => {
+      if (d.via !== "espnow") return "";
+      const pu = d.pulse || {};
+      const parts = [];
+      if (withChip && pu.chip) parts.push(escapeHtml(String(pu.chip)));
+      if (withChip && pu.listen_mode) parts.push(escapeHtml(String(pu.listen_mode)));
+      parts.push(`${escapeHtml(t("bs_via_espnow", "behind ESP-NOW bridge"))}${pu.bridge ? ` <strong>${escapeHtml(String(pu.bridge))}</strong>` : ""}`);
+      if (Number.isFinite(Number(pu.link_rssi)) && Number(pu.link_rssi) < 0) parts.push(`${escapeHtml(t("bs_link", "link"))} ${Number(pu.link_rssi)} dBm`);
+      return `<p class="hint" style="margin:6px 0 0;">${parts.join(" · ")}</p>`;
+    };
+    if ((!s || typeof s !== "object" || !s.listen_mode) && d.via === "espnow") {
+      // Behind an ESP-NOW bridge (repeater mode): the board has no MQTT, so it can
+      // never announce settings. Saying "rebuild it" would send the user in circles.
+      return `<div class="card board-tile board-tile-off" style="--c:${color}">
+        ${head(`<span class="pill muted">${escapeHtml(t("bs_via_espnow", "behind ESP-NOW bridge"))}</span>`)}
+        ${viaLine(true)}
+        <p class="hint" style="margin:8px 0 0;">${escapeHtml(t("bs_no_settings_espnow", "This board is behind an ESP-NOW bridge and has not sent its settings through it yet (or runs an older repeater firmware). Rebuild the node and the bridge from the current example to change its settings here."))}</p>
+      </div>`;
+    }
     if (!s || typeof s !== "object" || !s.listen_mode) {
       return `<div class="card board-tile board-tile-off" style="--c:${color}">
         ${head(`<span class="pill muted">${escapeHtml(t("bs_old_fw", "older firmware"))}</span>`)}
@@ -3637,6 +3659,7 @@
     }).join("");
     return `<div class="card board-tile" style="--c:${color}">
       ${head(pill)}
+      ${viaLine(false)}
       <div class="hint" style="margin:6px 0;">${escapeHtml(String(s.radio || ""))} · ${escapeHtml(t("bs_listen_mode", "Listen mode"))}: <strong>${escapeHtml(label(value))}</strong> (${source})</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">${buttons}</div>
       ${extra}
@@ -4598,7 +4621,7 @@
             <p style="font-size:11px;color:#f3c84b;margin:0 0 8px;">⚠️ ${escapeHtml(rm.anon
               ? t("export_report_privacy_anon", "The meter number and common serial/fabrication fields are masked. Review the report before sharing it; the AES key is never included.")
               : t("export_report_privacy", "The telegram contains your meter's serial number. The AES key is never included."))}</p>
-            ${rm.keyUsed ? `<p style="font-size:11px;color:#f3c84b;margin:0 0 8px;">🔓 ${escapeHtml(t("export_report_key_used", "The analysis was decrypted with your configured AES key — the report reveals meter readings, but never the key itself."))}</p>` : ""}
+            ${rm.keyUsed ? `<p style="font-size:11px;color:#f3c84b;margin:0 0 8px;">🔓 ${escapeHtml(t("export_report_key_used", "The analysis ran with your configured AES key — if the telegram is encrypted, the report shows meter readings; the key itself is never included."))}</p>` : ""}
             ${anonToggle}
             ${body}
           </div>
