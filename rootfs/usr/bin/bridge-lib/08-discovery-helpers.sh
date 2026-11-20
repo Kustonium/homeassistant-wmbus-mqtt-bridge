@@ -182,6 +182,9 @@ declare -A METER_EXCLUDE_FIELDS
 # declared here for the same reason. Display only (status_meter_seen).
 # shellcheck disable=SC2034  # read by status_meter_seen (07) and _decode_stage (12)
 declare -A METER_VALUE_FIELD=()
+# The configured name per lowercase configured id (meter_name_to_id).
+# shellcheck disable=SC2034  # read by status_meter_seen (07) and _decode_stage (12)
+declare -A METER_NAME_BY_ID=()
 
 # Has this meter's configuration excluded this field from Discovery?
 # METER_EXCLUDE_FIELDS holds whitespace-separated glob patterns per lowercase

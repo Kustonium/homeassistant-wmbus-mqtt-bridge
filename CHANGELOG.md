@@ -1,3 +1,16 @@
+## 1.6.23
+
+### Added
+- show the meter's own number under a radio module's id (af0a932)
+
+### Fixed
+- do not show a monthly history field as the meter's value (96e3d71)
+- hide the old candidate row of a module meter's own number (3151528)
+- LISTEN-instance preview telegrams of a module-read meter go to the candidate (251422b)
+- a decoded telegram belongs to the meter its name names (0cb6e03)
+- preview of a candidate behind a radio module books its own value (8b2e4e2)
+- match a meter read through a radio module by its name (issue 182 in the stable repository) (5e32852)
+
 ## 1.6.22
 
 ### Added

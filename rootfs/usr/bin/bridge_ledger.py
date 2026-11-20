@@ -1743,7 +1743,7 @@ def jq_number_text(x: float) -> str:
 
 _PRIMARY_CANONICAL = ("total_m3", "total_kwh", "total_wh", "total_energy_consumption_kwh", "total_volume_m3")
 _PRIMARY_LIKE = re.compile(r"(^total|_m3$|kwh|wh$|energy|volume)", re.I)
-_PRIMARY_NOT = re.compile(r"(last_month|last_year|previous_month|previous_year|previous|prev|at_history|"
+_PRIMARY_NOT = re.compile(r"(_ago_|_ago$|last_month|last_year|previous_month|previous_year|previous|prev|at_history|"
                           r"history|historic|billing|due_date|target|backflow|fraud|leak|tamper|alarm|"
                           r"production|tariff|partial|negative|reactive)", re.I)
 _TARIFF_KWH = re.compile(r"^total_energy_consumption_tariff_[0-9]+_kwh$", re.I)
@@ -2157,6 +2157,8 @@ class PreviewDecoder:
             self.running = [r for r in self.running if r[1] != tmp]
             try:
                 if json_line:
+                    note_reported_id(self.values_file, meter, json_id(json_line))
+                    json_line = preview_json_for(meter, json_line)
                     self.log("debug", f"[DIAG] preview one-shot {meter}: decoded JSON")
                     candidate_seen_from_json(self.files, json_line, self.state_file, self.attempts_dir,
                                              self.events_file, self.log, self._route)
@@ -2653,6 +2655,9 @@ class ListenBook:
 
     def json(self, line: str) -> None:
         """11-listen.sh _process_listen_json_line: a decoded telegram of a candidate."""
+        reported = json_id(line)
+        line = preview_json_by_name(line)
+        note_reported_id(self.a.candidate_values_file, json_id(line), reported)
         self.log("debug", f"[DIAG] LISTEN-parse: JSON telegram received: {line[:160]}")
         if self.official_meters() > 0:
             self.candidate_seen_from_json(line)
@@ -3112,10 +3117,72 @@ _ELECTRIC_KEY = re.compile(r"(energy|power|voltage|current).*(_kwh|_wh|_kw|_w|_v
 _INSTANT_METER = re.compile(r"(_kw$|_w$|_m3h$|_l_h$|_c$|_rh$|_bar$)", re.I)
 _INSTANT_NOT = re.compile(r"(average|last_|previous|history|historic|minimum|maximum|min_|max_)", re.I)
 _DEC_ID = re.compile(r'"id":"?([^",}]*)')
+_DEC_NAME = re.compile(r'"name":"([^"]*)"')
+_JSON_ID = re.compile(r'"id":"([^"]*)"')
 
 
 def _first_line(text: str) -> str:
     return text.split("\n", 1)[0]
+
+
+def preview_json_for(meter: str, json_line: str) -> str:
+    """A preview one-shot decodes one candidate, so its result belongs to that
+    candidate even when wmbusmeters reports another "id" (a meter behind a
+    radio module, Engelmann FAW: the candidate is the module's address, "id" the
+    meter's own number). The first, top-level "id" is set to the candidate's."""
+    m = _JSON_ID.search(json_line)
+    if not m or normalize_id(m.group(1)) == normalize_id(meter):
+        return json_line
+    return json_line[:m.start()] + f'"id":"{meter}"' + json_line[m.end():]
+
+
+ALIASES_NAME = "status_meter_aliases.tsv"
+
+
+def note_reported_id(near: str, shown: str, reported: str) -> None:
+    """status_meter_aliases.tsv, next to the file `near`: the meter number a
+    telegram reported ("id" in the JSON) when the add-on shows it under another
+    id - the radio module's address of a meter behind a module (Engelmann FAW).
+    The WebUI prints it under the shown id. Only when the two differ."""
+    shown, reported = normalize_id(shown), normalize_id(reported)
+    if not near or not shown or not reported or shown == reported:
+        return
+    try:
+        tsv_upsert(os.path.join(os.path.dirname(near), ALIASES_NAME), shown, f"{shown}\t{reported}\t{iso_now()}")
+    except OSError:
+        pass
+
+
+def json_id(json_line: str) -> str:
+    """The first, top-level "id" of a decoded JSON line ("" when there is none)."""
+    m = _JSON_ID.search(json_line)
+    return m.group(1) if m else ""
+
+
+def preview_json_by_name(json_line: str) -> str:
+    """A telegram decoded by a candidate's preview config (meter-preview-<id>,
+    name=preview_<id>) belongs to that candidate: preview_json_for with the id
+    from the name. Any other line is returned as it is."""
+    n = _DEC_NAME.search(json_line)
+    m = re.fullmatch(r"preview_([0-9A-Fa-f]{8})", n.group(1)) if n else None
+    return preview_json_for(m.group(1).upper(), json_line) if m else json_line
+
+
+def configured_meter_id(mid: str, name: str, names_by_id: Dict[str, str]) -> str:
+    """meter_configured_id (07-meters.sh): the configured id a decoded telegram
+    belongs to. The telegram's "name" is the name of the meter file wmbusmeters
+    matched, so it says which configured meter produced the JSON even when its
+    "id" is another number: a meter read through a radio module (Engelmann FAW:
+    configured with the module's address, "id" is the water meter's own
+    number), also when both numbers are configured. That configured id when
+    exactly one configured meter carries the name; otherwise the JSON "id"
+    (several meters named alike, e.g. the default "meter", or no name)."""
+    if not name or not names_by_id:
+        return mid
+    if names_by_id.get(mid.lower()) == name:
+        return mid
+    hits = [k for k, v in names_by_id.items() if v == name]
+    return hits[0].upper() if len(hits) == 1 else mid
 
 
 def meter_metadata(line: str) -> List[str]:
@@ -3276,6 +3343,12 @@ class DecodeBook:
             k, sep, v = row.partition("\x1f")
             if sep:
                 self.excludes[k] = v
+        # The configured name per lowercase configured id (configured_meter_id).
+        self.names_by_id: Dict[str, str] = {}
+        for row in (os.environ.get("METER_NAME_LINES") or "").split("\n"):
+            k, sep, v = row.partition("\x1f")
+            if sep and k:
+                self.names_by_id[k] = v
         # value_field: the field shown as the meter's value, per lowercase id.
         self.value_fields: Dict[str, str] = {}
         for row in (os.environ.get("METER_VALUE_LINES") or "").split("\n"):
@@ -3383,6 +3456,9 @@ class DecodeBook:
         mid = normalize_id(raw_id)
         if not _ID8.fullmatch(mid):
             return
+        reported = mid
+        mid = configured_meter_id(mid, name, self.names_by_id)
+        note_reported_id(a.meters_file, mid, reported)
         prev = next((_bash_read_tabs("\t".join(_field(_fields(ln), n) for n in (5, 6, 13)), 3)
                      for ln in _read_lines(a.meters_file) if _first_field(ln) == _b(mid)), None)
         # A field the user unticked (exclude_fields) is not published, so it
@@ -3470,6 +3546,9 @@ class DecodeBook:
             m = _DEC_ID.search(line)
             if m:
                 key = normalize_id(m.group(1)).lower()
+                if key and self.names_by_id:
+                    n = _DEC_NAME.search(line)
+                    key = configured_meter_id(key.upper(), n.group(1) if n else "", self.names_by_id).lower()
                 if key:
                     patterns = self.excludes.get(key, "")
         payload = _b(patterns + "\n" + line)

@@ -292,6 +292,10 @@ class MeterFiles(Tool):
             stat_lines = field_spec_lines(stat, mid, "field_", "static_fields", self.warn) \
                 if stat and stat != "null" else []
             loaded += 1
+            # The name per configured id, for matching a decoded telegram whose
+            # JSON "id" is not the configured address (a radio module on a meter,
+            # e.g. Engelmann FAW: the address is the module's, "id" the meter's).
+            self.emit("name", low, name)
             body = [f"name={name}", f"id={low}"]
             if key:
                 body.append(f"key={key}")

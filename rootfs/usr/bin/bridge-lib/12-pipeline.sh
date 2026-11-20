@@ -312,10 +312,17 @@ _decode_stage() {
       _vf+="${_k}"$'\x1f'"${METER_VALUE_FIELD[${_k}]}"$'\n'
     done
   fi
+  # METER_NAME_BY_ID the same way: the configured name per id (module-read meters).
+  local _nm=""
+  if (( ${#METER_NAME_BY_ID[@]} > 0 )); then
+    for _k in "${!METER_NAME_BY_ID[@]}"; do
+      _nm+="${_k}"$'\x1f'"${METER_NAME_BY_ID[${_k}]}"$'\n'
+    done
+  fi
   # --name=value: a value starting with "-" must not read as an option.
   local _search
   _search="$(_search_state)"
-  until METER_EXCLUDE_LINES="${_excl}" METER_VALUE_LINES="${_vf}" SEARCH_STATE="${_search}" python3 -u "${BRIDGE_LEDGER}" decode \
+  until METER_EXCLUDE_LINES="${_excl}" METER_VALUE_LINES="${_vf}" METER_NAME_LINES="${_nm}" SEARCH_STATE="${_search}" python3 -u "${BRIDGE_LEDGER}" decode \
       --status-json-file="${STATUS_JSON}" --raw-count-file="${STATUS_RAW_COUNT_FILE}" \
       --last-raw-file="${STATUS_LAST_RAW_FILE}" --discovery-flag-file="${STATUS_DISCOVERY_FLAG}" \
       --events-file="${STATUS_EVENTS_FILE}" --meters-file="${STATUS_METERS_FILE}" \

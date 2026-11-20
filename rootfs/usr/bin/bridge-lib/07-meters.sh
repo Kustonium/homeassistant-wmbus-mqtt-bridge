@@ -29,12 +29,38 @@ _select_primary_meter_value() {
         // [ to_entries[]
           | select((.value|type)=="number")
           | select(.key|test("(^total|_m3$|kwh|wh$|energy|volume)";"i"))
-          | select(.key|test("(last_month|last_year|previous_month|previous_year|previous|prev|at_history|history|historic|billing|due_date|target|backflow|fraud|leak|tamper|alarm|production|tariff|partial|negative|reactive)";"i")|not)
+          | select(.key|test("(_ago_|_ago$|last_month|last_year|previous_month|previous_year|previous|prev|at_history|history|historic|billing|due_date|target|backflow|fraud|leak|tamper|alarm|production|tariff|partial|negative|reactive)";"i")|not)
           | [.key, .value]
         ][0]
       )
     | if . == null then empty else @tsv end
   ' <<<"${json_line}" 2>/dev/null | head -n 1 || true
+}
+
+# The configured id a decoded telegram belongs to (configured_meter_id in
+# bridge_ledger.py). The telegram's name is the meter file wmbusmeters matched,
+# so it says which configured meter produced the JSON even when "id" is another
+# number - a meter read through a radio module (Engelmann FAW: configured with
+# the module's address, "id" is the water meter's own number), also when both
+# numbers are configured. That id when exactly one configured meter carries the
+# name, otherwise the JSON "id". Prints the id to use.
+meter_configured_id() {
+  local id="$1" name="$2" _k _hit="" _n=0
+  if [[ -z "${name}" || ${#METER_NAME_BY_ID[@]} -eq 0 || "${METER_NAME_BY_ID[${id,,}]:-}" == "${name}" ]]; then
+    printf '%s' "${id}"
+    return 0
+  fi
+  for _k in "${!METER_NAME_BY_ID[@]}"; do
+    if [[ "${METER_NAME_BY_ID[${_k}]}" == "${name}" ]]; then
+      _hit="${_k}"
+      _n=$((_n + 1))
+    fi
+  done
+  if (( _n == 1 )); then
+    printf '%s' "${_hit^^}"
+  else
+    printf '%s' "${id}"
+  fi
 }
 
 status_meter_seen() {
@@ -49,6 +75,14 @@ status_meter_seen() {
   ) || true
   id="$(normalize_meter_id "${_id_raw}")"
   [[ "${id}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 0
+  local _reported="${id}"
+  id="$(meter_configured_id "${id}" "${name}")"
+  # The number the telegram reported, when it is shown under another id
+  # (note_reported_id in bridge_ledger.py).
+  if [[ "${id}" != "${_reported}" ]]; then
+    _tsv_upsert "$(dirname "${STATUS_METERS_FILE}")/status_meter_aliases.tsv" "${id}" \
+      "${id}"$'\t'"${_reported}"$'\t'"$(date -Iseconds 2>/dev/null || date)"
+  fi
   # The value is picked without the fields the user unticked
   # (exclude_fields): they are not published, so they are not the meter's
   # value either. The last JSON stored below stays whole for the Fields tab.
@@ -119,7 +153,7 @@ status_meter_seen() {
     IFS=$'\t' read -r prev_key prev_val prev_parts < <(awk -F '\t' -v id="${id}" '$1==id {print $5 "\t" $6 "\t" $13; exit}' "${STATUS_METERS_FILE}" 2>/dev/null || true)
     if [[ -n "${prev_key}" ]] && ! field_excluded_for_meter "${id}" "${prev_key}" \
        && printf '%s' "${prev_key}" | grep -qiE '(^total|_m3$|kwh|wh$|energy|volume)' \
-       && ! printf '%s' "${prev_key}" | grep -qiE '(last_month|last_year|previous_month|previous_year|previous|prev|at_history|history|historic|billing|due_date|target|backflow|fraud|leak|tamper|alarm|production|tariff|partial|negative|reactive)'; then
+       && ! printf '%s' "${prev_key}" | grep -qiE '(_ago_|_ago$|last_month|last_year|previous_month|previous_year|previous|prev|at_history|history|historic|billing|due_date|target|backflow|fraud|leak|tamper|alarm|production|tariff|partial|negative|reactive)'; then
       value_key="${prev_key}"
       value="${prev_val}"
       value_parts="${prev_parts}"
@@ -310,6 +344,7 @@ refresh_meter_files() {
       --loglevel="${LOGLEVEL:-}")"
     METER_EXCLUDE_FIELDS=()
     METER_VALUE_FIELD=()
+    METER_NAME_BY_ID=()
     OFFICIAL_METERS_COUNT=0
     EXTERNAL_METERS_COUNT=0
     SEARCH_USING_TEMP_METERS="false"
@@ -322,6 +357,7 @@ refresh_meter_files() {
           esac ;;
         exclude) METER_EXCLUDE_FIELDS["${_a}"]="${_b}" ;;
         value) METER_VALUE_FIELD["${_a}"]="${_b}" ;;
+        name) METER_NAME_BY_ID["${_a}"]="${_b}" ;;
         search) write_search_status "${_a}" "${_b}" ;;
         rc) _rc="${_a}" ;;
       esac
@@ -346,6 +382,7 @@ _refresh_meter_files_bash() {
   EXTERNAL_METERS_COUNT=0
 
   METER_EXCLUDE_FIELDS=()
+  METER_NAME_BY_ID=()
   OFFICIAL_METERS_COUNT=0
   local configured_count=0
   if [[ -f "${OPTIONS_JSON}" ]] && jq -e '.meters and (.meters|length>0)' "${OPTIONS_JSON}" >/dev/null 2>&1; then
@@ -426,6 +463,7 @@ _refresh_meter_files_bash() {
       if [[ "${value_field}" =~ ^[A-Za-z0-9_]+$ ]]; then
         METER_VALUE_FIELD["${mid,,}"]="${value_field}"
       fi
+      METER_NAME_BY_ID["${mid,,}"]="${friendly_name}"
 
       # Built before the redirect below: build_calculated_field_lines warns
       # about malformed entries, and a warning emitted inside the block would
