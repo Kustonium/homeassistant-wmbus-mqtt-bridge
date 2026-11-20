@@ -831,6 +831,15 @@
   // Shows a restart action only when the backend explicitly says the running
   // bridge has not applied current options. Otherwise pending meters are simply
   // waiting for their first decoded telegram after the soft reload.
+  // The number a telegram reported when the meter is shown under another id:
+  // a meter behind a radio module (Engelmann FAW) is configured and listed by
+  // the module's address, while the meter itself has its own number.
+  function reportedIdNote(row) {
+    const rep = String((row && row.reported_id) || "").trim();
+    if (!rep) return "";
+    return `<div style="font-size:10px;color:#8ea4b1;margin-top:2px;">${escapeHtml(t("reported_id_note", "meter no. {id}", {id: rep}))}</div>`;
+  }
+
   function pendingMeters() {
     const data = state.data || {};
     if (Array.isArray(data.pending_meters)) {
@@ -894,7 +903,7 @@
 
     return `
       <tr>
-        <td><strong>${escapeHtml(mid)}</strong><div style="font-size:10px;color:#8ea4b1;margin-top:2px;">${escapeHtml(stateText)}</div></td>
+        <td><strong>${escapeHtml(mid)}</strong>${reportedIdNote(row)}<div style="font-size:10px;color:#8ea4b1;margin-top:2px;">${escapeHtml(stateText)}</div></td>
         <td style="color:#9eafba;font-size:12px;">${escapeHtml(driver)}</td>
         <td>${mfrCompact ? `<span style="font-size:12px;color:#9eafba;" title="${escapeHtml(mfrRaw)}">${escapeHtml(mfrCompact)}</span>` : `<span style="color:var(--muted);">—</span>`}</td>
         <td>${encBadge(effectiveEnc, note)}</td>
@@ -2543,7 +2552,7 @@
                   : `<span style="color:var(--muted);">—</span>`;
                 return `
                   <tr>
-                    <td><strong>${escapeHtml(id)}</strong>${aesLockBadge(row)}</td>
+                    <td><strong>${escapeHtml(id)}</strong>${aesLockBadge(row)}${reportedIdNote(row)}</td>
                     <td><span style="margin-right:5px;font-size:15px;vertical-align:middle;">${mIcon}</span>${escapeHtml(row.name || row.id || "-")}</td>
                     <td>${escapeHtml(row.driver || "-")}${driverDeprecationPill(row)}</td>
                     <td>${mfrCell}</td>
@@ -2705,7 +2714,7 @@
                   : `<span style="color:var(--muted);">—</span>`;
                 return groupDivider(_arr[_i - 1], row) + `
                   <tr data-value="${escapeHtml(previewVal)}" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(driver)}" data-media="${escapeHtml(mc)}" data-manufacturer="${escapeHtml(mfrRaw)}">
-                    <td><strong>${escapeHtml(id)}</strong></td>
+                    <td><strong>${escapeHtml(id)}</strong>${reportedIdNote(row)}</td>
                     <td>${escapeHtml(driver)}${xdrvMatchPill(id)}</td>
                     <td style="color:#9eafba;font-size:12px;">${escapeHtml(row.type || "-")}</td>
                     <td><span class="candidate-medium">${mediaIconHtml(row.type || "", driver)}<span>${escapeHtml(mediaLabel)}</span></span></td>
@@ -2923,7 +2932,7 @@
                 return `
                   <tr data-value="${escapeHtml(dataVal)}" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(row.driver || "")}">
                     <td style="text-align:center;">${selectCell}</td>
-                    <td><strong>${escapeHtml(id)}</strong>${aesLockBadge(row)}</td>
+                    <td><strong>${escapeHtml(id)}</strong>${aesLockBadge(row)}${reportedIdNote(row)}</td>
                     <td><span style="margin-right:5px;font-size:15px;vertical-align:middle;">${mIcon}</span>${escapeHtml(row.name || id || "-")}</td>
                     <td>${escapeHtml(row.driver || "-")}</td>
                     <td>${mfrCell}</td>
@@ -3097,7 +3106,7 @@
               .map(
                 (id) => `
                   <tr>
-                    <td><strong>${escapeHtml(id)}</strong></td>
+                    <td><strong>${escapeHtml(id)}</strong>${reportedIdNote(row)}</td>
                     <td><button class="btn" data-action="unignore" data-id="${escapeHtml(id)}">${escapeHtml(t("restore", "Restore"))}</button></td>
                   </tr>
                 `,

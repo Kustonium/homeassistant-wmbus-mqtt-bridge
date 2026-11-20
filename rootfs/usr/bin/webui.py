@@ -73,6 +73,10 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "share" / "wmbus-webui"
 STATUS_JSON = RUNTIME / "status.json"
 METERS_TSV = RUNTIME / "status_meters.tsv"
 CANDIDATES_TSV = RUNTIME / "status_candidates.tsv"
+# Shown id -> the number the telegram reported, for a meter behind a radio
+# module (Engelmann FAW: shown under the module's address). bridge_ledger.py
+# note_reported_id writes it; the WebUI prints it under the id.
+METER_ALIASES_TSV = RUNTIME / "status_meter_aliases.tsv"
 EVENTS_TSV = RUNTIME / "status_events.tsv"
 IGNORED_CANDIDATES = BASE / "status_ignored_candidates.tsv"
 SEARCH_CANDIDATES_TSV = BASE / "search_candidates.tsv"
@@ -2053,6 +2057,18 @@ def _remove_id_from_tsv(path: Path, meter_id: str) -> None:
         pass  # non-fatal — worst case the row disappears after restart
 
 
+def module_meter_ghost_ids(candidates: list, *listed: list) -> set:
+    """Candidate ids that are only the reported number of a meter behind a
+    radio module (see the comment where it is used): a candidate row without a manufacturer
+    (registered from decoded JSON, never from its own LISTEN block) whose id is
+    the reported_id of a candidate, meter or pending meter listed next to it."""
+    reported = {normalize_meter_id(r.get("reported_id")) for rows in (candidates, *listed)
+                for r in rows if normalize_meter_id(r.get("reported_id"))}
+    return {normalize_meter_id(c.get("id")) for c in candidates
+            if normalize_meter_id(c.get("id")) in reported and not c.get("reported_id")
+            and not str(c.get("manufacturer") or "").strip()}
+
+
 def _cleanup_preview_cache(meter_id: str, remove_preview_file: bool = True) -> None:
     meter_id = normalize_meter_id(meter_id)
     if not VALID_ID_RE.match(meter_id):
@@ -3369,6 +3385,15 @@ def state(include_ignored: bool = False) -> dict:
     )
     # Attach the last full decoded JSON (string, parsed client-side) so the
     # meters view can expand a row into the list of published fields.
+    reported_by_id = {
+        normalize_meter_id(r.get("id")): normalize_meter_id(r.get("reported"))
+        for r in read_tsv(METER_ALIASES_TSV, ["id", "reported", "ts"])
+        if normalize_meter_id(r.get("id")) and normalize_meter_id(r.get("reported"))
+    }
+    for m in meters:
+        rep = reported_by_id.get(normalize_meter_id(m.get("id")), "")
+        if rep and rep != normalize_meter_id(m.get("id")):
+            m["reported_id"] = rep
     last_json_rows = read_tsv(METER_LAST_JSON_TSV, ["id", "ts", "json"])
     last_json_by_id = {
         normalize_meter_id(r.get("id")): r
@@ -3871,6 +3896,7 @@ def state(include_ignored: bool = False) -> dict:
                 driver = candidate.get("driver") or driver or "auto"
             pending_meters.append({
                 "meter_id": mid,
+                "reported_id": reported_by_id.get(mid, "") if reported_by_id.get(mid, "") != mid else "",
                 "type": opt_type,
                 "type_other": opt_type_other,
                 "driver": driver,
@@ -3967,6 +3993,24 @@ def state(include_ignored: bool = False) -> dict:
         return 0 if (seen_15m > 0 or seen_60m > 0) else 1
     for c in candidates:
         c["recent_silent"] = "true" if _silent(c) else "false"
+        rep = reported_by_id.get(normalize_meter_id(c.get("id")), "")
+        if rep and rep != normalize_meter_id(c.get("id")):
+            c["reported_id"] = rep
+    # A meter behind a radio module (Engelmann FAW) is listed under the
+    # module's address with its own number as a note (reported_id). Older
+    # versions also registered that number as a candidate from the decoded
+    # JSON and gave it a preview config, which keeps matching the module's
+    # telegrams (wmbusmeters matches any address in a telegram) and keeps the
+    # row alive. Such a row - known only from JSON (no manufacturer from a
+    # LISTEN block) and the reported number of a listed row - is not shown,
+    # and its preview is removed. A meter that transmits by itself gets a
+    # manufacturer from its own LISTEN block and a new preview on its next
+    # telegram, so it comes back as a candidate.
+    _ghosts = module_meter_ghost_ids(candidates, meters, pending_meters)
+    for gid in _ghosts:
+        if (PREVIEW_METER_DIR / f"meter-preview-{gid}").exists():
+            _cleanup_preview_cache(gid)
+    candidates = [c for c in candidates if normalize_meter_id(c.get("id")) not in _ghosts]
     candidates = sorted(
         candidates,
         key=lambda c: (
