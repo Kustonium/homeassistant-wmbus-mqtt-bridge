@@ -3106,7 +3106,7 @@
               .map(
                 (id) => `
                   <tr>
-                    <td><strong>${escapeHtml(id)}</strong>${reportedIdNote(row)}</td>
+                    <td><strong>${escapeHtml(id)}</strong></td>
                     <td><button class="btn" data-action="unignore" data-id="${escapeHtml(id)}">${escapeHtml(t("restore", "Restore"))}</button></td>
                   </tr>
                 `,
