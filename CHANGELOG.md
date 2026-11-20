@@ -1,3 +1,8 @@
+## 1.6.24
+
+### Fixed
+- Received page did not load with ignored candidates (aa90b54)
+
 ## 1.6.23
 
 ### Added
