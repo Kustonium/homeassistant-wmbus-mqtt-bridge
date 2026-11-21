@@ -172,6 +172,18 @@ jobs:
           # docs/ tracks dev EXCEPT the dev-internal session handoff (not user docs).
           rm -f docs/CLAUDE_HANDOFF.md
 
+          # docker/ arrives from dev pointing at the dev image. Stable Docker users
+          # must get the stable multi-arch image published by build.yaml (job
+          # "manifest"), not the dev channel.
+          if grep -rq 'wmbus_mqtt_bridge-dev' docker/; then
+            grep -rl 'wmbus_mqtt_bridge-dev' docker/ | xargs sed -i -E 's#ghcr\.io/kustonium/wmbus_mqtt_bridge-dev:[A-Za-z0-9._-]+#ghcr.io/kustonium/wmbus_mqtt_bridge:latest#g'
+          fi
+          if grep -rq 'wmbus_mqtt_bridge-dev' docker/; then
+            echo "ERROR: docker/ still references the dev image after the rewrite:"
+            grep -rn 'wmbus_mqtt_bridge-dev' docker/
+            exit 1
+          fi
+
           # Strip dev-identity blocks from the synced README. The dev README
           # carries a "DEV / maintainer only" banner between DEV-ONLY markers;
           # copied verbatim it would tell stable users that stable itself is a

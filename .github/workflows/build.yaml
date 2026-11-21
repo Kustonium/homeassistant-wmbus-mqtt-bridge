@@ -208,3 +208,53 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Job 3: multi-arch image for Docker standalone ───────────────────────────
+  # Combines the amd64 + aarch64 images just pushed by `build` into one tag
+  # without the {arch} prefix, so `docker compose pull` picks the host's
+  # architecture by itself (README, Docker standalone). Same two architectures
+  # as the add-on, no more. The HA Supervisor path keeps using config.yaml's
+  # per-arch `image:` untouched. Before this job stable published per-arch tags
+  # only, and docker/examples/docker-compose.yml (synced from dev) pointed at
+  # the dev image, so Docker users ran the dev channel without knowing it.
+  manifest:
+    name: Publish multi-arch image (Docker standalone)
+    needs: [preflight, build]
+    if: needs.preflight.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Prepare build variables
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+          VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' config.yaml | head -n1)"
+          if [[ -z "${VER}" ]]; then
+            echo "ERROR: cannot read version from config.yaml"
+            exit 1
+          fi
+          echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: Kustonium
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Create and push multi-arch image
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC_AMD64="ghcr.io/${OWNER_LC}/amd64-addon-wmbus_mqtt_bridge:${ADDON_VERSION}"
+          SRC_ARM64="ghcr.io/${OWNER_LC}/aarch64-addon-wmbus_mqtt_bridge:${ADDON_VERSION}"
+          DST="ghcr.io/${OWNER_LC}/wmbus_mqtt_bridge"
+          docker buildx imagetools create             -t "${DST}:latest"             -t "${DST}:${ADDON_VERSION}"             "${SRC_AMD64}"             "${SRC_ARM64}"
+          echo "----- verifying pushed image -----"
+          docker buildx imagetools inspect "${DST}:${ADDON_VERSION}"
