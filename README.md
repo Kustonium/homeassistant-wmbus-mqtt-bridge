@@ -328,6 +328,10 @@ mosquitto_sub -h localhost -p 1883 -t 'wmbusmeters/#' -v
 - wmbusmeters — https://github.com/wmbusmeters/wmbusmeters (GPL-3.0)
 - wmbusmeters-ha-addon — https://github.com/wmbusmeters/wmbusmeters-ha-addon (GPL-3.0)
 
+### Support
+
+Maintained in spare time, best effort, not a business and without warranty: [SUPPORT.md](SUPPORT.md) · [po polsku](SUPPORT_PL.md).
+
 ### Contributing
 
 How a change gets in, how to run the tests and the WebUI locally, and what a good report for a wrongly decoded meter contains: [CONTRIBUTING.md](CONTRIBUTING.md) · [po polsku](CONTRIBUTING_PL.md).

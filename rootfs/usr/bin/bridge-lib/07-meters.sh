@@ -341,19 +341,23 @@ refresh_meter_files() {
       --kpl-sanxing-file="${METER_KPL_SANXING_FILE:-}" \
       --external-meter-dir="${EXTERNAL_METER_DIR:-}" \
       --external-drivers-status="${STATUS_CUSTOM_DRIVERS_FILE:-}" \
+      --vendor-meter-dir="${VENDOR_METER_DIR:-}" \
+      --vendor-status="${STATUS_VENDOR_FORMATS_FILE:-}" \
+      --vendor-formats-dir="${VENDOR_FORMATS_DIR:-}" \
       --loglevel="${LOGLEVEL:-}")"
     METER_EXCLUDE_FIELDS=()
     METER_VALUE_FIELD=()
     METER_NAME_BY_ID=()
     OFFICIAL_METERS_COUNT=0
     EXTERNAL_METERS_COUNT=0
+    VENDOR_METERS_COUNT=0
     SEARCH_USING_TEMP_METERS="false"
     while IFS=$'\x1f' read -r _k _a _b; do
       _b="${_b//$'\x1e'/$'\n'}"
       case "${_k}" in
         set)
           case "${_a}" in
-            OFFICIAL_METERS_COUNT|EXTERNAL_METERS_COUNT|SEARCH_USING_TEMP_METERS|SEARCH_TEMP_METERS_LOADED) printf -v "${_a}" '%s' "${_b}" ;;
+            OFFICIAL_METERS_COUNT|EXTERNAL_METERS_COUNT|VENDOR_METERS_COUNT|SEARCH_USING_TEMP_METERS|SEARCH_TEMP_METERS_LOADED) printf -v "${_a}" '%s' "${_b}" ;;
           esac ;;
         exclude) METER_EXCLUDE_FIELDS["${_a}"]="${_b}" ;;
         value) METER_VALUE_FIELD["${_a}"]="${_b}" ;;
@@ -380,6 +384,10 @@ _refresh_meter_files_bash() {
     rm -f "${EXTERNAL_METER_DIR}/meter-"* 2>/dev/null || true
   fi
   EXTERNAL_METERS_COUNT=0
+  if [[ -n "${VENDOR_METER_DIR:-}" ]]; then
+    rm -f "${VENDOR_METER_DIR}/meter-"* 2>/dev/null || true
+  fi
+  VENDOR_METERS_COUNT=0
 
   METER_EXCLUDE_FIELDS=()
   METER_NAME_BY_ID=()
@@ -443,6 +451,10 @@ _refresh_meter_files_bash() {
 
       if [[ "${driver}" == external_* ]]; then
         warn "meter '${friendly_name}' uses external driver ${driver}, but external drivers need the Python meter writer -> skipping"
+        continue
+      fi
+      if [[ "${driver}" == vendor_* ]]; then
+        warn "meter '${friendly_name}' uses vendor format ${driver}, but vendor formats need the Python meter writer -> skipping"
         continue
       fi
 

@@ -383,7 +383,8 @@ wmbus/<board>/rssi/<meter_id>    payload: -52
 
 The bridge caches that value per meter **and** per board, and joins it onto the
 decoded telegram as `rssi_<board>_dbm`. Each board therefore gets its own
-signal-strength entity for the same meter:
+signal-strength entity for the same meter. The entities are filed under the
+device's **Diagnostic** section and are enabled:
 
 ```json
 {
@@ -430,7 +431,7 @@ created.
 | `id` | str | yes | Your meter label, used in MQTT Discovery names and generated configuration |
 | `meter_id` | str | yes | The meter serial number (HEX, from LISTEN) |
 | `type` | str | yes | **The wmbusmeters driver name** (e.g. `hydrodigit`, `amiplus`, `izarv2`) **or `auto`/`other`**. A free string — wmbusmeters validates the driver at decode time (deliberately not an enum, so new drivers are never rejected). |
-| `type_other` | str? | when `type=other` | Custom driver name |
+| `type_other` | str? | when `type=other` | Custom driver name. `vendor_<format>` selects a format the add-on decodes itself because wmbusmeters has no driver for it yet; today `vendor_bmeters_hydroclima_v34` (B METERS Hydroclima allocators, version 0x34). When a wmbusmeters update learns the format, the add-on switches such meters to wmbusmeters on its own. `calculated_fields` and `static_fields` do not apply to these meters. |
 | `key` | str? | when encrypted | 32-char AES key (HEX) |
 | `exclude_fields` | str? | no | Glob patterns, comma- or space-separated, for decoded fields that should get **no** Home Assistant entity — e.g. `consumption_at_history_*, history_*_date`. Empty publishes every field. |
 | `value_field` | str? | no | The decoded field shown as the meter's value on the Meters tab (e.g. `total_m3`), picked in the Fields panel. Empty, or a field the telegram does not carry as a number, uses the automatic choice. Display only: entities and MQTT do not change. |

@@ -21,7 +21,8 @@ meter), run one after the other on every pipeline start.
 What bash keeps in shell variables, or still runs itself, comes back on
 stdout, one line each, fields separated by 0x1F (which `read` keeps, so
 empty fields survive; a newline in a value travels as 0x1E):
-- refresh: "set VAR VALUE" (OFFICIAL_METERS_COUNT, and SEARCH_USING_TEMP_METERS
+- refresh: "set VAR VALUE" (OFFICIAL_METERS_COUNT, EXTERNAL_METERS_COUNT,
+  VENDOR_METERS_COUNT, and SEARCH_USING_TEMP_METERS
   and SEARCH_TEMP_METERS_LOADED when SEARCH loads its meters; the shell resets
   the count, the mode and the patterns first), "exclude ID PATTERNS" (METER_EXCLUDE_FIELDS),
   "search PHASE REASON" (write_search_status, which reads the SEARCH
@@ -44,11 +45,13 @@ import tempfile
 from typing import Any, Dict, List
 
 import bridge_ledger as bl
+import vendor_formats as vf
 from wmbus_mbus import field_spec_lines
 
 SEP = "\x1f"
 NEWLINE = "\x1e"
 EXTERNAL_PREFIX = "external_"
+VENDOR_PREFIX = vf.PREFIX
 # value_field: a decoded field name, as wmbusmeters writes them.
 VALUE_FIELD_RE = re.compile(r"[A-Za-z0-9_]+")
 
@@ -150,7 +153,8 @@ class MeterFiles(Tool):
 
     def run(self) -> int:
         a = self.a
-        dirs = [a.meter_dir] + ([a.external_meter_dir] if a.external_meter_dir else [])
+        dirs = [a.meter_dir] + ([a.external_meter_dir] if a.external_meter_dir else []) \
+            + ([a.vendor_meter_dir] if a.vendor_meter_dir else [])
         for d in dirs:
             for path in glob.glob(os.path.join(d, "meter-*")):
                 try:
@@ -158,6 +162,7 @@ class MeterFiles(Tool):
                 except OSError:
                     pass
         self.external_count = 0
+        self.vendor_count = 0
         opts = self.options() if os.path.isfile(a.options) else None
         meters = opts.get("meters") if isinstance(opts, dict) else None
         configured = 0
@@ -197,6 +202,7 @@ class MeterFiles(Tool):
                 self.emit("search", "listen", "configured_meters_invalid")
         self.emit("set", "OFFICIAL_METERS_COUNT", str(count))
         self.emit("set", "EXTERNAL_METERS_COUNT", str(self.external_count))
+        self.emit("set", "VENDOR_METERS_COUNT", str(self.vendor_count))
         self.emit("rc", "0")
         return 0
 
@@ -224,6 +230,8 @@ class MeterFiles(Tool):
         excludes: Dict[str, str] = {}
         loaded = 0
         external = 0
+        vendor = 0
+        vendor_status = vf.read_status(self.a.vendor_status) if self.a.vendor_status else {}
         ext_enabled, ext_names = (False, {})
         if self.a.external_drivers_status:
             ext_enabled, ext_names = accepted_external_drivers(self.a.external_drivers_status)
@@ -281,6 +289,21 @@ class MeterFiles(Tool):
                 if skip:
                     self.warn(f"meter '{name}' id={mid} uses external driver {driver}, but {skip} -> skipping")
                     continue
+            # A vendor_* format (vendor_formats.py) is decoded by the add-on
+            # itself, never by wmbusmeters - unless wmbusmeters has learnt it
+            # meanwhile: then the meter is written for wmbusmeters with the
+            # driver it picked for the format's probe telegram.
+            is_vendor = driver.startswith(VENDOR_PREFIX)
+            if is_vendor:
+                where, why = vf.route(driver, vendor_status, self.a.vendor_formats_dir) \
+                    if self.a.vendor_meter_dir else ("skip", "vendor formats are not available here")
+                if where == "skip":
+                    self.warn(f"meter '{name}' id={mid} uses vendor format {driver}, but {why} -> skipping")
+                    continue
+                if where == "upstream":
+                    self.log("info", f"meter: {name} id={mid}: wmbusmeters now decodes {driver} itself "
+                                     f"(driver {why}), the add-on's own decoder is not used")
+                    driver, is_vendor = why, False
             low = mid.lower()
             if excl and excl != "null":
                 excludes[low] = excl
@@ -306,14 +329,19 @@ class MeterFiles(Tool):
                 external += 1
                 os.makedirs(self.a.external_meter_dir, exist_ok=True)
                 target = os.path.join(self.a.external_meter_dir, "meter-%04d" % external)
+            elif is_vendor:
+                vendor += 1
+                os.makedirs(self.a.vendor_meter_dir, exist_ok=True)
+                target = os.path.join(self.a.vendor_meter_dir, "meter-%04d" % vendor)
             else:
-                target = os.path.join(self.a.meter_dir, "meter-%04d" % (loaded - external))
+                target = os.path.join(self.a.meter_dir, "meter-%04d" % (loaded - external - vendor))
             self.write(target, "".join(ln + "\n" for ln in body))
             if excludes.get(low):
                 self.log("info", f"meter: {name} id={mid} driver={driver} exclude_fields={excludes[low]}")
             else:
                 self.log("info", f"meter: {name} id={mid} driver={driver}")
         self.external_count = external
+        self.vendor_count = vendor
         return loaded
 
     @staticmethod
@@ -465,7 +493,8 @@ def main(argv=None) -> int:
     for name in ("options", "meter-dir", "search-candidates-file"):
         r.add_argument(f"--{name}", required=True)
     for name in ("search-mode", "search-expected", "search-tolerance", "loglevel", "kpl-sanxing-file",
-                 "external-meter-dir", "external-drivers-status"):
+                 "external-meter-dir", "external-drivers-status",
+                 "vendor-meter-dir", "vendor-status", "vendor-formats-dir"):
         r.add_argument(f"--{name}", default="")
     p = sub.add_parser("previews", help="sync_candidate_autodecode_files + prune_official_meter_previews")
     for name in ("candidates-file", "recent-raw-file", "preview-state-file", "meter-dir", "preview-meter-dir",

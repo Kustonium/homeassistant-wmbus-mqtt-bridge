@@ -4148,10 +4148,13 @@
   // the wild: options.json kept type=auto after choosing istawater). With
   // the choice in state, every rebuild renders the user's current pick.
   function driverPickerHtml(prefill, hiddenId, hiddenName) {
-    // Accepted external drivers join the catalog in a group of their own.
+    // Accepted external drivers join the catalog in a group of their own, and
+    // so do the vendor formats the add-on decodes itself (vendor_formats.py).
     const extGroup = t("xdrv_picker_group", "External (uploaded)");
+    const vendGroup = t("vendor_picker_group", "Decoded by the add-on");
     const drivers = (state.drivers || []).concat(
-      asArray(state.data?.external_drivers).map(n => ({driver: n, type: extGroup})));
+      asArray(state.data?.external_drivers).map(n => ({driver: n, type: extGroup})),
+      asArray(state.data?.vendor_formats).map(v => ({driver: v && v.driver, type: vendGroup})));
     const known = new Set(drivers.map(d => d.driver));
     // prefill === "" means "custom mode, empty text" (mid-typing across a
     // re-render); other empty-ish/unknown prefills fall back to "auto".

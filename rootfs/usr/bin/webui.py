@@ -672,6 +672,16 @@ def _decode_with_driver(raw: str, driver: str, mid: str, key: str) -> dict | Non
     raw = re.sub(r"\s+", "", raw or "")
     if not re.fullmatch(r"[0-9A-Fa-f]+", raw or ""):
         return None
+    if driver.startswith(_vf.PREFIX):
+        # Decoded by the add-on itself (vendor_formats.py), not wmbusmeters.
+        fmt = next((f for f in usable_vendor_formats() if f.driver == driver), None)
+        if fmt is None:
+            return None
+        # A short frame needs a long frame of the meter before it: the stored
+        # frames of this id first, then the one asked about.
+        cid = normalize_meter_id(mid)
+        older = [r for r in _raw_history({cid}).get(cid, []) if r != raw]
+        return _vendor_decode(fmt, older + [raw])
     mid_lc = mid.lower()
     key_arg = key if key else "NOKEY"
     head = [WMBUSMETERS_BIN, "--silent", "--format=json"]
@@ -752,6 +762,105 @@ EXT_DRIVERS_DIR = BASE / "external" / "etc" / "wmbusmeters.drivers.d"
 STATUS_CUSTOM_DRIVERS_FILE = RUNTIME / "status_custom_drivers.json"
 STATUS_EXTERNAL_INSTANCE_FILE = RUNTIME / "status_external_instance.json"
 _DRIVERS_LOCK = threading.Lock()
+
+# Vendor formats (vendor_formats.py): manufacturer blocks the add-on decodes
+# itself. The WebUI offers them in the driver picker, suggests one for a
+# candidate whose frames match and decodes with one in a comparison.
+import vendor_formats as _vf  # noqa: E402
+
+STATUS_VENDOR_FORMATS_FILE = RUNTIME / "status_vendor_formats.json"
+VENDOR_FORMATS_DIR = os.environ.get("VENDOR_FORMATS_DIR", _vf.FORMATS_DIR)
+_VENDOR_CACHE: dict = {"key": None, "formats": []}
+
+
+def usable_vendor_formats() -> list:
+    """The formats the add-on decodes itself: they passed their own tests and
+    wmbusmeters does not decode them (vendor_formats.py upstream, run at
+    start). Without that status file every loadable file counts. Reloaded
+    when the status file changes."""
+    try:
+        mtime = STATUS_VENDOR_FORMATS_FILE.stat().st_mtime
+    except OSError:
+        mtime = None
+    key = (mtime, VENDOR_FORMATS_DIR)
+    if _VENDOR_CACHE["key"] != key:
+        status = _vf.read_status(str(STATUS_VENDOR_FORMATS_FILE))
+        out = []
+        for fmt in _vf.load_formats(VENDOR_FORMATS_DIR):
+            row = status.get(fmt.name)
+            if row is not None and (not row.get("ok") or row.get("upstream_driver")):
+                continue
+            out.append(fmt)
+        _VENDOR_CACHE.update(key=key, formats=out)
+    return _VENDOR_CACHE["formats"]
+
+
+def vendor_format_drivers() -> list:
+    """[{driver, title}] of usable_vendor_formats, for the driver picker."""
+    return [{"driver": f.driver, "title": f.title} for f in usable_vendor_formats()]
+
+
+def _raw_history(ids: set) -> dict:
+    """{id: [raw, ...]} oldest first, without repeats: the stored frames of the
+    given ids (candidate rows and the RAW ring)."""
+    rows = [(str(r.get("ts") or ""), str(r.get("raw") or ""))
+            for r in read_tsv(CANDIDATE_RAW_TSV, ["id", "ts", "raw_len", "raw"])]
+    rows += [(str(r.get("ts") or ""), str(r.get("raw") or ""))
+             for r in read_tsv(RECENT_RAW_TSV, ["ts", "raw_len", "raw"])[-500:]]
+    out: dict = {}
+    for _ts, raw in sorted(rows):
+        raw = re.sub(r"\s+", "", raw)
+        h = frame_header(raw)
+        if h and h[0] in ids and raw not in out.get(h[0], []):
+            out.setdefault(h[0], []).append(raw)
+    return out
+
+
+def _vendor_decode(fmt, raws: list) -> dict:
+    """Fields of the given frames (oldest first) decoded with one format; a
+    short frame needs a long one before it, as in the decode stage."""
+    cache: dict = {}
+    fields: dict = {}
+    for raw in raws:
+        try:
+            res = fmt.decode(bytes.fromhex(re.sub(r"\s+", "", raw)), cache)
+        except ValueError:
+            continue
+        if res:
+            fields.update(res[1])
+    return fields
+
+
+def apply_vendor_hints(candidates: list) -> None:
+    """A candidate wmbusmeters has no driver for, whose frames match a vendor
+    format: suggest that format's driver (the add-meter dialog then starts
+    from it instead of auto) and show its value as the preview."""
+    fmts = usable_vendor_formats()
+    if not fmts:
+        return
+    open_ids = {normalize_meter_id(c.get("id")) for c in candidates
+                if str(c.get("driver") or "").strip() in ("", "unknown", "auto")}
+    open_ids.discard("")
+    if not open_ids:
+        return
+    raws = _raw_history(open_ids)
+    for c in candidates:
+        cid = normalize_meter_id(c.get("id"))
+        if cid not in open_ids or cid not in raws:
+            continue
+        for fmt in fmts:
+            mine = [r for r in raws[cid] if fmt.matches(bytes.fromhex(re.sub(r"\s+", "", r)))]
+            if not mine:
+                continue
+            c["driver"] = fmt.driver
+            c["vendor_format"] = fmt.title
+            fields = _vendor_decode(fmt, mine)
+            if fields and not str(c.get("preview_value") or "").strip():
+                vals = _preview_values(fields, 1)
+                for k, v in vals.items():
+                    c["preview_value"] = str(v)
+                    c["preview_value_key"] = k
+            break
 
 
 def custom_drivers_enabled() -> bool:
@@ -4011,6 +4120,10 @@ def state(include_ignored: bool = False) -> dict:
         if (PREVIEW_METER_DIR / f"meter-preview-{gid}").exists():
             _cleanup_preview_cache(gid)
     candidates = [c for c in candidates if normalize_meter_id(c.get("id")) not in _ghosts]
+    try:
+        apply_vendor_hints(candidates)
+    except Exception:  # noqa: BLE001 - a hint must never break the page
+        pass
     candidates = sorted(
         candidates,
         key=lambda c: (
@@ -5057,6 +5170,8 @@ def frontend_payload(lang: str = DEFAULT_LANG, include_i18n: bool = True) -> dic
         "custom_drivers_enabled": custom_drivers_enabled(),
         # Accepted external drivers, offered in the driver picker.
         "external_drivers": accepted_external_drivers(),
+        # Vendor formats the add-on decodes itself, offered there as well.
+        "vendor_formats": vendor_format_drivers(),
         **data,
     }
     if include_i18n:

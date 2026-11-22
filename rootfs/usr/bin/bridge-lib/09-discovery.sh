@@ -122,7 +122,7 @@ emit_discovery_from_json() {
     key="${_f#*$'\t'}"
     [[ -n "${key}" && "${key}" != "${_f}" ]] || continue
 
-    local obj cache_key key_lc unit device_class state_class entity_category cfg_topic unique_id sensor_name payload field_desc
+    local obj cache_key key_lc unit device_class state_class entity_category enabled_default cfg_topic unique_id sensor_name payload field_desc
 
     _obj_id "${key}"
     obj="${REPLY}"
@@ -150,6 +150,7 @@ emit_discovery_from_json() {
     [[ -n "${DISCOVERY_SENT_FIELD[${cache_key}]+x}" ]] && continue
 
     key_lc="${key,,}"
+    enabled_default="false"
     if [[ "${ftype}" == "number" ]]; then
       unit="$(guess_unit "${key}")"
       device_class="$(guess_device_class "${key_lc}" "${unit}" "${media}")"
@@ -158,6 +159,14 @@ emit_discovery_from_json() {
         entity_category=""
       else
         entity_category="diagnostic"
+      fi
+      # Per-board signal strength (rssi_<board>_dbm, joined from publish_rssi)
+      # describes the radio link, not the meter: diagnostic, as Home Assistant
+      # files RSSI in its own integrations. Still enabled - whoever set
+      # publish_rssi: true on the board wants to see it (issue 185).
+      if [[ "${key_lc}" == rssi_*_dbm ]]; then
+        entity_category="diagnostic"
+        enabled_default="true"
       fi
     else
       unit=""
@@ -187,6 +196,7 @@ emit_discovery_from_json() {
       --arg dc "${device_class}" \
       --arg sc "${state_class}" \
       --arg ecat "${entity_category}" \
+      --arg eon "${enabled_default}" \
       --arg desc "${field_desc}" \
       --argjson expire "${expire_after}" \
       '(
@@ -213,7 +223,8 @@ emit_discovery_from_json() {
         + (if ($unit|length)>0 then {unit_of_measurement:$unit} else {} end)
         + (if ($dc|length)>0 then {device_class:$dc} else {} end)
         + (if ($sc|length)>0 then {state_class:$sc} else {} end)
-        + (if ($ecat|length)>0 then {entity_category:$ecat, enabled_by_default:false} else {} end)
+        + (if ($ecat|length)>0 then {entity_category:$ecat} else {} end)
+        + (if ($ecat|length)>0 and $eon != "true" then {enabled_by_default:false} else {} end)
         # The attributes topic already carries the whole decoded telegram, and
         # there is only one of them per entity — so the description is MERGED
         # into that payload rather than replacing it. Without the merge, adding
