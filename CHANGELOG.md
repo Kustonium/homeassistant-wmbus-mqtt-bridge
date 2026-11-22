@@ -1,3 +1,14 @@
+## 1.6.25
+
+### Added
+- vendor formats in the driver picker and as candidate hints (1370da1)
+- vendor formats, starting with B METERS Hydroclima v0x34 (d3fc7a5)
+
+### Fixed
+- vendor stage output reached wmbusmeters' stdin, not the decode stream (cbb9077)
+- same RSSI rule in the Python publisher path (51048d7)
+- per-board RSSI entities under Diagnostic, still enabled (415fbc8)
+
 ## 1.6.24
 
 ### Fixed

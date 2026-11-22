@@ -497,11 +497,14 @@ def bash_int(text: str) -> Optional[int]:
 def meter_files(meter_dir: str) -> List[str]:
     """meter-* of the decode pipeline and, when EXTERNAL_METER_DIR is set, of the
     external instance: a meter on an external_* driver is a configured meter too
-    (no preview for it, its RSSI is wanted), only another wmbusmeters decodes it."""
+    (no preview for it, its RSSI is wanted), only another wmbusmeters decodes it.
+    The same for VENDOR_METER_DIR: meters on a vendor_* format, decoded by
+    vendor_formats.py."""
     paths = glob.glob(os.path.join(meter_dir, "meter-*"))
-    ext = os.environ.get("EXTERNAL_METER_DIR", "")
-    if ext and os.path.abspath(ext) != os.path.abspath(meter_dir):
-        paths += glob.glob(os.path.join(ext, "meter-*"))
+    for var in ("EXTERNAL_METER_DIR", "VENDOR_METER_DIR"):
+        ext = os.environ.get(var, "")
+        if ext and os.path.abspath(ext) != os.path.abspath(meter_dir):
+            paths += glob.glob(os.path.join(ext, "meter-*"))
     return paths
 
 

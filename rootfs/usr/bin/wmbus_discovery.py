@@ -324,6 +324,7 @@ class Discovery:
             if cache in self.sent:
                 continue
             key_lc = key.lower()
+            enabled = False
             if ftype == "number":
                 unit = guess_unit(key)
                 dclass = guess_device_class(key_lc, unit, media)
@@ -332,6 +333,11 @@ class Discovery:
             else:
                 unit = dclass = sclass = ""
                 ecat = "diagnostic"
+            # Per-board signal strength (rssi_<board>_dbm): diagnostic but
+            # enabled - 09-discovery.sh, issue 185.
+            if ftype == "number" and key_lc.startswith("rssi_") and key_lc.endswith("_dbm"):
+                ecat = "diagnostic"
+                enabled = True
             desc = self.field_description(meter, key)
             payload: Dict[str, Any] = {
                 "name": f"{name} {key}",
@@ -354,7 +360,8 @@ class Discovery:
                 payload["state_class"] = sclass
             if ecat:
                 payload["entity_category"] = ecat
-                payload["enabled_by_default"] = False
+                if not enabled:
+                    payload["enabled_by_default"] = False
             # A cumulative reading stays valid until the next one: no expiry
             # (issue #165, see 09-discovery.sh). The status entity keeps it.
             if sclass in ("total", "total_increasing"):

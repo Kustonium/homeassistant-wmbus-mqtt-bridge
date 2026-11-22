@@ -11,7 +11,7 @@ services:
     restart: unless-stopped
 
   wmbus:
-    image: ghcr.io/kustonium/wmbus_mqtt_bridge-dev:dev
+    image: ghcr.io/kustonium/wmbus_mqtt_bridge:latest
     container_name: wmbus
     entrypoint: ["/usr/bin/docker-entrypoint.sh"]
     depends_on:

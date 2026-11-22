@@ -403,6 +403,25 @@ EXTERNAL_FIFO="${RUNTIME}/external.fifo"
 STATUS_EXTERNAL_INSTANCE_FILE="${RUNTIME}/status_external_instance.json"
 mkdir -p "${EXT_DRIVERS_DIR}" "${EXTERNAL_METER_DIR}" 2>/dev/null || true
 CUSTOM_DRIVERS_RESULT="$(python3 "${BRIDGE_SCRIPT_DIR:-/usr/bin}/custom_drivers.py" install --dest "${EXT_DRIVERS_DIR}" --status "${STATUS_CUSTOM_DRIVERS_FILE}" --enabled "${CUSTOM_DRIVERS_ENABLED}" 2>&1 || true)"
+# Vendor formats (vendor_formats.py): manufacturer blocks wmbusmeters cannot
+# read, one data file each. Checked once per start: every file must pass its
+# own test telegrams, and its probe telegram goes to the installed wmbusmeters
+# - when that already returns the expected values, wmbusmeters handles the
+# format (wmbus_meters.py writes such meters for it) and the add-on's decoder
+# stays out. Meters on vendor_<format> are written to VENDOR_METER_DIR, read by
+# the vendor stage (15-external.sh) and by the ledger (configured meters).
+VENDOR_TOOL="${VENDOR_TOOL:-${BRIDGE_SCRIPT_DIR:-/usr/bin}/vendor_formats.py}"
+VENDOR_FORMATS_DIR="${VENDOR_FORMATS_DIR:-/usr/share/wmbus-bridge/formats}"
+export VENDOR_FORMATS_DIR
+VENDOR_METER_DIR="${BASE}/vendor/meters.d"
+export VENDOR_METER_DIR
+# shellcheck disable=SC2034  # set by refresh_meter_files (07-meters.sh)
+VENDOR_METERS_COUNT=0
+STATUS_VENDOR_FORMATS_FILE="${RUNTIME}/status_vendor_formats.json"
+mkdir -p "${VENDOR_METER_DIR}" 2>/dev/null || true
+python3 "${VENDOR_TOOL}" upstream --status "${STATUS_VENDOR_FORMATS_FILE}" \
+  --formats-dir "${VENDOR_FORMATS_DIR}" --wmbusmeters "${WMBUSMETERS_BIN:-/usr/bin/wmbusmeters}" 2>&1 \
+  | while IFS= read -r _l; do log "${_l}"; done || true
 # Qundis walk-by block (0DFF5F). Off by default: no effect on installs that
 # never see the block. On (a) rejects walk-by records the decoder cannot
 # validate, so upstream cannot publish ciphertext as a reading, and (b) with

@@ -249,6 +249,52 @@ evidenced, but unmerged) upstream report.
 With the option off, the stage is a plain `cat` and the decode path is
 byte-for-byte what it was.
 
+### 3.6 Vendor formats: what wmbusmeters cannot read yet
+
+Some meters put their values in a manufacturer block (CI 0x78, payload starting
+with 0x0F) hidden by a simple word-wise obfuscation, and wmbusmeters has no
+driver for them. An `.xmq` driver cannot help: it reads DIF/VIF records, which
+these frames do not have. The first case is the B METERS Hydroclima allocator,
+version 0x34 (worked out in discussion #180).
+
+`rootfs/usr/bin/vendor_formats.py` is one engine; each format is a data file in
+`rootfs/usr/share/wmbus-bridge/formats/`:
+
+- **match**: manufacturer bytes, version, device type, CI, payload prefix;
+- **transform**: the steps applied to every 16-bit word (`add`, `sub`, `xor`)
+  with constants, a table indexed by a frame byte (the seed) and variables. A
+  variable is either an expression of the address bytes (`id0..id3`, integers,
+  `+ - ^ & | << >>`, parentheses; parsed, never `eval`ed) or solved from a word
+  whose plain value is known (allowed only in the last step);
+- **frames**: per frame type, the fields (offset, scale) named as wmbusmeters
+  names them (`*_hca`, `*_c`, ...), so Discovery treats them like any field;
+- **tests**: telegrams with the values they must decode to. A file without
+  tests is refused; CI runs every file's tests (`vendor_formats.py check`);
+- **upstream_probe**: a telegram and values for the check below.
+
+A meter uses a format by its driver name, `vendor_<name>` (`type: other`,
+`type_other: vendor_bmeters_hydroclima_v34`). `wmbus_meters.py refresh` writes
+such a meter to `VENDOR_METER_DIR` instead of the main instance's directory
+(wmbusmeters ends on a driver it does not know). The ledger counts that
+directory as configured meters, like the external instance's. When at least one
+such meter exists, the decode pipeline tees the RAW stream to
+`vendor_formats.py stage`, whose JSON lines (the shape of wmbusmeters' output)
+join the wmbusmeters lines before the decode stage. Long and short frames carry
+different fields; the stage keeps the last value of each per meter, as
+wmbusmeters does. Without such a meter nothing extra runs.
+
+**Upstream first.** On every start `vendor_formats.py upstream` feeds each
+format's probe telegram to the installed wmbusmeters (`auto` driver). If that
+already returns the probe's values, the format is marked as handled upstream
+with the driver wmbusmeters picked; `wmbus_meters.py` then writes those meters
+for wmbusmeters with that driver and the add-on's decoder stays out. A pinned
+wmbusmeters update that learns the format therefore takes over without a change
+here. A format that fails its own tests is not used either. The result is in
+`status_vendor_formats.json`.
+
+Not in scope: real encryption with an unknown key, bit-packed or
+variable-length records, operations other than add/sub/xor. Those need code.
+
 ## 4. Life of a telegram
 
 Every payload accepted by the configured input filter is delivered to two
