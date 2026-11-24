@@ -2089,7 +2089,13 @@
       ? (perMin === null ? t("flow_board_counting", "counting…")
         : t("flow_board_sub", "{rate}/min · {m} meters", {rate: rateTxt, m: d.meters_heard ?? "—"}))
       : t("flow_silent", "silent {age}", {age: fmtInterval(Number(d.telegram_age_s) || 0)});
-    return {live, warn, rate: Number.isFinite(fh) ? fh : 0, rateTxt, sub};
+    // Hover text: how the rate is counted (median of the last minutes, or the
+    // hourly figure while those minutes are not counted yet).
+    const how = d.rate_median_min !== null && d.rate_median_min !== undefined
+      ? t("flow_board_rate_median", "frames/min: median of the last {n} min; meters: last hour", {n: d.rate_window_min || 15})
+      : t("flow_board_rate_hourly", "frames/min and meters: last hour");
+    const tip = live && perMin !== null ? `${sub} (${how})` : sub;
+    return {live, warn, rate: Number.isFinite(fh) ? fh : 0, rateTxt, sub, tip};
   }
 
   function flowFocused(kind, key) {
@@ -2240,7 +2246,7 @@
           <line x1="0" y1="-2" x2="0" y2="${compact ? 8 : 12}"/><path class="w1" d="M-5 -5 A7 7 0 0 1 5 -5"/>${compact ? "" : `<path class="w2" d="M-9 -9 A12.7 12.7 0 0 1 9 -9"/>`}
           ${dead ? `<line x1="-9" y1="-11" x2="9" y2="10" stroke="${FLOW_STATE.bad}"/>` : ""}</g>
         <g class="flow-board${hl}" data-board="${name}" data-action="open-workspace" data-ws="esp">
-          <title>${name}${listenModeBands(d.listen_mode) ? ` · ${escapeHtml(listenModeBands(d.listen_mode))}` : ""} · ${escapeHtml(info.sub)}</title>
+          <title>${name}${listenModeBands(d.listen_mode) ? ` · ${escapeHtml(listenModeBands(d.listen_mode))}` : ""} · ${escapeHtml(quiet ? info.sub : info.tip)}</title>
           <rect x="${BX}" y="${y}" width="${BW}" height="${bh}" rx="8" fill="${c}" fill-opacity="0.14" stroke="${c}"${info.live || quiet ? "" : ` stroke-dasharray="4 3"`}/>
           ${compact
             ? `<text class="flow-t" x="${BX + 12}" y="${my}" dominant-baseline="central">${escapeHtml(flowClip(d.name, hasLights ? 10 : 14))}<tspan class="flow-s" fill="${c}"> ${info.live ? escapeHtml(info.rateTxt ? info.rateTxt + "/min" : "") : "—"}</tspan></text>`
@@ -2333,7 +2339,7 @@
       if (quiet) info.sub = t("flow_s1_quiet", "S1 · last frame {age} ago", {age: fmtInterval(Number(d.telegram_age_s) || 0)});
       const own = colors.get(d.name) || FLOW_STATE.unknown;
       const c = info.live || quiet ? own : info.warn ? FLOW_STATE.warn : FLOW_STATE.unknown;
-      return `<button type="button" class="flow-nb${info.live || quiet ? "" : " off"}${flowFocused("board", d.name) ? " hl" : ""}" data-board="${escapeHtml(d.name)}" data-action="open-workspace" data-ws="esp" style="--c:${c}">
+      return `<button type="button" class="flow-nb${info.live || quiet ? "" : " off"}${flowFocused("board", d.name) ? " hl" : ""}" data-board="${escapeHtml(d.name)}" data-action="open-workspace" data-ws="esp" title="${escapeHtml(quiet ? info.sub : info.tip)}" style="--c:${c}">
           <span class="flow-nb-ant${info.live ? " on" : ""}">📡</span><span class="flow-nb-name">${escapeHtml(d.name)}${lightDotsHtml(lights)}</span><span class="flow-nb-sub">${escapeHtml(info.sub)}</span></button>`;
     }).join("");
     const nn = (c, title, l1, l2, attrs) => `<button type="button" class="flow-nn" ${attrs} style="--c:${c}"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(l1)}</span>${l2 ? `<span class="flow-nn-sub">${escapeHtml(l2)}</span>` : ""}</button>`;

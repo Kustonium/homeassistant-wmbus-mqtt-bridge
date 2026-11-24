@@ -1745,8 +1745,13 @@ def jq_number_text(x: float) -> str:
 
 
 _PRIMARY_CANONICAL = ("total_m3", "total_kwh", "total_wh", "total_energy_consumption_kwh", "total_volume_m3")
-_PRIMARY_LIKE = re.compile(r"(^total|_m3$|kwh|wh$|energy|volume)", re.I)
+# _hca$: a heat cost allocator's units are its reading. Without it an
+# allocator fell through to the instant-value rule, where any *_c field
+# matches, and showed a temperature (1.6.25, Hydroclima). The current-period
+# field wins over the set-date and end-of-month ones through _PRIMARY_NOT.
+_PRIMARY_LIKE = re.compile(r"(^total|_m3$|kwh|wh$|energy|volume|_hca$)", re.I)
 _PRIMARY_NOT = re.compile(r"(_ago_|_ago$|last_month|last_year|previous_month|previous_year|previous|prev|at_history|"
+                          r"set_date|end_of_month|"
                           r"history|historic|billing|due_date|target|backflow|fraud|leak|tamper|alarm|"
                           r"production|tariff|partial|negative|reactive)", re.I)
 _TARIFF_KWH = re.compile(r"^total_energy_consumption_tariff_[0-9]+_kwh$", re.I)
