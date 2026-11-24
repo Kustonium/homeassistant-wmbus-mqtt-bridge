@@ -1858,6 +1858,19 @@ def driver_fields(driver: str) -> tuple[bool, list[dict], str]:
     driver = (driver or "").strip()
     if not re.match(r"^[A-Za-z0-9_]+$", driver):
         return False, [], f"Invalid driver: {driver}"
+    if driver.startswith(_vf.PREFIX):
+        # Decoded by the add-on (vendor_formats.py): wmbusmeters does not know
+        # this driver, so its fields come from the format file.
+        fmt = next((f for f in usable_vendor_formats() if f.driver == driver), None)
+        if fmt is None:
+            return False, [], f"No such driver {driver}"
+        names: list[str] = []
+        for frame in fmt.frames.values():
+            for fld in frame["fields"]:
+                if fld[0] not in names:
+                    names.append(fld[0])
+        return True, [{"name": n, "description": "", "no_entity": NON_ENTITY_FIELDS.get(n.lower(), "")}
+                      for n in names], ""
     if driver in DRIVER_FIELDS_CACHE:
         return True, DRIVER_FIELDS_CACHE[driver], ""
     try:
@@ -5090,6 +5103,18 @@ def _esp_payload() -> dict:
     re_settings = _esp_settings()
     for d in devices_list:
         f_h, m = _re_board_now(re_boards.get(d["name"]) or [], now_epoch)
+        # The rate shown: the median frames/min of the last 15 complete
+        # minutes (radio_env.live_rate) - an hourly mean kept a restarted or
+        # moved board low for an hour. The hourly figure until 15 minutes
+        # have been counted. Meters stay hourly: rare senders need the hour.
+        try:
+            med = _re.live_rate(str(RADIO_ENV_NOW_FILE), d["name"], now_epoch)
+        except Exception:
+            med = None
+        d["rate_median_min"] = med
+        d["rate_window_min"] = _re.LIVE_MINUTES
+        if med is not None:
+            f_h = med * 60
         d["frames_h"] = None if f_h is None else round(f_h)
         d["meters_heard"] = m
         # The board's listen mode as it announces it (t1/c1/both/s1), for

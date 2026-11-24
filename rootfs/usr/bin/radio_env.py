@@ -39,6 +39,11 @@ NOW_WRITE_EVERY_S = 60
 # started or restarted mid-hour) is not stored: it would pull "typical" down.
 PARTIAL_HOUR_S = 300
 _ROW = ("hour", "frames", "weak", "meters", "sym_total", "sym_invalid")
+# The Panel's board rate: the median of frames per minute over the last
+# LIVE_MINUTES complete minutes. A short window, so a restart or a board
+# moved to another antenna lowers it for a quarter of an hour, not an hour;
+# a median, so one silent or one burst minute does not move it.
+LIVE_MINUTES = 15
 BANDS = ("T1", "C1", "S1")
 BAND_SEP = "|"
 
@@ -73,6 +78,10 @@ class RadioEnv:
         self.lock = threading.Lock()
         self.rows: Dict[str, List[List[int]]] = {}
         self.cur: Dict[str, Dict[str, Any]] = {}
+        # Per board: frames per minute over the last LIVE_MINUTES (+ the one
+        # in progress) and when counting began here ("since": minutes before
+        # it are unknown, not zero). In memory, written with the hour in progress.
+        self.live: Dict[str, Dict[str, Any]] = {}
         self.now_written = 0.0
         data = _read_json(path)
         if isinstance(data, dict) and isinstance(data.get("boards"), dict):
@@ -126,7 +135,19 @@ class RadioEnv:
             b: {"hour": c["hour"], "start": c.get("start", c["hour"]), "frames": c["frames"],
                 "weak": c["weak"], "meters": len(c["meters"]),
                 "meter_ids": sorted(c["meters"]), "sym_total": c["sym_total"], "sym_invalid": c["sym_invalid"]}
-            for b, c in self.cur.items()}})
+            for b, c in self.cur.items()},
+            "live": {b: {"since": lv["since"], "minutes": sorted([m, n] for m, n in lv["minutes"].items())}
+                     for b, lv in self.live.items()}})
+
+    def _live(self, board: str, ts: int) -> None:
+        lv = self.live.get(board)
+        if lv is None:
+            lv = self.live[board] = {"since": ts, "minutes": {}}
+        minute = ts - ts % 60
+        lv["minutes"][minute] = lv["minutes"].get(minute, 0) + 1
+        if len(lv["minutes"]) > LIVE_MINUTES + 3:
+            cutoff = minute - (LIVE_MINUTES + 1) * 60
+            lv["minutes"] = {m: n for m, n in lv["minutes"].items() if m >= cutoff}
 
     @staticmethod
     def _count(c: Dict[str, Any], meter: str, rssi: Any) -> None:
@@ -145,6 +166,7 @@ class RadioEnv:
         with self.lock:
             c = self._bucket(board, ts)
             self._count(c, meter, rssi)
+            self._live(board, ts)
             if mode in BANDS:
                 self._count(self._bucket(band_key(board, mode), ts, c.get("start", c["hour"])), meter, rssi)
             self._maybe_write_now(ts)
@@ -214,3 +236,30 @@ def load(path: str, now_path: str = "") -> Dict[str, List[List[int]]]:
                          int(c.get("meters") or 0), int(c.get("sym_total") or 0),
                          int(c.get("sym_invalid") or 0), int(c.get("start") or c["hour"])])
     return boards
+
+
+def live_rate(now_path: str, board: str, now: int) -> Optional[float]:
+    """For the WebUI: the median of frames per minute over the last
+    LIVE_MINUTES complete minutes of one board, a minute without frames
+    counting as 0; None until that many minutes have been counted (after an
+    add-on start) or without the file. Minutes before "since" are unknown and
+    are left out, never counted as 0."""
+    data = _read_json(now_path) if now_path else None
+    lv = data.get("live", {}).get(board) if isinstance(data, dict) and isinstance(data.get("live"), dict) else None
+    if not isinstance(lv, dict):
+        return None
+    try:
+        since = int(lv.get("since") or 0)
+        counts = {int(m): int(n) for m, n in lv.get("minutes") or []}
+        # The file is written at most once a minute: a minute that was still
+        # in progress when it was written is not complete in it.
+        ref = min(now, int(data.get("updated") or now))
+    except (TypeError, ValueError):
+        return None
+    last = ref - ref % 60 - 60          # the last complete minute in the file
+    first = last - (LIVE_MINUTES - 1) * 60
+    if first < since - since % 60 + 60:  # the minute counting began in is partial
+        return None
+    vals = sorted(counts.get(m, 0) for m in range(first, last + 60, 60))
+    mid = len(vals) // 2
+    return float(vals[mid]) if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2.0

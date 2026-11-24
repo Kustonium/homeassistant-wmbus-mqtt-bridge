@@ -1,3 +1,11 @@
+## 1.6.26
+
+### Added
+- board rate on the Panel is the median of the last 15 minutes (82257eb)
+
+### Fixed
+- allocator main value and editor fields for add-on drivers (8ccce01)
+
 ## 1.6.25
 
 ### Added
