@@ -1,3 +1,8 @@
+## 1.6.27
+
+### Fixed
+- Hydroclima v0x34 field names follow the wmbusmeters driver (561e48e)
+
 ## 1.6.26
 
 ### Added

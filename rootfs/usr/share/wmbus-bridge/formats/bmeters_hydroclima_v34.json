@@ -8,7 +8,7 @@
     "Every 16-bit little-endian word from the start offset is obfuscated the same way: c = ((((p + A) ^ K[seed]) + 0x02D3) ^ 0x7ADE) + D.",
     "A comes from the meter address. D takes one value per meter; it is solved from the word that always holds 0x0800 in long frames and remembered for short frames.",
     "Frame 0x13 and 0x12: long frames (current values). Frame 0x17: short frame (monthly history, newest first, then U).",
-    "Field names follow the display labels (C, U, tU, tC). Worked out 2026-11 from a public series in discussion #180 (seven allocators, display readings)."
+    "Field names follow the wmbusmeters driver hydroclimav34, so entities keep their names when wmbusmeters takes the format over: allocation (C, current billing period), target (U, previous billing period), average ambient temperature of the current (tC) and previous (tU) billing period (B METERS product card). The monthly history (short frame) is only decoded here. Worked out 2026-11 from a public series in discussion #180 (seven allocators, display readings)."
   ],
   "match": {"mfct_bytes": "B009", "version": "34", "type": "08", "ci": "78", "payload_prefix": "0F"},
   "frame_type_byte": 2,
@@ -31,52 +31,52 @@
   ],
   "frames": {
     "13": {"min_len": 35, "fields": [
-      {"name": "consumption_at_set_date_hca", "offset": 9, "scale": 0.1},
-      {"name": "temperature_tu_c", "offset": 11, "scale": 0.01},
-      {"name": "current_consumption_hca", "offset": 13, "scale": 0.1},
-      {"name": "temperature_tc_c", "offset": 15, "scale": 0.01},
-      {"name": "consumption_end_of_month_1_hca", "offset": 17, "scale": 0.1}
+      {"name": "allocation_hca", "offset": 13, "scale": 0.1},
+      {"name": "target_hca", "offset": 9, "scale": 0.1},
+      {"name": "previous_average_ambient_temperature_c", "offset": 11, "scale": 0.01},
+      {"name": "average_ambient_temperature_c", "offset": 15, "scale": 0.01},
+      {"name": "previous_month_hca", "offset": 17, "scale": 0.1}
     ]},
     "12": {"min_len": 35, "fields": [
-      {"name": "consumption_at_set_date_hca", "offset": 9, "scale": 0.1},
-      {"name": "temperature_tu_c", "offset": 11, "scale": 0.01},
-      {"name": "current_consumption_hca", "offset": 13, "scale": 0.1},
-      {"name": "temperature_tc_c", "offset": 15, "scale": 0.01}
+      {"name": "allocation_hca", "offset": 13, "scale": 0.1},
+      {"name": "target_hca", "offset": 9, "scale": 0.1},
+      {"name": "previous_average_ambient_temperature_c", "offset": 11, "scale": 0.01},
+      {"name": "average_ambient_temperature_c", "offset": 15, "scale": 0.01}
     ]},
     "17": {"min_len": 27, "fields": [
-      {"name": "consumption_end_of_month_1_hca", "offset": 3, "scale": 0.1},
-      {"name": "consumption_end_of_month_2_hca", "offset": 5, "scale": 0.1},
-      {"name": "consumption_end_of_month_3_hca", "offset": 7, "scale": 0.1},
-      {"name": "consumption_end_of_month_4_hca", "offset": 9, "scale": 0.1},
-      {"name": "consumption_end_of_month_5_hca", "offset": 11, "scale": 0.1},
-      {"name": "consumption_end_of_month_6_hca", "offset": 13, "scale": 0.1},
-      {"name": "consumption_end_of_month_7_hca", "offset": 15, "scale": 0.1},
-      {"name": "consumption_end_of_month_8_hca", "offset": 17, "scale": 0.1},
-      {"name": "consumption_end_of_month_9_hca", "offset": 19, "scale": 0.1},
-      {"name": "consumption_end_of_month_10_hca", "offset": 21, "scale": 0.1},
-      {"name": "consumption_at_set_date_hca", "offset": 23, "scale": 0.1}
+      {"name": "previous_month_hca", "offset": 3, "scale": 0.1},
+      {"name": "previous_month_02_hca", "offset": 5, "scale": 0.1},
+      {"name": "previous_month_03_hca", "offset": 7, "scale": 0.1},
+      {"name": "previous_month_04_hca", "offset": 9, "scale": 0.1},
+      {"name": "previous_month_05_hca", "offset": 11, "scale": 0.1},
+      {"name": "previous_month_06_hca", "offset": 13, "scale": 0.1},
+      {"name": "previous_month_07_hca", "offset": 15, "scale": 0.1},
+      {"name": "previous_month_08_hca", "offset": 17, "scale": 0.1},
+      {"name": "previous_month_09_hca", "offset": 19, "scale": 0.1},
+      {"name": "previous_month_10_hca", "offset": 21, "scale": 0.1},
+      {"name": "target_hca", "offset": 23, "scale": 0.1}
     ]}
   },
   "tests": [
     {"note": "78240400 long frame, display C=51.7 U=93.8 tU=19.4",
      "telegram": "2D44B009000424783408780F79130000E6F8DD118368CF6A1A6DE36B376E086C2C6E2C6E596B596B596B546B5933",
-     "expect": {"id": "78240400", "current_consumption_hca": 51.7, "consumption_at_set_date_hca": 93.8,
-                "temperature_tu_c": 19.42, "temperature_tc_c": 18.66, "consumption_end_of_month_1_hca": 44.6}},
+     "expect": {"id": "78240400", "allocation_hca": 51.7, "target_hca": 93.8,
+                "previous_average_ambient_temperature_c": 19.42, "average_ambient_temperature_c": 18.66, "previous_month_hca": 44.6}},
     {"note": "78240400 short frame (history), D remembered from the long frame",
      "context": ["2D44B009000424783408780F79130000E6F8DD118368CF6A1A6DE36B376E086C2C6E2C6E596B596B596B546B5933"],
      "telegram": "2544B009000424783408780F7917376E2C6E2C6E2C6E2C6E2C6E2C6E296ECA6C456E8368FC67",
-     "expect": {"id": "78240400", "consumption_end_of_month_1_hca": 44.6, "consumption_end_of_month_2_hca": 43.9,
-                "consumption_end_of_month_7_hca": 43.9, "consumption_end_of_month_8_hca": 43.2,
-                "consumption_end_of_month_9_hca": 40.5, "consumption_end_of_month_10_hca": 23.6,
-                "consumption_at_set_date_hca": 93.8}},
+     "expect": {"id": "78240400", "previous_month_hca": 44.6, "previous_month_02_hca": 43.9,
+                "previous_month_07_hca": 43.9, "previous_month_08_hca": 43.2,
+                "previous_month_09_hca": 40.5, "previous_month_10_hca": 23.6,
+                "target_hca": 93.8}},
     {"note": "67400445 long frame type 0x12, radiator off, display C=0.0 U=13.9 tU=21.8",
      "telegram": "2D44B009450440673408780FDD1200009CB133567C517A49EF4ECD461C47EF4EDE3F9954EF4EEF4E904EEF46134F",
-     "expect": {"id": "67400445", "current_consumption_hca": 0, "consumption_at_set_date_hca": 13.9,
-                "temperature_tu_c": 21.85}},
+     "expect": {"id": "67400445", "allocation_hca": 0, "target_hca": 13.9,
+                "previous_average_ambient_temperature_c": 21.85}},
     {"note": "78240359 long frame, display C=48.5 U=42.2 tU=19.1",
      "telegram": "2D44B009590324783408780F3B1300007E6140ABE2F483EA1F000BEBE4F475ED9EF49EF40CF60CF60CF669F40CEE",
-     "expect": {"id": "78240359", "current_consumption_hca": 48.5, "consumption_at_set_date_hca": 42.2,
-                "temperature_tu_c": 19.13, "consumption_end_of_month_1_hca": 42.4}}
+     "expect": {"id": "78240359", "allocation_hca": 48.5, "target_hca": 42.2,
+                "previous_average_ambient_temperature_c": 19.13, "previous_month_hca": 42.4}}
   ],
   "upstream_probe": {
     "telegram": "2D44B009000424783408780F79130000E6F8DD118368CF6A1A6DE36B376E086C2C6E2C6E596B596B596B546B5933",
