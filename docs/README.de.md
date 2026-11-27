@@ -252,6 +252,13 @@ Das Telegramm enthält die Seriennummer des Zählers; der AES-Schlüssel wird ni
 beigefügt. Wird ein gespeicherter Schlüssel für die Analyse verwendet, kann die
 entschlüsselte Ausgabe Zählerstände enthalten.
 
+Für einen Zähler, den noch kein Treiber kennt, bietet das Berichtsfenster
+nur **Den Add-on-Autor fragen** an (kein wmbusmeters-Issue: ohne Anzeigewerte
+hilft es dort noch nicht): es öffnet eine ausgefüllte Frage in
+den Discussions des Add-ons (Kategorie *Nowe liczniki / Unknown meters*). Was
+zu sammeln ist und wie ein neuer Treiber ausprobiert wird (Englisch):
+[A meter wmbusmeters cannot decode yet](UNKNOWN_METER.md).
+
 Derselbe Button **Meldung…** steht in jeder Zeile von ZÄHLER, sodass sich ein
 bereits hinzugefügter Zähler — einer, der zwar dekodiert, aber ein Feld falsch
 oder weniger Felder als sein Display meldet — melden lässt, ohne ihn vorher zu

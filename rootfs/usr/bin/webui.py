@@ -562,6 +562,11 @@ def candidate_issue_report(meter_id: str) -> tuple[bool, dict]:
         "report_anon": _anonymize_report(report, mid),
         "raw_ts": raw_ts,
         "key_used": bool(key),
+        # A candidate wmbusmeters names no driver for: no driver anywhere yet.
+        # The WebUI asks the add-on author first in that case (a missing driver
+        # is not a bug), and titles the question with the model, not the id.
+        "undecoded": not meter_entry and driver == "unknown",
+        "mvt": _frame_mvt(raw),
     }
 
 
@@ -598,6 +603,21 @@ def _anonymize_report(report: str, mid: str) -> str:
         out,
     )
     return out
+
+
+def _frame_mvt(raw: str) -> str:
+    """Manufacturer, version and type from a wMBus frame's header, the way
+    wmbusmeters writes them in a driver's detect block (e.g. BMP,34,08).
+    Empty when the frame is too short or its manufacturer code is not three
+    letters."""
+    raw = str(raw or "").strip()
+    if len(raw) < 20 or not re.fullmatch(r"[0-9A-Fa-f]+", raw):
+        return ""
+    code = int(raw[6:8] + raw[4:6], 16)
+    letters = "".join(chr(((code >> shift) & 0x1F) + 64) for shift in (10, 5, 0))
+    if not re.fullmatch(r"[A-Z]{3}", letters):
+        return ""
+    return f"{letters},{raw[16:18].upper()},{raw[18:20].upper()}"
 
 
 def _id_le_hex(mid: str) -> str:

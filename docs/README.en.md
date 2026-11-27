@@ -248,6 +248,12 @@ ready-to-paste issue block for the upstream wmbusmeters project (raw telegram +
 number. The AES key is never included; when a configured key is used for the
 analysis, the decrypted output may include meter readings.
 
+For a meter no driver knows yet, the report window offers only **Ask the add-on
+author** (no wmbusmeters issue: without display readings it cannot help
+there yet): it opens a filled-in question in the add-on's Discussions (category
+*Nowe liczniki / Unknown meters*). What to collect and how a new driver gets
+tried out: [A meter wmbusmeters cannot decode yet](UNKNOWN_METER.md).
+
 The same **Report…** button sits in every row on METERS, so a meter you have
 already added — one that decodes but reports a field wrongly, or reports fewer
 fields than its display shows — can be reported without removing it first. It

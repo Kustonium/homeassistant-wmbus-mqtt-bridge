@@ -248,6 +248,13 @@ add-on buduje gotowy do wklejenia blok zgłoszenia do projektu wmbusmeters
 seryjny licznika. Klucz AES nigdy nie jest dołączany; jeśli zapisany klucz
 został użyty do analizy, zdekodowany wynik może zawierać odczyty licznika.
 
+Dla licznika, którego nie zna jeszcze żaden sterownik, okno raportu oferuje tylko
+**Zapytaj autora dodatku** (bez zgłoszenia do wmbusmeters: bez odczytów z
+wyświetlacza nic tam jeszcze nie da): otwiera wypełnione pytanie w
+Discussions dodatku (kategoria *Nowe liczniki / Unknown meters*). Co zebrać i
+jak wypróbować nowy sterownik: [Licznik, którego wmbusmeters jeszcze nie
+dekoduje](UNKNOWN_METER.pl.md).
+
 Ten sam przycisk **Zgłoszenie…** jest w każdym wierszu widoku LICZNIKI, więc już
 dodany licznik — taki, który dekoduje się, ale podaje pole błędnie albo mniej
 pól, niż pokazuje jego wyświetlacz — zgłosisz bez usuwania go z konfiguracji.
