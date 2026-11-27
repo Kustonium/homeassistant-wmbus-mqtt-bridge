@@ -2738,7 +2738,7 @@
                             <button class="btn btn-more" data-action="candidate-more" data-id="${escapeHtml(id)}" title="${escapeHtml(t("more_actions", "More actions"))}" aria-expanded="${state.expandedActions.has(id) ? "true" : "false"}">⋯</button>
                             ${state.expandedActions.has(id) ? `
                             <button class="btn" data-action="ignore" data-id="${escapeHtml(id)}">${escapeHtml(t("ignore", "Ignore"))}</button>
-                            <button class="btn" data-action="export-report" data-id="${escapeHtml(id)}" title="${escapeHtml(t("export_report_title", "wmbusmeters issue report"))}">${escapeHtml(t("export_report_btn", "Report…"))}</button>
+                            <button class="btn" data-action="export-report" data-id="${escapeHtml(id)}" title="${escapeHtml(driver === "unknown" ? t("export_report_ask_row", "Ask the add-on author about this meter") : t("export_report_title", "wmbusmeters issue report"))}">${escapeHtml(t("export_report_btn", "Report…"))}</button>
                             ${row.preview_active === "true" ? `<button class="btn" data-action="cancel-preview" data-id="${escapeHtml(id)}">${escapeHtml(t("cancel_preview", "Cancel preview"))}</button>` : ""}` : ""}
                           </div></td>`
                         : ""
@@ -4589,6 +4589,20 @@
     </div>`;
   }
 
+  // Appended to a question about a meter no driver knows: what working out a
+  // new format needs. English, as the discussion is public.
+  const UNKNOWN_METER_CHECKLIST = [
+    "",
+    "",
+    "---",
+    "To work out the format, please add (how: https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/blob/main/docs/UNKNOWN_METER.md):",
+    "- [ ] every screen the display shows, with the time you read it",
+    "- [ ] a photo of the label (exact model)",
+    "- [ ] more telegrams from a day or two, with the time of each",
+    "",
+    "No guarantee: not every meter can be decoded.",
+  ].join("\n");
+
   // The report as shown, copied and sent: anonymised unless the user unticked it.
   function reportModalText(rm) {
     return (rm.anon ? rm.reportAnon : rm.report) || "";
@@ -4633,22 +4647,29 @@
       <div class="modal-backdrop">
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="export-report-title">
           <div class="modal-head">
-            <h2 id="export-report-title">${escapeHtml(t("export_report_title", "wmbusmeters issue report"))} — ${escapeHtml(rm.id || "")}</h2>
+            <h2 id="export-report-title">${escapeHtml(rm.undecoded ? t("export_report_unknown_title", "Question about an unknown meter") : t("export_report_title", "wmbusmeters issue report"))} —${escapeHtml(rm.id || "")}</h2>
           </div>
           <div class="modal-body">
             <p style="font-size:11px;color:#f3c84b;margin:0 0 8px;">⚠️ ${escapeHtml(rm.anon
               ? t("export_report_privacy_anon", "The meter number and common serial/fabrication fields are masked. Review the report before sharing it; the AES key is never included.")
               : t("export_report_privacy", "The telegram contains your meter's serial number. The AES key is never included."))}</p>
             ${rm.keyUsed ? `<p style="font-size:11px;color:#f3c84b;margin:0 0 8px;">🔓 ${escapeHtml(t("export_report_key_used", "The analysis ran with your configured AES key — if the telegram is encrypted, the report shows meter readings; the key itself is never included."))}</p>` : ""}
+            ${rm.undecoded && rm.report ? `<p style="font-size:12px;color:#9eafba;margin:0 0 8px;">ℹ️ ${escapeHtml(t("export_report_unknown_hint", "No driver knows this meter yet. That is not a bug: ask the add-on author."))}</p>` : ""}
             ${anonToggle}
             ${body}
           </div>
           <div class="modal-actions">
             <button class="btn danger" type="button" data-action="close-report-modal">${escapeHtml(t("webui_cancel", "Cancel"))}</button>
-            ${rm.report ? `
-              <a class="btn" href="https://github.com/wmbusmeters/wmbusmeters/issues/new" target="_blank" rel="noopener noreferrer">${escapeHtml(t("export_report_open_issue", "Open a new wmbusmeters issue"))}</a>
-              <button class="btn" type="button" data-action="ask-author-report" title="${escapeHtml(t("export_report_ask_hint", "Opens a new question in the add-on's GitHub Discussions with this report filled in. You review it and post it from your own account."))}">${escapeHtml(t("export_report_ask", "Ask the add-on author"))}</button>
-              <button class="btn primary" type="button" data-action="copy-report">${escapeHtml(t("copy", "Copy"))}</button>` : ""}
+            ${rm.report ? (() => {
+              const issue = `<a class="btn" href="https://github.com/wmbusmeters/wmbusmeters/issues/new" target="_blank" rel="noopener noreferrer">${escapeHtml(t("export_report_open_issue", "Open a new wmbusmeters issue"))}</a>`;
+              const ask = `<button class="btn" type="button" data-action="ask-author-report" title="${escapeHtml(t("export_report_ask_hint", "Opens a new question in the add-on's GitHub Discussions with this report filled in. You review it and post it from your own account."))}">${escapeHtml(t("export_report_ask", "Ask the add-on author"))}</button>`;
+              // A meter no driver knows: only the question to the author. An
+              // upstream issue about a frame nobody can read, without display
+              // readings, is noise for wmbusmeters; it comes at the end, with a
+              // driver and its tests.
+              return `${rm.undecoded ? ask : issue + ask}
+              <button class="btn primary" type="button" data-action="copy-report">${escapeHtml(t("copy", "Copy"))}</button>`;
+            })() : ""}
           </div>
         </div>
       </div>`;
@@ -6846,7 +6867,8 @@
         if (resp.ok && data.ok) {
           // Anonymised by default: what is shown is what Copy and Ask copy.
           state.reportModal = {id, report: data.report || "", reportAnon: data.report_anon || "",
-                               anon: !!data.report_anon, keyUsed: !!data.key_used};
+                               anon: !!data.report_anon, keyUsed: !!data.key_used,
+                               undecoded: !!data.undecoded, mvt: data.mvt || ""};
         } else {
           const msg = data.error === "no_raw_telegram"
             ? t("export_report_no_raw", "No raw telegram stored for this meter yet.")
@@ -6877,12 +6899,18 @@
       // body. The user sees it in their own GitHub session and posts it from
       // their own account; nothing is sent from the add-on. A report too long
       // for a URL goes to the clipboard and the page opens with an empty body.
+      // A meter no driver knows goes to the "Unknown meters" category, titled
+      // with its model and followed by what that work needs.
       const rm = state.reportModal || {};
-      const text = reportModalText(rm);
-      if (!text) return;
-      const title = `Meter ${rm.anon ? "99999999" : rm.id} – decoding question`;
+      const report = reportModalText(rm);
+      if (!report) return;
+      const text = rm.undecoded ? report + UNKNOWN_METER_CHECKLIST : report;
+      const title = rm.undecoded
+        ? `Unknown meter ${rm.mvt || (rm.anon ? "99999999" : rm.id)}`
+        : `Meter ${rm.anon ? "99999999" : rm.id} – decoding question`;
+      const category = rm.undecoded ? "nowe-liczniki-unknown-meters" : "q-a";
       const base = "https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/discussions/new"
-        + `?category=q-a&title=${encodeURIComponent(title)}`;
+        + `?category=${category}&title=${encodeURIComponent(title)}`;
       const body = `&body=${encodeURIComponent(text)}`;
       if ((base + body).length <= 7000) {
         window.open(base + body, "_blank", "noopener,noreferrer");

@@ -1,3 +1,11 @@
+## 1.6.28
+
+### Added
+- ask the add-on author about a meter no driver knows (f6450b0)
+
+### Fixed
+- no wmbusmeters issue for a meter no driver knows (f001126)
+
 ## 1.6.27
 
 ### Fixed

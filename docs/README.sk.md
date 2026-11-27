@@ -241,6 +241,12 @@ telegram + výstup `wmbusmeters --analyze`). Telegram obsahuje sériové číslo
 merača. Uložený AES kľúč môže byť použitý na analýzu rovnakého ID, ale samotný
 kľúč sa nikdy neprikladá. Dešifrovaný výstup môže obsahovať odpočty merača.
 
+Pri merači, ktorý zatiaľ nepozná žiadny ovládač, ponúka okno hlásenia len
+**Opýtať sa autora doplnku** (bez issue pre wmbusmeters: bez hodnôt z displeja
+tam zatiaľ nepomôže): otvorí vyplnenú otázku v Discussions
+doplnku (kategória *Nowe liczniki / Unknown meters*). Čo zbierať a ako
+vyskúšať nový ovládač (anglicky): [A meter wmbusmeters cannot decode yet](UNKNOWN_METER.md).
+
 To isté tlačidlo **Hlásenie…** je v každom riadku pohľadu MERAČE, takže už
 pridaný merač — taký, ktorý sa dekóduje, ale hlási pole nesprávne alebo menej
 polí, než ukazuje jeho displej — nahlásite bez toho, aby ste ho museli odobrať.
